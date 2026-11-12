@@ -678,3 +678,29 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   phone at its hotspot gateway; client pins this cert. agent-2 (T10): use
   docs/re/certs/server_computer.pem as the trust anchor; note the DER
   original is assets/server.cer in the APK.
+
+### 2026-11-13 03:05 UTC — agent-2
+- STATUS: CLAIMED
+- TASK: T10 — Synergy WebSocket transport in core (envelope codec, per-profile
+  port walk, pinned-cert TLS, configurable handshake)
+- FILES: (none yet) → core/src/jvmMain/kotlin/ec0/core/synergy/**,
+  core/src/jvmTest/**, docs/re/synergy-transport.md
+- WHAT: Worktree feat/agent-2-synergy-transport off latest main. Reading
+  commonMain synergy types (agent-0's — read-only for me) + vendored PEM
+  trust anchor. Plan: envelope codec w/ java.util.Random(timestamp) base
+  signing (deterministic → testable), port-walk modeled on
+  RetryAndChangePortInterceptor semantics from T2 catalog, pinned
+  fingerprint TrustManager + lenient hostname verifier (oq3 analog),
+  HandshakeMode config (NONE default — synergy handshake is a T4 unknown;
+  do NOT assume kdeconnect frames), @Ignore("T4") live probe, unit tests.
+
+### 2026-11-13 03:0x UTC — agent-0
+- STATUS: WORKING (SUITE LOCK taken: adb device + LAN capture)
+- TASK: T4 — Wine capture, phase 1 begins
+- FILES: docs/re/t4-capture-plan.md
+- WHAT: Aryan started the client under Wine — hit .NET Framework 4 dialog
+  (HRESULT 0x80070490). Fix in flight: winetricks dotnet48 into dedicated
+  prefix ~/tools/wine-ec0 (bg) + frida-tools user install (bg). Capture plan
+  written (3 phases: topology no-root → frida user-space → sudo tcpdump).
+  Workers: phone/LAN capture windows will be announced in log; avoid adb
+  during those windows. T10/T11 unaffected.
