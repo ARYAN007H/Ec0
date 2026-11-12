@@ -1,0 +1,60 @@
+// Reconstructed from decompiled protobuf-generated Java (OPSynergy 17.7.35,
+// com.oplus.linker.synergy.Clipboard outer class). See
+// docs/re/synergy-proto-reconstruction.md for methodology and confidence notes.
+syntax = "proto3";
+
+package com.oplus.linker.synergy;
+
+option java_multiple_files = false;
+option java_outer_classname = "Clipboard";
+option java_package = "com.oplus.linker.synergy";
+
+// Clipboard payload pushed to the phone by the PC.
+message ClipData {
+  bytes data = 1;                       // raw clipboard content
+  int32 feature = 2;                    // clipboard feature/format code (unknown)
+  repeated UriRawInfo uri_raw_info = 3; // attached URI metadata (shared files)
+}
+
+// One URI entry attached to a ClipData (e.g. shared image on the phone).
+message UriRawInfo {
+  string uri = 1;
+  string extension = 2;
+  string mime_type = 3;
+  int64 size = 4;
+}
+
+// Generic int wrapper used as the getClipData request ("which clipboard type").
+message Type {
+  int32 type = 1;
+}
+
+// Generic int status returned by copyToClip.
+message Result {
+  int32 status = 1;
+}
+
+// Request for one URI's content (cancel flag to abort a pending request).
+message Uri {
+  string uri = 1;
+  bool cancel = 2;
+}
+
+// Streamed content of one URI.
+message UriContent {
+  int32 error_code = 1;   // 0 = success (values unknown)
+  string uri = 2;
+  bytes buffer = 3;       // chunk of the URI content
+}
+
+service ClipBoardService {
+  // PC streams clipboard data to the phone, phone acknowledges.
+  rpc copyToClip (stream ClipData) returns (Result);
+  // Phone streams clipboard data to the PC.
+  rpc getClipData (Type) returns (stream ClipData);
+}
+
+service ClipboardFileService {
+  // PC requests content of URIs attached to clipboard data.
+  rpc getUriContent (stream Uri) returns (stream UriContent);
+}
