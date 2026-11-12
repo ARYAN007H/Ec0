@@ -2,11 +2,24 @@ package ec0.core.synergy
 
 /**
  * Transport constants reverse-engineered from com.oplus.linker 17.7.35
- * (base/socket/WebSocketConnectManager.java) — see docs/re/oplus-connect-findings.md §7.1.
+ * (base/socket/WebSocketConnectManager.java) — see docs/re/oplus-connect-findings.md §7.1
+ * and docs/re/synergy-catalog.yaml (reviewer-verified vs embedded constants).
  */
 object SynergyTransport {
-    /** WebSocket port fallback chain (RetryAndChangePortInterceptor). */
-    val PORT_FALLBACK_CHAIN: List<Int> = listOf(39_888, 49_888, 59_888, 8_792)
+    /**
+     * Default WebSocket port lists per peer profile, faithful to source
+     * (duplicates included — RetryAndChangePortInterceptor walks list order,
+     * RetryCount = list.size()). WSCM.java:267 (computer) / :481 (pad).
+     */
+    val COMPUTER_PORT_LIST: List<Int> = listOf(80_80, 39_888, 80_80, 49_888, 59_888)
+    val PAD_PORT_LIST: List<Int> = listOf(8_792, 39_888, 8_792, 49_888, 59_888)
+
+    /** Scene override port (WebSocketScene.java:190 — synergy.mServerPort = "8792"). */
+    const val SCENE_PORT = 8_792
+
+    /** Pinned TLS certs bundled as APK assets (WSCM.java:447/:477 — trustManagerForCertificates). */
+    const val CERT_ASSET_COMPUTER = "server.cer"
+    const val CERT_ASSET_PAD = "server_pad.cer"
 
     /** SoftAP gateway subnets used when Wi-Fi Direct / hotspot transport is active. */
     const val SOFTAP_GATEWAY_HOTSPOT = "192.168.137.1"

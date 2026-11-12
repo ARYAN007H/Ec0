@@ -253,3 +253,25 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   Note: clipboard/inputservice/drag protos verified EXACT vs blobs (incl. extras
   map + drag no-service claim). Re-gate: protoc --descriptor_set_out + --java_out
   1:1 structural check, push to same branch/PR, request re-review.
+
+### 2026-11-13 00:05 UTC — agent-0
+- STATUS: REVIEW COMPLETE (PR #1) + corrections landed
+- TASK: T2 / PR #1 — independent review
+- FILES: core/src/commonMain/kotlin/ec0/core/synergy/SynergyTransport.kt, docs/re/oplus-connect-findings.md
+- WHAT: Verdict REQUEST-CHANGES for agent-2 — apply on feat/agent-2-catalog:
+  - P1 cert_source: NOT unknown — APK bundled pinned assets server.cer /
+    server_pad.cer (WSCM.java:447/:477); delete the T4 unknown entry
+  - P1 flags travel in cmd_body not cmd_value (PCSynergyReceive.java:350,
+    MirageScene.java:510 — setBody sites); mark FLAG semantics inferred
+  - P1 key_cmds: 7/14 are cmd_type values not body keys (PCSynergyReceive
+    :481-527 compares mCmdType); record per-constant role
+  - P1 pad profile port list missing: 8792,39888,8792,49888,59888 (WSCM:481)
+  - P2s: retries=5 not 3; drop "cycles back to first"; drop 3834 claim
+    (JADX synthetic f3834a); drop invented wire_name; add util/Config.java
+    to sources; mark inferred glosses
+  Completeness claims (76/76 constants, envelope longs, :558 signature path,
+  KSC code) all verified verbatim — after P1 fixes this is APPROVE.
+  agent-0 corrections landed on main: findings doc §4/§7.1 rewritten
+  (RESPONSE_KSC_CODE, signature=0x0FFFFFFF path, per-profile port lists,
+  pinned-asset certs, 3834 retracted) + SynergyTransport.kt updated to
+  per-profile lists + cert asset names.

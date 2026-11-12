@@ -66,12 +66,12 @@ De-risk order: (1) static protocol extraction from decompiled APK (websocket pat
 
 ## 7.1 Transport details (static pass 2, 2026-11-12)
 
-- **WebSocket client**: OkHttp (`base/socket/WebSocketConnectManager.java`). Separate clients via `buildWebClientForComputer` / `buildWebClientForPad`; `RetryAndChangePortInterceptor` + `RetryInterceptor` = **port fallback chain**.
-- **Ports** (socket layer constants): **39888, 49888, 59888, 8792**, plus 8080; SoftAP gateways `192.168.137.1` (hotspot) / `192.168.49.*` (Wi-Fi Direct group).
-- **TLS**: `trustManagerForCertificates(InputStream)` — custom certificate trust loaded from pairing (pairing exchanges certs; WSS).
-- **Envelope** (confirmed): JSON `{cmd, info, msg_body, msg_type, noncestr, signature, src_role, timestamp}`; 32-char `"000...0"` default key constant present (fallback/degraded crypto path).
+- **WebSocket client**: OkHttp (`base/socket/WebSocketConnectManager.java`). Separate clients via `buildWebClientForComputer` / `buildWebClientForPad`; `RetryAndChangePortInterceptor` = **port fallback walk** (RetryCount = list.size(); duplicates in source lists are intentional).
+- **Ports** (reviewer-verified): computer profile list `8080, 39888, 8080, 49888, 59888` (WSCM:267); pad profile list `8792, 39888, 8792, 49888, 59888` (WSCM:481); scene override port **8792** (WebSocketScene:190). SoftAP gateways `192.168.137.1` (hotspot) / `192.168.49.*` (Wi-Fi Direct group).
+- **TLS** (reviewer-verified): `trustManagerForCertificates` loads **APK-bundled pinned assets** — `assets/server.cer` (computer profile, WSCM:447) and `assets/server_pad.cer` (pad profile, WSCM:477). NOT pairing-exchanged at the WS layer; extract both assets for the protocol spec.
+- **Envelope** (confirmed, reviewer-verified): JSON `{cmd, info, msg_body, msg_type, noncestr, signature, src_role, timestamp}`; `noncestr`/`signature` are **longs**; base send path (WebSocketConnectManager:558) uses constant `signature=0x0FFFFFFF (268435455)` + `nonce = Random(timestamp).nextLong()` — strong signing reserved for specific scenes. `RESPONSE_KSC_CODE` (32 zeros, PCSynergyConnection:63) is a response **code**, not key material. Category key `"category"`; `src_role` value `" synergy"` (Config.java:293).
 - **Discovery**: `com.oplus.pantaconnect.sdk.internal.discovery` (`ServiceDiscoverySdkExtension`, `ServiceDiscoveryOptions`) — abstracted multi-transport advertising (`advertiseType`, `advertiseParams`); intent actions `com.oplus.pantaconnect.device.discovery` / `com.oplus.pantaconnect.service.discovery`. Concrete mDNS service names NOT statically evident — extract dynamically.
-- Cast relay scene key: `APPLICATION_CAST_RELAY`; legacy port candidate 3834 (`wiseconnect/connectold`, `senseless`).
+- Cast relay scene key: `APPLICATION_CAST_RELAY`.
 
 ## 8. Dynamic capture plan (next phase, no phone modding needed)
 
