@@ -17,6 +17,8 @@ data class UiDevice(
     val fingerprint: String,
     /** LAN address the announcement came from (empty for demo devices). */
     val hostAddress: String = "",
+    /** Wire scheme of the peer's server: "http" or "https" (from its announce). */
+    val wireProtocol: String = "http",
     val download: Boolean = false,
     val online: Boolean = true,
 )

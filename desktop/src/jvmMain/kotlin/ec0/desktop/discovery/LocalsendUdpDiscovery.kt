@@ -97,6 +97,7 @@ class LocalsendUdpDiscovery(
                         port = msg.port,
                         fingerprint = msg.fingerprint,
                         hostAddress = packet.address.hostAddress ?: "",
+                        wireProtocol = msg.protocol.wire,
                         download = msg.download,
                         online = true,
                     )

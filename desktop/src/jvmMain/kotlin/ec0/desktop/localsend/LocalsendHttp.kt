@@ -1,6 +1,5 @@
 package ec0.desktop.localsend
 
-import ec0.core.localsend.LocalsendSecurity
 import ec0.core.localsend.LocalsendV2
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
@@ -125,12 +124,12 @@ class LocalsendHttp(
     }
 
     private fun open(peer: UiDevice, pathWithQuery: String, method: String): HttpURLConnection {
-        val url = URL("${peer.protocol.wire}://${peer.hostAddress}:${peer.port}$pathWithQuery")
+        val url = URL("${peer.wireProtocol}://${peer.hostAddress}:${peer.port}$pathWithQuery")
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = method
         conn.connectTimeout = connectTimeoutMs
         conn.readTimeout = readTimeoutMs
-        if (peer.protocol.wire == "https") {
+        if (peer.wireProtocol == "https") {
             (conn as HttpsURLConnection).apply {
                 sslSocketFactory = pinnedFactory(peer.fingerprint)
                 // identity is the pinned certificate, not the name

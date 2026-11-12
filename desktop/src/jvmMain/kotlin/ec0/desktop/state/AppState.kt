@@ -73,10 +73,7 @@ class DemoDeviceSource : DeviceSource {
 /** Root observable state for the whole window. */
 class AppState(
     private val scope: CoroutineScope,
-    private val deviceSource: DeviceSource = RealDeviceSource(
-        settingsProvider = { settings.value },
-        synergyProbe = SynergyDiscoveryProbe(enabled = { settings.value.synergyProbeEnabled }),
-    ),
+    deviceSource: DeviceSource? = null,
 ) {
     private val _devices = MutableStateFlow<List<UiDevice>>(emptyList())
     val devices: StateFlow<List<UiDevice>> = _devices.asStateFlow()
@@ -91,6 +88,12 @@ class AppState(
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
     private val http = LocalsendHttp()
+
+    // Built after construction so the lambdas can read `settings` lazily.
+    private val deviceSource: DeviceSource = deviceSource ?: RealDeviceSource(
+        settingsProvider = { settings.value },
+        synergyProbe = SynergyDiscoveryProbe(enabled = { settings.value.synergyProbeEnabled }),
+    )
 
     private var scanJob: Job? = null
     private var tickerJob: Job? = null

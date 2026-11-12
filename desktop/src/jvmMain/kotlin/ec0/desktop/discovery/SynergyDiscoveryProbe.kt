@@ -1,8 +1,8 @@
 package ec0.desktop.discovery
 
-import ec0.core.synergy.Profile
-import ec0.core.synergy.SynergyHandshake
 import ec0.core.synergy.SynergyWsClient
+import ec0.core.synergy.SynergyWsClient.Profile
+import ec0.core.synergy.SynergyWsClient.SynergyHandshake
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.logging.Logger
