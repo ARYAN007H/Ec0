@@ -11,6 +11,15 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
+            // HTTP + sockets for the LocalSend (T5) and KDE Connect (T6) ports
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.ktor.server.core)
+            implementation(libs.ktor.server.cio)
+            implementation(libs.ktor.network)
+        }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
         }
     }
 
