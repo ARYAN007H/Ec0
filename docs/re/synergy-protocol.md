@@ -33,11 +33,14 @@ before implementation relies on them.
 │   SoftAP gateways: 192.168.137.1 (hotspot) · 192.168.49.*   │
 │   (Wi-Fi Direct group)                                      │
 ├─────────────────────────────────────────────────────────────┤
-│ TLS: pinned APK-bundled certs (server.cer = server_pad.cer, │
-│   DER-in-APK, vendored PEM in docs/re/certs/) — X.509       │
-│   CN=192.168.137.1, O=oppo, sha256 A8:92:CC:AC...68:D9      │
-│   → phone presents this cert when acting as TLS server on   │
-│   its SoftAP gateway; client trusts it via pinned asset     │
+│ TLS: pinned APK-bundled certs, PER PROFILE (reviewer-       │
+│   verified, PR#7): computer = server.cer → CN=192.168.137.1 │
+│   (SoftAP gateway), sha256 a892ccac…68d9; pad =             │
+│   server_pad.cer → CN=192.168.49.1 (Wi-Fi Direct subnet),   │
+│   sha256 afc50cd2…f0ea. PEMs vendored in docs/re/certs/.    │
+│   Upstream per-profile host verifiers whitelist the two CNs │
+│   (WSCM:289-294 / :297-305). Earlier "identical certs"      │
+│   claim was WRONG — corrected 2026-11-13 (PR#7 review).     │
 ├─────────────────────────────────────────────────────────────┤
 │ Discovery: pantaconnect SDK advertising layer               │
 │   [T4] concrete mDNS service names/types UNKNOWN statically │

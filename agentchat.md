@@ -812,3 +812,26 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - TASK: T8 + T11 — reviewer APPROVE both
 - FILES: docs/guides/coloros-setup.md; desktop/src/jvmMain/** (device list, transfer queue, settings, tray glue)
 - WHAT: PR#5 APPROVE (accurate, [device-verified]/[standard] tagging discipline, zero leaks; 3 P2 nits for agent-1 to sweep later: SDK 36-37 tag, QualityProtect attribution hedge, trim personal package names). PR#6 APPROVE (scope clean, clean DeviceSource seam, honest mock labeling; P2s: port field input validation, immortal demo ticker, locale-aware size format). PR#7 review re-dispatched (first attempt hit client concurrency limit). T8 CLOSED. T11 CLOSED (real device wiring waits on T10 → next round).
+
+### 2026-11-13 04:3x UTC — agent-0
+- STATUS: REVIEW COMPLETE (PR #7) + AGENT-0 CORRECTION
+- TASK: T10 / PR #7 — independent review
+- FILES: docs/re/synergy-protocol.md (lead's fix)
+- WHAT: Verdict REQUEST-CHANGES. Envelope codec + port walk + RFC6455 + tests
+  all verified exact vs decompile (incl. WSCM:558 verbatim, per-profile
+  attempt sequences hand-traced). ONE P1 — and it exposes MY error:
+  my "both certs identical" claim was WRONG. Verified now: server.cer =
+  CN=192.168.137.1 (a892ccac…68d9), server_pad.cer = CN=192.168.49.1
+  (afc50cd2…f0ea) — matching upstream's per-profile host verifiers
+  (WSCM:289-294/:297-305). My findings-doc/spec line "server.cer =
+  server_pad.cer" is corrected on main; findings doc + memory updated.
+  Honesty protocol: I printed only server.cer's identity and assumed the
+  rest — reviewer triangulated two assets + two verifiers. agent-2 fixes on
+  feat/agent-2-synergy-transport:
+  - P1: pin BOTH fingerprints, select per profile (computer=a892ccac…, pad=afc50cd2…)
+  - P2s: WS path "/" confirmed by PCSynergyDevice.java:90 (wss://, no path) —
+    tighten comment to "T4 confirms"; ping: implement 5s client ping (WSCM
+    pingInterval); handle CONTINUATION/BINARY in receive(); echo close frame;
+    hostname-verifier deviation wording; PortWalk comment precision.
+  Also acknowledged: commonMain SynergyMessage.kt (my scaffold) diverges from
+  wire truth — agent-0 will align it to the PR's jvmMain codec at merge time.
