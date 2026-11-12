@@ -946,3 +946,75 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   no mixed junit5 annotations, constructor injection not allowed. agent-2:
   fix test class structure on feat/agent-2-grpc-clients. CI green on BOTH
   branches BEFORE review dispatch (new hub rule).
+
+### 2026-11-13 05:45 UTC — agent-2
+- STATUS: DONE (PR #8 open, review requested)
+- TASK: T12 — Synergy gRPC service clients
+- FILES: core/src/jvmMain/kotlin/ec0/core/synergy/rpc/{ClipboardRpc,FileInputRpc,SynergyRpcEndpoint}.kt, core/src/jvmTest/kotlin/ec0/core/synergy/rpc/{FakeGrpcChannel,ClientsTest}.kt, docs/re/synergy-rpc.md
+- WHAT: Four transport-injected adapters over generated grpc-kotlin coroutine
+  stubs: ClipboardClient (copyToClip client-stream, getClipData
+  server-stream, copyToClipText convenience), ClipboardFileClient (bidi
+  getUriContent), FileClient (unary create/delete/open, readFile
+  server-stream, writeFile bidi, readFileBytes/writeBytes conveniences),
+  InputClient (inputToTextbox, sendText). SynergyRpcEndpoint.resolve() walks
+  T10 ports + pinned TLS handshake to hand (host, port) to the future
+  ManagedChannel (transport artifact = T13; adapters stay Channel-injected).
+  Tests: FakeGrpcChannel implements io.grpc.Channel/ClientCall in-memory —
+  REAL generated stubs run against it (flow-control shaped onMessage drain,
+  status propagation); 13 tests incl. wire-content assertions (UTF-8
+  payloads, sint64 zigzag roundtrip, fullMethodName checks) + error
+  propagation. HONESTY: 7 CI runs to green. Failures: grpc-kotlin layout
+  (coroutine stubs are TOP-LEVEL in *GrpcKt, messages NESTED under outer
+  classes w/ java_multiple_files=false), missing Flow.fold import,
+  onReady() no-arg + generic bounds in the fake, @Test-void rule
+  (assertFailsWith-as-tail-expression → InvalidTestClassError), and
+  grpc-kotlin throws StatusException not StatusRuntimeException. All
+  disclosed; every fix verified by the next run. CI GREEN @15af8b5
+  (run 43311072146). PR https://github.com/ARYAN007H/Ec0/pull/8.
+
+### 2026-11-13 06:00 UTC — agent-2
+- STATUS: DONE (no new push needed — verification entry)
+- TASK: T12 / PR #8 — CI InvalidTestClassError diagnosis
+- FILES: (verification only)
+- WHAT: The reported failure matches run 43310765775 (@3feee2e) — root cause
+  was two @Test methods returning assertFailsWith's value (non-void →
+  InvalidTestClassError). Already fixed: 8254cc2 (void-returning + status
+  assertion) + 15af8b5 (StatusException not SRE). Full re-audit of ALL
+  jvmTest classes against every listed rule: @Test methods public/void/no-arg
+  (scripted scan: zero suspicious tails), no junit4/junit5 mixing (uniform
+  kotlin.test imports, zero jupiter references), no constructor injection.
+  PR #8 head 15af8b5 — CI run 43311072146 SUCCESS. No empty push made;
+  requesting lead confirm merge on this state.
+
+### 2026-11-13 06:12 UTC — agent-1
+- STATUS: DONE (PR #9, CI GREEN run 43311915360, review requested)
+- TASK: T13 — Desktop real device source (classpath fix + DTO-shape fixes)
+- FILES: desktop/src/jvmMain/kotlin/ec0/desktop/{discovery/{LocalsendUdpDiscovery,
+  SynergyDiscoveryProbe,RealDeviceSource}.kt, localsend/LocalsendHttp.kt,
+  state/{AppState,UiModels}.kt, ui/{Ec0Window,SettingsPanel}.kt}
+- WHAT: Merged main (lead's serialization dep landed — the "unresolved
+  fingerprint/port" errors were cascades of the error-typed decode, my DTO
+  shape was already correct). Remaining errors fixed: (1) T10 symbols are
+  NESTED — imports now ec0.core.synergy.SynergyWsClient.{Profile,
+  SynergyHandshake}; (2) UiDevice gained wireProtocol ("http"/"https" from
+  the announce — UI ProtocolFamily ≠ wire scheme, LocalsendHttp now builds
+  URLs + pins TLS off wireProtocol); (3) AppState builds RealDeviceSource in
+  the class body (Kotlin default params can't reference instance members —
+  my { settings.value } lambdas were illegal in defaults). SUITE LOCK: none.
+  Working end-to-end today: LocalSend peers on the LAN appear in Devices via
+  UDP sweep; Send → file dialog → prepare-upload → upload w/ progress →
+  DONE; 401/403/204 map to honest error labels; Synergy stays behind the
+  seam (Settings switch, empty until T4). HONESTY: 2 CI runs this round
+  (cascade misdiagnosis corrected by full error read). DemoDeviceSource
+  retained for UI-only dev. PR https://github.com/ARYAN007H/Ec0/pull/9.
+
+### 2026-11-13 05:3x UTC — agent-0
+- STATUS: REVIEWS DISPATCHED (PRs #8, #9 — both CI green)
+- TASK: T12 (gRPC clients) + T13 (real device source)
+- FILES: (review only)
+- WHAT: PR#8 green after agent-2's fixes (test class structure + grpc-kotlin
+  integration: coroutine stub layout, Flow.fold, onReady signature, StatusException);
+  reviewer dispatched (contract fidelity vs protos + T10 integration + fake-channel
+  quality). PR#9 green after agent-1's rebase (lead's desktop classpath fix +
+  DTO alignment); reviewer dispatched (Localsend discovery correctness vs merged
+  DTOs, T4 seam discipline, resource lifecycle). Merges on APPROVE.
