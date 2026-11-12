@@ -86,6 +86,31 @@ class IdentityPacketTest {
     }
 
     @Test
+    fun testDefaultProtocolVersionIsCurrent() {
+        // P1 review fix: identities must advertise the CURRENT protocol
+        // version (upstream DeviceHelper.PROTOCOL_VERSION = 8, DeviceHelper.kt:31)
+        // — defaulting to 0 would push peers onto the legacy pairing path
+        // (no timestamp check, v7 verification key).
+        assertEquals(8, DeviceIdentity.PROTOCOL_VERSION)
+        assertEquals(8, DeviceIdentity(id = "x", name = "x", type = DeviceType.PHONE).protocolVersion)
+    }
+
+    @Test
+    fun testTcpHandshakeFields() {
+        // Upstream LanLinkProvider:259-261: TCP identity carries targetDeviceId
+        // and targetProtocolVersion (peer's version echoed as a STRING).
+        val self = identity.copy(id = "ee061a75_e403_4ecc_9261_5ffe2722f698")
+        val frame = Discovery.buildTcpHandshakeFrame(self, identity)
+        val np = NetworkPacket.unserialize(frame)
+        assertEquals("myid", np.getString("targetDeviceId"))
+        assertEquals("12", np.getString("targetProtocolVersion")) // wire value is a string
+
+        val parsed = Discovery.parseIdentityFrame(frame)!!
+        assertEquals("myid", parsed.targetDeviceId)
+        assertEquals(12, parsed.targetProtocolVersion) // coerced back to Int
+    }
+
+    @Test
     fun testIsValidIdentityPacket() {
         // Valid 36-char id (upstream cert CN shape) for the positive case —
         // the short-id identity fixture above is invalid per the device-id

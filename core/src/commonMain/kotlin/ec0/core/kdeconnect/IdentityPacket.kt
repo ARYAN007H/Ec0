@@ -39,14 +39,23 @@ data class DeviceIdentity(
     val id: String,
     val name: String,
     val type: DeviceType,
-    val protocolVersion: Int = 0,
+    /** Defaults to the current protocol version (upstream DeviceHelper.PROTOCOL_VERSION). */
+    val protocolVersion: Int = PROTOCOL_VERSION,
     val incomingCapabilities: Set<String>? = null,
     val outgoingCapabilities: Set<String>? = null,
     /** Present when the identity packet advertises a TCP listener (discovery). */
     val tcpPort: Int? = null,
+    /**
+     * TCP handshake only (upstream LanLinkProvider:259-261): the id of the
+     * device this connection was opened for, and the peer's protocolVersion
+     * echoed back for a pre-connect compatibility check (:180-187).
+     */
+    val targetDeviceId: String? = null,
+    val targetProtocolVersion: Int? = null,
 ) {
     /**
-     * Serializes to a NetworkPacket — 1:1 with upstream DeviceInfo.toIdentityPacket().
+     * Serializes to a NetworkPacket — 1:1 with upstream DeviceInfo.toIdentityPacket()
+     * (+ the TCP handshake fields upstream adds at LanLinkProvider:259-261).
      * The certificate is intentionally not part of the packet; peers read it
      * from the TLS session (upstream: "LanLink can query that from the socket").
      */
@@ -58,9 +67,19 @@ data class DeviceIdentity(
         if (incomingCapabilities != null) np["incomingCapabilities"] = incomingCapabilities
         if (outgoingCapabilities != null) np["outgoingCapabilities"] = outgoingCapabilities
         if (tcpPort != null) np["tcpPort"] = tcpPort
+        if (targetDeviceId != null) np["targetDeviceId"] = targetDeviceId
+        if (targetProtocolVersion != null) np["targetProtocolVersion"] = targetProtocolVersion.toString()
     }
 
     companion object {
+        /**
+         * Current KDE Connect protocol version — upstream
+         * `DeviceHelper.PROTOCOL_VERSION` (DeviceHelper.kt:31). Version 8
+         * gates the pairing-timestamp check and the newer verification key
+         * (see Pairing.kt); identities advertising 0 take the legacy path.
+         */
+        const val PROTOCOL_VERSION = 8
+
         // Upstream DeviceHelper: strip punctuation, trim, cap at 32 chars.
         private val NAME_INVALID_CHARACTERS_REGEX = "[\"',;:.!?()\\[\\]<>]".toRegex()
         const val MAX_DEVICE_NAME_LENGTH = 32
@@ -75,7 +94,8 @@ data class DeviceIdentity(
 
         /**
          * Rebuilds a DeviceIdentity from an identity packet — 1:1 with upstream
-         * DeviceInfo.fromIdentityPacketAndCert() minus the certificate.
+         * DeviceInfo.fromIdentityPacketAndCert() minus the certificate (+ the
+         * TCP handshake fields upstream sets at LanLinkProvider:259-261).
          */
         fun fromIdentityPacket(identityPacket: NetworkPacket): DeviceIdentity = with(identityPacket) {
             DeviceIdentity(
@@ -86,6 +106,10 @@ data class DeviceIdentity(
                 incomingCapabilities = getStringSet("incomingCapabilities"),
                 outgoingCapabilities = getStringSet("outgoingCapabilities"),
                 tcpPort = getIntOrNull("tcpPort"),
+                // Upstream writes targetProtocolVersion as a string (echo of the
+                // peer's protocolVersion) — the int accessor coerces it back.
+                targetDeviceId = getStringOrNull("targetDeviceId"),
+                targetProtocolVersion = getIntOrNull("targetProtocolVersion"),
             )
         }
 

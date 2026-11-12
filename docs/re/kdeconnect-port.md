@@ -36,17 +36,25 @@ Evidence (upstream file → behavior):
   protocolVersion, deviceType, incomingCapabilities, outgoingCapabilities`.
 - `DeviceInfo.kt:116` device-id regex `^[a-zA-Z0-9_-]{32,38}$`;
   `DeviceHelper.kt:41-42` name filter `["',;:.!?()\[\]<>]` + trim + max 32.
+- `DeviceHelper.kt:31` **`PROTOCOL_VERSION = 8`** — ec0's `DeviceIdentity`
+  defaults to it (review P1: defaulting to 0 would push peers onto the legacy
+  pre-v8 pairing path — PairingHandler.kt:71-85/:119-129).
 - `PairingHandler.kt:169-173` pair-request body `{"pair":true,"timestamp":<epoch s>}`;
-  `:197-199` accept body `{"pair":true}`; `:210-212` unpair `{"pair":false}`;
-  `:244` clock skew ±1800 s (protocol ≥ 8, `:71-85`); timeouts 30 s requester /
-  25 s acceptor.
+  `:197-199` accept body `{"pair":true}`; `:232-234` unpair `{"pair":false}`
+  (`:202-213` is cancelPairing — same packet shape, different lifecycle);
+  clock skew ±1800 s gated on protocol ≥ 8 (`:71-85`); timeouts: 30 s requester
+  timer (`:153`), 25 s incoming-request timer (`:90`).
 - `PairingHandler.kt:246-271` verification key: SHA-256 over
   `sortedConcat(pubA, pubB) [+ timestamp-as-text]`, lowercase hex, first 8
   chars uppercased.
 - `LanLinkProvider.kt:664-671` constants: UDP 1716, MIN 1716, MAX 1764,
   payload-transfer min 1739, 512 KiB identity/UDP caps, 1000 ms same-device
   reconnect delay; `:247-255` tcpPort range check + TCP connect; `:539` tcpPort
-  added to broadcast identity.
+  added to broadcast identity; `:541-543` the UDP datagram is
+  `identity.serialize()` bytes — **including the trailing newline**;
+  `:255-262` TCP identity additionally carries `targetDeviceId` + the peer's
+  `protocolVersion` echoed as `targetProtocolVersion` (string, validated by
+  the listener at `:180-187`).
 
 ## Interop test vectors (the hard guarantee)
 
@@ -79,15 +87,19 @@ FIPS 180-4 vectors (empty / abc / 448-bit / 896-bit) independently of pairing.
 4. **Capabilities/tcpPort null-safety.** Upstream `toIdentityPacket()` uses
    `incomingCapabilities!!` (NPEs on null). ec0 omits null fields instead —
    wire-equivalent for the populated case, no crash path.
-5. **No pairing coroutine handler.** `PairingHandler`'s state machine needs
+5. **Protocol version default.** Upstream `DeviceInfo.protocolVersion = 0` is
+   a persistence placeholder (filled from settings before use); ec0 defaults
+   to `DeviceHelper.PROTOCOL_VERSION` (8) per review P1 so identities never
+   advertise the legacy pairing path.
+6. **No pairing coroutine handler.** `PairingHandler`'s state machine needs
    Device/callback/coroutine context (Android-flavored). ec0 ports the pure
    model (packets, states, constants, key derivation); the driven state
    machine lands with the transport integration task.
-6. **No X.509 in commonMain.** Cert generation/parsing (bouncycastle,
+7. **No X.509 in commonMain.** Cert generation/parsing (bouncycastle,
    `SHA512withRSA`, CN=deviceId, OU="KDE Connect", O="KDE", −1 y/+10 y
    validity, `SslHelper.kt:100-146`) stays platform-side. commonMain only
    hashes raw bytes (SPKI/cert DER) — which is all the protocol math needs.
-7. **No decode-depth guard yet.** Upstream's JSON config sets
+8. **No decode-depth guard yet.** Upstream's JSON config sets
    `maxNestingDepth = 64`; the serialization library version pinned in this
    repo's catalog (1.7.3) predates that knob — re-add when bumped.
 
@@ -98,3 +110,8 @@ FIPS 180-4 vectors (empty / abc / 448-bit / 896-bit) independently of pairing.
 - UDP broadcast loop, TCP listener accept loop, rate limiting implementation
   (`Discovery.kt` documents the contract; ktor-network wiring lands later).
 - Plugin capability strings beyond carrying them opaquely in identity packets.
+- `NetworkPacket.isCanceled`/`cancel()` — upstream cancellation flag used by
+  payload-stream consumers; meaningless without stream plumbing (returns with
+  the transport layer).
+- `backends/lan/MdnsDiscovery.kt` — upstream's mDNS advertising backend
+  (complements the UDP broadcast discovery); a separate transport-layer task.

@@ -18,10 +18,18 @@ package ec0.core.kdeconnect
  *    port up to [MAX_PORT]) and a UDP listener on [UDP_PORT].
  * 2. It periodically broadcasts its identity packet — with `tcpPort` set to
  *    the TCP listener port — to 255.255.255.255 and to each interface's
- *    broadcast address, on port [UDP_PORT]. Self-packets are filtered.
+ *    broadcast address, on port [UDP_PORT]. Self-packets are filtered. The
+ *    datagram is `identity.serialize()` bytes — INCLUDING the trailing
+ *    newline (LanLinkProvider:541-543; upstream TODO notes protocol v8 may
+ *    drop identity from this packet entirely since v8 re-exchanges identity
+ *    after the socket is encrypted).
  * 3. On receiving a broadcast: validate identity, validate `tcpPort` in
  *    [MIN_PORT]..[MAX_PORT], open TCP to (source ip, tcpPort) and immediately
- *    send own identity as the first TCP message.
+ *    send own identity as the first TCP message — augmented with
+ *    `targetDeviceId` (the peer's deviceId) and `targetProtocolVersion` (the
+ *    peer's protocolVersion echoed as a string) per LanLinkProvider:259-261.
+ *    The listener rejects connections whose `targetProtocolVersion` differs
+ *    from its own (:180-187).
  * 4. The TCP listener treats the first received packet as the peer's
  *    identity packet (may carry `targetDeviceId` when the connection was
  *    made in response to a specific device's broadcast).
@@ -41,12 +49,22 @@ object Discovery {
 
     /**
      * Builds the UDP broadcast frame: identity packet body + tcpPort.
-     * Note: upstream sends the serialized packet *without* the trailing
-     * newline over UDP (DatagramPacket of serialize().trimEnd bytes is
-     * equivalent; unserialize ignores the terminator either way).
+     * Wire-identical to upstream LanLinkProvider:539-543 — the trailing
+     * newline from serialize() is part of the datagram.
      */
     fun buildBroadcastFrame(identity: DeviceIdentity, tcpPort: Int): String =
         identity.copy(tcpPort = tcpPort).toIdentityPacket().serialize()
+
+    /**
+     * Builds the first-packet-over-TCP identity (upstream LanLinkProvider:
+     * 255-262): own identity + `targetDeviceId` + `targetProtocolVersion`
+     * (the peer's protocolVersion, echoed — upstream writes it as a string).
+     */
+    fun buildTcpHandshakeFrame(self: DeviceIdentity, peer: DeviceIdentity): String =
+        self.copy(
+            targetDeviceId = peer.id,
+            targetProtocolVersion = peer.protocolVersion,
+        ).toIdentityPacket().serialize()
 
     /**
      * Parses a received UDP/TCP identity frame; returns null if it is not a
@@ -59,14 +77,10 @@ object Discovery {
         } catch (_: kotlinx.serialization.SerializationException) {
             return null
         }
-        if (!IdentityPacketCompanionAccess.isValid(np)) return null
+        if (!DeviceIdentity.isValidIdentityPacket(np)) return null
         return DeviceIdentity.fromIdentityPacket(np)
     }
 
     /** Upstream tcpPort sanity check before opening a TCP connection. */
     fun isValidTcpPort(port: Int): Boolean = port in MIN_PORT..MAX_PORT
-}
-
-internal object IdentityPacketCompanionAccess {
-    fun isValid(np: NetworkPacket): Boolean = DeviceIdentity.isValidIdentityPacket(np)
 }

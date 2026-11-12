@@ -70,6 +70,16 @@ class Sha256Test {
     }
 
     @Test
+    fun millionAVector() {
+        // Canonical NIST test vector: SHA-256 over 1,000,000 'a' bytes.
+        // 15,625 blocks in pure Kotlin — a few hundred ms on JVM CI.
+        assertEquals(
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e047d5694e91fdc34",
+            sha256Hex("a".repeat(1_000_000)),
+        )
+    }
+
+    @Test
     fun colonHexFormatMatchesUpstreamCertificateHashStyle() {
         // Upstream SslHelper.getCertificateHash renders "%02x:" per byte with
         // trailing colon — same helper used for the fingerprint UI.
