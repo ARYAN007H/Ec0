@@ -64,7 +64,7 @@ Every constant from `protocol/SynergyCmd.java` is in the YAML. Grouped by theme:
 - **Session/lifecycle**: `synergy_disconnect`, `synergy_disconnect_bt`, `check_web_socket`, `api_level`, `synergy_os_config`, `sync_lock_status`, `split_screen_state`, `top_package_name`, `task_package_names`, `synergy_need_privacy_toast`, `synergy_show_privacy_toast` (info)
 - **VDC audio routing**: `vdc_audio_enable/disable`, `vdc_phone_init`, `vdc_audio_device_info*`, `vdc_audio_enable/disable_result*` (infos)
 
-Flag value reference (ints for `cmd_value`): see YAML `flags:` block.
+Flag values with transport slot (`cmd_body`, unverified): see YAML `flag_values:` block.
 
 ### 4.1 KEY_CMD_* classification (review-driven recheck, full-tree scan)
 
@@ -104,7 +104,7 @@ the YAML as `transport_slot: cmd_body` **marked unverified** — confirm in T4.
   **8792 → 39888 → 49888 → 59888** (8792 replaces 8080; also the scene server
   port used by `WebSocketScene` at :190/:212/:237).
 - **Fallback mechanism**: `RetryAndChangePortInterceptor` swaps the port inside
-  the URL across the list, then cycles back to the first port. **Retry count =
+  the URL across the list, then falls back to the first port. **Retry count =
   `list.size()` at the real call sites** (`new RetryAndChangePortInterceptor(str,
   list, list.size())` → **5** for the 5-entry lists); the 2-arg constructor
   default of 3 (`RetryAndChangePortInterceptor.java:20`) is not what call sites
