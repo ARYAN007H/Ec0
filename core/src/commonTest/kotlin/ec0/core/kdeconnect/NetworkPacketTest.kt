@@ -134,6 +134,6 @@ class NetworkPacketTest {
         assertEquals(listOf("a", "b"), np2.getStringList("list"))
         assertEquals(1, np2.getJsonObject("obj")?.get("x")?.toString()?.toInt())
         assertEquals(1.5, np2.getDouble("d"))
-        assertNull(np2.getDouble("missing", null))
+        assertEquals(Double.NaN, np2.getDouble("missing"))
     }
 }

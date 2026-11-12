@@ -69,7 +69,7 @@ class Sha256Test {
     fun colonHexFormatMatchesUpstreamCertificateHashStyle() {
         // Upstream SslHelper.getCertificateHash renders "%02x:" per byte with
         // trailing colon — same helper used for the fingerprint UI.
-        val bytes = byteArrayOf(0xde.toByte(), 0xad, 0x01, 0x0f)
+        val bytes = byteArrayOf(0xde.toByte(), 0xad.toByte(), 0x01, 0x0f)
         assertEquals("de:ad01:0f:", bytes.toColonHex())
     }
 }
