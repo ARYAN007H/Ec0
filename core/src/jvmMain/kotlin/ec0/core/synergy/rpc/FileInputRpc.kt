@@ -15,6 +15,7 @@ import com.oplus.linker.synergy.Inputservice
 import com.oplus.linker.synergy.InputServiceGrpcKt
 import io.grpc.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.fold
 
 /**
  * File operations on the phone from the PC. All status codes are
