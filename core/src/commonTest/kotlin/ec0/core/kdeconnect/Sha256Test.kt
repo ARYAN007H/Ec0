@@ -9,6 +9,8 @@ package ec0.core.kdeconnect
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class Sha256Test {
 
@@ -58,11 +60,13 @@ class Sha256Test {
         val input = "a".repeat(10_000)
         val d1 = Sha256.digest(input.encodeToByteArray())
         val d2 = Sha256.digest(input.encodeToByteArray())
-        assertEquals(d1, d2)
+        // NB: assertTrue(contentEquals) — kotlin.test assertEquals on ByteArray
+        // falls through to JVM reference equality.
+        assertTrue(d1.contentEquals(d2))
         assertEquals(32, d1.size)
         // sanity: differs from the 9999-'a' digest (padding boundary behavior)
         val d3 = Sha256.digest("a".repeat(9_999).encodeToByteArray())
-        assertEquals(false, d1.contentEquals(d3))
+        assertFalse(d1.contentEquals(d3))
     }
 
     @Test
@@ -70,6 +74,6 @@ class Sha256Test {
         // Upstream SslHelper.getCertificateHash renders "%02x:" per byte with
         // trailing colon — same helper used for the fingerprint UI.
         val bytes = byteArrayOf(0xde.toByte(), 0xad.toByte(), 0x01, 0x0f)
-        assertEquals("de:ad01:0f:", bytes.toColonHex())
+        assertEquals("de:ad:01:0f:", bytes.toColonHex())
     }
 }

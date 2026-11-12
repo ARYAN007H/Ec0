@@ -87,7 +87,16 @@ class IdentityPacketTest {
 
     @Test
     fun testIsValidIdentityPacket() {
-        assertTrue(DeviceIdentity.isValidIdentityPacket(identity.toIdentityPacket()))
+        // Valid 36-char id (upstream cert CN shape) for the positive case —
+        // the short-id identity fixture above is invalid per the device-id
+        // regex and is covered by the negative case below.
+        val validId = "ee061a75_e403_4ecc_9261_5ffe2722f698"
+        val valid = DeviceIdentity(
+            id = validId,
+            name = "myname",
+            type = DeviceType.PHONE,
+        )
+        assertTrue(DeviceIdentity.isValidIdentityPacket(valid.toIdentityPacket()))
 
         val np = identity.toIdentityPacket()
         np["deviceName"] = "   "
