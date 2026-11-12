@@ -35,7 +35,7 @@ class FakeGrpcChannel(private val behaviorFor: (MethodDescriptor<*, *>) -> FakeR
     override fun authority(): String? = "fake.synergy"
 }
 
-private class FakeClientCall<ReqT, RespT>(
+private class FakeClientCall<ReqT : Any, RespT : Any>(
     private val method: MethodDescriptor<ReqT, RespT>,
     private val behavior: FakeRpcBehavior,
     private val sentRequests: LinkedHashMap<String, MutableList<Any>>,
@@ -51,7 +51,7 @@ private class FakeClientCall<ReqT, RespT>(
 
     override fun start(listener: Listener<RespT>, headers: Metadata) {
         this.listener = listener
-        listener.onReady(Metadata()) // headers subset; content irrelevant to stubs
+        listener.onReady()
     }
 
     override fun request(numMessages: Int) {
