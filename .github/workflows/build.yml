@@ -32,5 +32,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ec0-desktop-linux
-          path: desktop/build/compose/binaries/main/**
+          path: desktop/build/compose/binaries/**
           if-no-files-found: warn
