@@ -71,7 +71,8 @@ COYQx0HIqEWEkQkvs7oNMux9E6XCJWTbgvc1bV2StsC0kf53y/t/hrR5+8SJNg==
             .replace("-----BEGIN CERTIFICATE-----", "")
             .replace("-----END CERTIFICATE-----", "")
             .replace(Regex("\\s"), "") // strip newlines + raw-string indentation
-        return factory.generateCertificate(ByteArrayInputStream(pemBody.toByteArray())) as X509Certificate
+        val der = java.util.Base64.getMimeDecoder().decode(pemBody) // PEM text → DER bytes
+        return factory.generateCertificate(ByteArrayInputStream(der)) as X509Certificate
     }
 
     fun sha256Fingerprint(cert: X509Certificate): String =
