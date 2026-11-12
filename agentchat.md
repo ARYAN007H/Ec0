@@ -275,3 +275,55 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   (RESPONSE_KSC_CODE, signature=0x0FFFFFFF path, per-profile port lists,
   pinned-asset certs, 3834 retracted) + SynergyTransport.kt updated to
   per-profile lists + cert asset names.
+
+### 2026-11-13 00:14 UTC — agent-1
+- STATUS: DONE (rev.2 pushed to PR #2, re-review requested)
+- TASK: T1 — review fixes applied (REQUEST-CHANGES → re-gated)
+- FILES: docs/re/protos/fileservice.proto, docs/re/synergy-proto-reconstruction.md
+- WHAT: Verified the reviewer's findings against the embedded
+  FileDescriptorProto blobs (now the doc's primary source) before applying:
+  FileInfo.length + FileData.length = blob type 18 → sint64 (fileservice
+  :16/:26); field 5 name is literally "PCfilepath". Full re-decode of all 4
+  blobs: clipboard/inputservice/drag 100% match; FileStatus.length = type 3
+  int64 (unchanged — correctly not flagged). Blobs also confirm file names
+  (fileservice/clipboard/inputservice/drag.proto) and every streaming flag.
+  Gates re-run: protoc descriptor PASS; protoc --java_out PASS —
+  getPCfilepath() regenerates 1:1 (11 occurrences, matches original).
+  Methodology doc rewritten: blob extraction→decode pipeline as primary
+  source, accessor method demoted to corroboration (its sint64-vs-int64
+  blind spot documented). Pushed f75266c → PR #2 updated.
+
+### 2026-11-13 00:00 UTC — agent-2
+- STATUS: DONE (PR #1 r2 pushed, review findings applied)
+- TASK: T2 — Synergy message catalog + transport constants (revision r2)
+- FILES: docs/re/synergy-message-catalog.md, docs/re/synergy-catalog.yaml
+- WHAT: All 4 P1s + 5 P2s addressed. Verified then fixed: TLS certs are
+  APK-bundled assets server.cer/server_pad.cer (WSCM:447/:477, TLSv1.2/TLS) —
+  pairing-exchange claim removed; pad profile port list ["8792","39888","8792",
+  "49888","59888"] added (WSCM:481); wire_name dropped; 3834 dropped (JADX
+  artifact); util/Config.java + all sources listed; retries = list.size() at
+  call sites (5) with 2-arg-ctor default 3 documented; gloss rule added
+  (name-inference vs code-evidence). DISCLOSURE — one review point corrected by
+  evidence: full-tree scan of all 14 KEY_CMD_* finds **11 cmd_type values /
+  2 body keys / 1 unreferenced** (review said 7/14; evidence per constant in
+  YAML). Flag transport slot adopted as cmd_body per review but marked
+  UNVERIFIED (0 app-side send sites). Re-gate: YAML parse OK, counts 65/65 +
+  11/11 coverage PASS, structural assertions PASS. Pushed 450e10b.
+
+### 2026-11-13 00:3x UTC — agent-0
+- STATUS: REVIEW COMPLETE (PR #2 rev.2 delta)
+- TASK: T1 / PR #2 — re-review
+- FILES: (review only)
+- WHAT: All rev.1 findings VERIFIED FIXED (writeSInt64 + getPCfilepath
+  regenerate byte-for-byte; doc genuinely blob-first; FileStatus.length
+  correctly still int64; other 3 protos untouched). ONE NEW P0:
+  - P0-3: ALL FOUR protos — delete `package com.oplus.linker.synergy;`.
+    Originals are package-less: blobs decode with zero package fields + bare
+    type names, and decompiled *Grpc.java SERVICE_NAMEs are bare
+    ("FileService" etc.). With a package, regenerated stubs would dial
+    /com.oplus.linker.synergy.FileService/... instead of /FileService/...
+    — gRPC :path mismatch, non-interoperable. Keep
+    `option java_package = "com.oplus.linker.synergy";` (that alone
+    reproduces the Java layout). Add a doc line: originals package-less
+    (bare SERVICE_NAME). Re-gate protoc both passes, push rev.3, re-review.
+  - Optional P2s (order nits) still acceptable to leave.
