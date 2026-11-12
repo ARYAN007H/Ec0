@@ -543,3 +543,80 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   bypassing OEM gating beyond what is already in the findings doc (the
   pc_connect_support note is already public there).
 - ONLY path: docs/guides/coloros-setup.md. Gate: lead review.
+
+### 2026-11-13 01:45 UTC — agent-2
+- STATUS: DONE (PR #3 open, review requested)
+- TASK: T6 — KDE Connect protocol core into core/
+- FILES: core/src/commonMain/kotlin/ec0/core/kdeconnect/{NetworkPacket,IdentityPacket,Pairing,Discovery,Sha256}.kt, core/src/commonTest/kotlin/ec0/core/kdeconnect/{NetworkPacket,IdentityPacket,Pairing,Sha256}Test.kt, docs/re/kdeconnect-port.md
+- WHAT: Full protocol core ported from vendored kdeconnect-android (commit
+  501aee7, read-only): NetworkPacket wire format 1:1 ({id,type,body}+\n,
+  payloadSize/payloadTransferInfo only-when-present), identity packet
+  (deviceId/deviceName/protocolVersion/deviceType/capabilities + tcpPort,
+  device-id regex, name sanitizer), pairing model (pair/accept/unpair packets,
+  PairState, ±1800s skew, verification keys v7+v8), discovery constants +
+  handshake contract (UDP/TCP :1716, MIN/MAX 1716/1764, payload port 1739).
+  INTEROP GUARANTEE: PairingTest pins upstream PairingHandlerTest vectors over
+  REAL cert SPKI bytes (extracted via JVM tool): 54DC916E/8C07153A/F3900DB5/
+  97A75917 — fail on any drift in pure-Kotlin SHA-256 or sortedConcat. NIST
+  FIPS 180-4 vectors independent. 6 documented deviations (data-only Payload,
+  idProvider clock injection, envelopeId exposure, null-safe capabilities,
+  model-only pairing handler, no X.509 in commonMain). HONESTY: took 5 CI runs
+  to green — failures were (1) Long-inference from unconverted hex literals >
+  Int.MAX (hand-picking missed 4 — fixed with uniform .toInt() + python
+  verification), (2) reified serializer resolution for nested @Serializable
+  class (explicit serializer() calls), (3) my own test bugs: ByteArray
+  ref-equality in assertEquals, colon-hex expected-string typo, invalid
+  "myid" asserted valid. Port code itself never needed a logic fix after r1;
+  all NIST + upstream vectors pass. CI run 43288581817 GREEN.
+  PR https://github.com/ARYAN007H/Ec0/pull/3 — requesting independent review.
+
+### 2026-11-13 02:21 UTC — agent-1 (SUITE LOCK taken: adb READ-ONLY inspection)
+- STATUS: CLAIMED
+- TASK: T8 — ColorOS survival guide
+- FILES: (none yet) → docs/guides/coloros-setup.md
+- WHAT: Worktree ~/.cache/ec0-worktrees/agent-1-coloros-guide off origin/main
+  @2b8791b, branch feat/agent-1-coloros-guide. Ground truth: findings doc +
+  fresh read-only adb recon on the A5x (ColorOS version props, notification
+  listeners, deviceidle whitelist, autostart/OppoGuardElf packages). No
+  device mutations, no installs. Lock released in my next entry.
+
+### 2026-11-13 02:26 UTC — agent-1 (SUITE LOCK released — adb went offline, zero device mutations made)
+- STATUS: DONE (PR #5 open, review requested; CI GREEN run 43289685542)
+- TASK: T8 — ColorOS survival guide
+- FILES: docs/guides/coloros-setup.md
+- WHAT: Guide written and PR'd. HONESTY NOTE: the phone disconnected before
+  the planned recon — device-verified items come from the recorded 2026-11-12
+  session observations (notification listeners carrying kdeconnect_tp +
+  essentials, RemoteKeyboardService IME, OEM killer packages qualityprotect/
+  battery/apprecover, 494-package inventory, pc_connect_support=1); ColorOS-
+  general items are marked [standard] and routed through a 6-point
+  re-verification checklist instead of being asserted as fact. Guide covers:
+  killer-stack table, 7-step setup w/ per-step adb checks, reversible adb
+  command block, 5 pitfalls (listener revocation, screen-off kill w/o
+  autostart, OTA resets, app clones, adb re-authz), M1 permission mapping.
+  PR https://github.com/ARYAN007H/Ec0/pull/5.
+
+### 2026-11-13 02:0x UTC — agent-0
+- STATUS: REVIEW COMPLETE (PR #4)
+- TASK: T5 / PR #4 — independent review
+- FILES: (review only)
+- WHAT: Verdict REQUEST-CHANGES, no P0 (DTOs/enums/golden fixtures/PIN model/
+  fingerprint semantics all verified verbatim vs localsend-upstream Rust core
+  dto_v2.rs/discovery.rs/pin.rs). agent-1 fixes on feat/agent-1-localsend —
+  PRIORITY over T8:
+  - P1 route table: prepare-upload takes OPTIONAL `pin` query param
+    (client/v2.rs:159-170, server/v2.rs:235-241) — currently absent
+  - P1 route table: prepare-download `sessionId` is OPTIONAL (browser-refresh
+    scenarios; client/v2.rs:357,376-379, web.rs:317) — currently required
+  - P1 signed-token claim is WRONG: crypto/token.rs is WebRTC-signaling-only
+    (webrtc.rs callers); v2 HTTP file tokens are plain UUID::new_v4()
+    (server/v2.rs:326) compared by equality (v2.rs:400). Rewrite the token
+    paragraph + caveat — following the current doc would signature-verify
+    upload tokens and reject every real peer. (Your "tokens opaque" port
+    decision was right; the doc claim around it was not.)
+  - P2s: 401-vs-403 conflation (wrong PIN=401 only; 403=user decline);
+    upload response is EMPTY 200 not plain text; deviceType is lenient
+    (only `protocol` strict); 1.x scope: vendored app is 1.18.2 speaking
+    2.2 — scope caveat to ≤1.17; sha256/metadata boundary cite CHANGELOG
+    not assert; note /show + 204-no-content outcome.
+  Push fixes → CI green → delta re-review. Then finish T8.
