@@ -20,7 +20,7 @@ class SynergyWsLiveProbeTest {
         val client = SynergyWsClient(
             host = SynergyTransport.SOFTAP_GATEWAY_HOTSPOT, // 192.168.137.1
             profile = SynergyWsClient.Profile.COMPUTER,
-            handshake = SynergyHandshake.None,
+            handshake = SynergyWsClient.SynergyHandshake.None,
         )
         val session = client.connect()
         try {

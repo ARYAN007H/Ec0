@@ -28,7 +28,7 @@ class Rfc6455Test {
         val frame = WsFrames.encodeClientFrame(WsOpcode.TEXT, payload)
 
         // Mask bit set in the second header byte
-        assertEquals(0x80, frame[1].toInt() and 0x80)
+        assertEquals(0x80.toByte(), frame[1].toInt() and 0x80.toByte())
 
         // Roundtrip through the reader (server frames are unmasked; the decoder
         // handles both — verify masking was applied by checking the payload
@@ -112,9 +112,9 @@ class Rfc6455Test {
     fun fragmentedMessageReassembles() {
         // Server → client: FIN=0 TEXT "hel", FIN=0 CONT "lo ", FIN=1 CONT "world"
         val stream = byteArrayOf(
-            0x01, 0x03, 'h'.code.toByte(), 'e'.code.toByte(), 'l'.code.toByte(), // unmasked, len 3
-            0x00, 0x03, 'l'.code.toByte(), 'o'.code.toByte(), ' '.code.toByte(),
-            0x80, 0x05, 'w'.code.toByte(), 'o'.code.toByte(), 'r'.code.toByte(), 'l'.code.toByte(), 'd'.code.toByte(),
+            0x01.toByte(), 0x03.toByte(), 'h'.code.toByte(), 'e'.code.toByte(), 'l'.code.toByte(), // unmasked, len 3
+            0x00.toByte(), 0x03.toByte(), 'l'.code.toByte(), 'o'.code.toByte(), ' '.code.toByte(),
+            0x80.toByte(), 0x05.toByte(), 'w'.code.toByte(), 'o'.code.toByte(), 'r'.code.toByte(), 'l'.code.toByte(), 'd'.code.toByte(),
         )
         val message = WsFrames.readTextMessage(DataInputStream(ByteArrayInputStream(stream)))
         assertEquals("hello world", message)
@@ -123,8 +123,8 @@ class Rfc6455Test {
     @Test
     fun textMessageWithPingInterleaved() {
         val stream = byteArrayOf(
-            0x81.toByte(), 0x03, 'h'.code.toByte(), 'i'.code.toByte(), '!',
-            0x89.toByte(), 0x00, // unmasked ping, empty
+            0x81.toByte(), 0x03.toByte(), 'h'.code.toByte(), 'i'.code.toByte(), '!'.code.toByte(),
+            0x89.toByte(), 0x00.toByte(), // unmasked ping, empty
         )
         // readTextMessage consumes the ping and returns the prior completed message
         val message = WsFrames.readTextMessage(DataInputStream(ByteArrayInputStream(stream)))
@@ -133,7 +133,7 @@ class Rfc6455Test {
 
     @Test
     fun closeFrameReturnsNull() {
-        val stream = byteArrayOf(0x88.toByte(), 0x00)
+        val stream = byteArrayOf(0x88.toByte(), 0x00.toByte())
         val message = WsFrames.readTextMessage(DataInputStream(ByteArrayInputStream(stream)))
         assertEquals(null, message)
     }
