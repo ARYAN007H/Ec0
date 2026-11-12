@@ -63,6 +63,6 @@ object DeviceTypeSerializer : KSerializer<DeviceType> {
  */
 @Serializable
 enum class ProtocolType(val wire: String) {
-    @SerialName("http") HTTP,
-    @SerialName("https") HTTPS;
+    @SerialName("http") HTTP("http"),
+    @SerialName("https") HTTPS("https");
 }
