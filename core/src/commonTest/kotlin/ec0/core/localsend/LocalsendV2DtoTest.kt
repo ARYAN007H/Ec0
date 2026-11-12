@@ -112,7 +112,7 @@ class LocalsendV2DtoTest {
         val json = """{"alias": "Test Device", "version": "2.0", "fingerprint": "abc123"}"""
         val dto = LocalsendV2.json.decodeFromString<RegisterResponseDtoV2>(json)
         assertFalse(dto.download)
-        assertEquals("", dto.fingerprint)
+        assertEquals("abc123", dto.fingerprint)
         assertNull(dto.deviceModel)
     }
 
