@@ -45,13 +45,13 @@ fun SettingsPanel(
         Text("Identity", style = MaterialTheme.typography.subtitle2, color = MaterialTheme.colors.primary)
         OutlinedTextField(
             value = settings.alias,
-            onValueChange = { newValue -> onUpdate { current -> current.copy(alias = newValue) } },
+            onValueChange = { newValue -> onUpdate(settings.copy(alias = newValue)) },
             label = { Text("Device alias") },
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = settings.deviceModel,
-            onValueChange = { newValue -> onUpdate { current -> current.copy(deviceModel = newValue) } },
+            onValueChange = { newValue -> onUpdate(settings.copy(deviceModel = newValue)) },
             label = { Text("Device model") },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -61,7 +61,7 @@ fun SettingsPanel(
         OutlinedTextField(
             value = settings.port.toString(),
             onValueChange = { text ->
-                text.toIntOrNull()?.let { port -> onUpdate { current -> current.copy(port = port) } }
+                text.toIntOrNull()?.let { port -> onUpdate(settings.copy(port = port)) }
             },
             label = { Text("Server port") },
             modifier = Modifier.fillMaxWidth(),
@@ -75,7 +75,7 @@ fun SettingsPanel(
         Text("Storage", style = MaterialTheme.typography.subtitle2, color = MaterialTheme.colors.primary)
         OutlinedTextField(
             value = settings.downloadDir,
-            onValueChange = { newValue -> onUpdate { current -> current.copy(downloadDir = newValue) } },
+            onValueChange = { newValue -> onUpdate(settings.copy(downloadDir = newValue)) },
             label = { Text("Download directory") },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -84,7 +84,7 @@ fun SettingsPanel(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(
                 checked = settings.requirePin,
-                onCheckedChange = { checked -> onUpdate { current -> current.copy(requirePin = checked) } },
+                onCheckedChange = { checked -> onUpdate(settings.copy(requirePin = checked)) },
             )
             Spacer(Modifier.width(8.dp))
             Text("Require PIN for incoming transfers")
@@ -92,7 +92,7 @@ fun SettingsPanel(
         if (settings.requirePin) {
             OutlinedTextField(
                 value = settings.pin,
-                onValueChange = { newValue -> onUpdate { current -> current.copy(pin = newValue) } },
+                onValueChange = { newValue -> onUpdate(settings.copy(pin = newValue)) },
                 label = { Text("PIN") },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -116,7 +116,7 @@ private fun DeviceTypeDropdown(settings: SettingsState, onUpdate: (SettingsState
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DeviceType.entries.forEach { type ->
                 DropdownMenuItem(onClick = {
-                    onUpdate { current -> current.copy(deviceType = type) }
+                    onUpdate(settings.copy(deviceType = type))
                     expanded = false
                 }) {
                     Text(type.wire)
