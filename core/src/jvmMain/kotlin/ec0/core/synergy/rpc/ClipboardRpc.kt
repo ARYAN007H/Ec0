@@ -11,9 +11,9 @@
  */
 package ec0.core.synergy.rpc
 
-import com.oplus.linker.synergy.ClipBoardServiceGrpc
+import com.oplus.linker.synergy.ClipBoardServiceGrpcKt
 import com.oplus.linker.synergy.Clipboard
-import com.oplus.linker.synergy.ClipboardFileServiceGrpc
+import com.oplus.linker.synergy.ClipboardFileServiceGrpcKt
 import io.grpc.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -24,7 +24,7 @@ import kotlinx.coroutines.flow.flowOf
  */
 class ClipboardClient(private val channel: Channel) {
 
-    private val stub = ClipBoardServiceGrpc.ClipBoardServiceCoroutineStub(channel)
+    private val stub = ClipBoardServiceGrpcKt.ClipBoardServiceCoroutineStub(channel)
 
     /** Streams clipboard items to the phone; phone acknowledges with [Clipboard.Result]. */
     suspend fun copyToClip(items: Flow<Clipboard.ClipData>): Clipboard.Result = stub.copyToClip(items)
@@ -53,7 +53,7 @@ class ClipboardClient(private val channel: Channel) {
  */
 class ClipboardFileClient(private val channel: Channel) {
 
-    private val stub = ClipboardFileServiceGrpc.ClipboardFileServiceCoroutineStub(channel)
+    private val stub = ClipboardFileServiceGrpcKt.ClipboardFileServiceCoroutineStub(channel)
 
     fun getUriContent(requests: Flow<Clipboard.Uri>): Flow<Clipboard.UriContent> =
         stub.getUriContent(requests)
