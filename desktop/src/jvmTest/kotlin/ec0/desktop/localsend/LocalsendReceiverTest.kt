@@ -35,7 +35,7 @@ import kotlin.test.assertTrue
 class LocalsendReceiverTest {
 
     private fun receiver(
-        acceptPolicy: LocalsendReceiverConfig.AcceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL,
+        acceptPolicy: LocalsendReceiverConfig.AcceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL,
         requiredPin: String? = null,
         decide: (suspend (PrepareUploadRequestDtoV2, String) -> LocalsendReceiverServer.Acceptance)? = null,
         offeredFiles: Map<String, java.nio.file.Path> = emptyMap(),
@@ -122,7 +122,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun prepareUploadAutoAcceptIssuesTokens() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val res = post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()))
         assertEquals(200, res.statusCode())
@@ -137,13 +137,13 @@ class LocalsendReceiverTest {
 
     @Test
     fun prepareUploadDeclineIs403AndEmptyAcceptIs204() {
-        val decline = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_DECLINE_ALL)
+        val decline = receiver(acceptPolicy = AcceptPolicy.AUTO_DECLINE_ALL)
         val port = start(decline)
         assertEquals(403, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
         decline.stop()
 
         val acceptNothing = receiver(
-            acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.ASK,
+            acceptPolicy = AcceptPolicy.ASK,
             decide = { _, _ -> LocalsendReceiverServer.Acceptance.ACCEPT(emptySet()) },
         )
         val port2 = start(acceptNothing)
@@ -153,7 +153,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun prepareUploadEmptyFilesIs400() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         assertEquals(400, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody()).statusCode())
         receiver.stop()
@@ -161,7 +161,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun prepareUploadConflictWhileSessionActive() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
         assertEquals(409, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
@@ -170,7 +170,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun pinModelWrong401RateLimit429CorrectClears() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL, requiredPin = "4321")
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL, requiredPin = "4321")
         val port = start(receiver)
         val wrong = post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=0000")
         assertEquals(401, wrong.statusCode())
@@ -184,7 +184,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun pinCorrectAttemptSucceedsAndClearsCounter() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL, requiredPin = "4321")
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL, requiredPin = "4321")
         val port = start(receiver)
         assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=0000").statusCode())
         assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=4321").statusCode())
@@ -195,7 +195,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun uploadFlowEndToEndAndSecondAttemptRejected() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val prepared = LocalsendV2.json.parseToJsonElement(
             post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).body(),
@@ -232,7 +232,7 @@ class LocalsendReceiverTest {
         val files = listOf(
             FileDto(id = "f1", fileName = "notes.txt", size = 5, fileType = "text/plain", sha256 = "deadbeef"),
         )
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val prepared = LocalsendV2.json.parseToJsonElement(
             post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*files)).body(),
@@ -251,7 +251,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun uploadMissingParamsIs400AndUnknownTokenIs403() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         assertEquals(400, post(port, LocalsendV2Route.UPLOAD.wirePath, "x", query = "sessionId=a").statusCode())
         assertEquals(403, post(port, LocalsendV2Route.UPLOAD.wirePath, "x", query = "sessionId=a&fileId=f&token=t").statusCode())
@@ -260,7 +260,7 @@ class LocalsendReceiverTest {
 
     @Test
     fun cancelRemovesSessionThenUploadFails() {
-        val receiver = receiver(acceptPolicy = LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL)
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val prepared = LocalsendV2.json.parseToJsonElement(
             post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).body(),
