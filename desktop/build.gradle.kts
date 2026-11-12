@@ -13,6 +13,7 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(compose.material)
             implementation(libs.kotlinx.coroutines.swing)
+            implementation(libs.kotlinx.serialization.json) // desktop-side DTO codec (T13 discovery)
         }
     }
 
