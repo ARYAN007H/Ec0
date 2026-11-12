@@ -22,5 +22,13 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "ec0.desktop.MainKt"
+        nativeDistributions {
+            targetFormats(
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm,
+            )
+            packageName = "ec0"
+            packageVersion = "1.0.0"
+        }
     }
 }
