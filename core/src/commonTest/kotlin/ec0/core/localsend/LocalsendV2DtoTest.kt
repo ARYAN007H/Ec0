@@ -11,6 +11,8 @@ import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.core.localsend.dto.RegisterResponseDtoV2
 import ec0.core.localsend.security.LocalsendSecurity
 import ec0.core.localsend.security.PinDecision
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -100,7 +102,7 @@ class LocalsendV2DtoTest {
         """.trimIndent()
         val dto = LocalsendV2.json.decodeFromString<RegisterDtoV2>(json)
         assertEquals("A", dto.alias)
-        assertEquals(dto, LocalsendV2.json.decodeFromString(LocalsendV2.json.encodeToString(dto)))
+        assertEquals(dto, LocalsendV2.json.decodeFromString<RegisterDtoV2>(LocalsendV2.json.encodeToString(dto)))
     }
 
     // -- RegisterResponseDtoV2 -------------------------------------------------
