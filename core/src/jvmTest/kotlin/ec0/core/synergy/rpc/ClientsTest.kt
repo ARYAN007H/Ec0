@@ -12,7 +12,7 @@ import com.oplus.linker.synergy.Fileservice
 import com.oplus.linker.synergy.Inputservice
 import io.grpc.MethodDescriptor
 import io.grpc.Status
-import io.grpc.StatusRuntimeException
+import io.grpc.StatusException
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
@@ -71,7 +71,7 @@ class ClipboardClientTest {
     @Test
     fun serverStreamErrorPropagates() = runBlocking {
         val channel = FakeGrpcChannel { FakeRpcBehavior(respond = { _, _ -> emptyList<Any>() }, status = Status.INTERNAL) }
-        val thrown = assertFailsWith<StatusRuntimeException> {
+        val thrown = assertFailsWith<StatusException> {
             ClipboardClient(channel).getClipData(Clipboard.Type.newBuilder().build()).toList()
         }
         assertEquals(Status.Code.INTERNAL, thrown.status.code)
@@ -165,7 +165,7 @@ class FileClientTest {
     @Test
     fun unaryErrorPropagates() = runBlocking {
         val channel = FakeGrpcChannel { FakeRpcBehavior(respond = { _, _ -> emptyList<Any>() }, status = Status.UNAVAILABLE) }
-        val thrown = assertFailsWith<StatusRuntimeException> {
+        val thrown = assertFailsWith<StatusException> {
             FileClient(channel).createFile(info)
         }
         assertEquals(Status.Code.UNAVAILABLE, thrown.status.code)
