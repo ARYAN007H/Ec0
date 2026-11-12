@@ -154,36 +154,7 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - T8: ColorOS survival guide (battery exemptions, autostart) into `docs/`
 
 ## Log
-
 <!-- append below, newest last, keep max 25 entries — trim the oldest -->
-
-### 2026-11-12 18:00 UTC — agent-0
-- STATUS: CLAIMED — hub bootstrap
-- TASK: orchestration + T3
-- FILES: agentchat.md, .gitignore, docs/re/oplus-connect-findings.md
-- WHAT: Hub created; git repo initialized on `main`. Roster: agent-0 (lead) +
-  agent-1 + agent-2. Tasks T1/T2 assigned to workers (proto reconstruction;
-  message catalog), T3 (scaffold) claimed by agent-0. Traps seeded from
-  today's RE session. Findings doc committed as baseline.
-
-### 2026-11-12 18:08 UTC — agent-1
-- STATUS: CLAIMED
-- TASK: T1 — Synergy gRPC proto reconstruction
-- FILES: (none yet) → docs/re/protos/*.proto, docs/re/synergy-proto-reconstruction.md
-- WHAT: Worktree `~/.cache/ec0-worktrees/agent-1-protos` on
-  `feat/agent-1-protos` @ 6df4216. protoc available on PATH — gate can run
-  locally. Starting survey of generated protobuf/gRPC Java in the decompiled
-  synergy package.
-
-### 2026-11-12 18:09 UTC — agent-2
-- STATUS: CLAIMED
-- TASK: T2 — Synergy message catalog + transport constants
-- FILES: (none yet) → docs/re/synergy-message-catalog.md, docs/re/synergy-catalog.yaml
-- WHAT: Worktree `~/.cache/ec0-worktrees/agent-2-catalog` off origin/main @6df4216,
-  branch feat/agent-2-catalog. Plan: extract SynergyCmd/SynergyInfo/SynergyMessage
-  constants + base/socket port/TLS + scene keys from decompiled OPSynergy sources
-  (read-only), build YAML + MD catalog, cross-check ≥95% of SynergyCmd constants,
-  then push + PR. agent-1: noted — T1 files only; no overlap with my set.
 
 ### 2026-11-12 18:13 UTC — agent-2
 - STATUS: DONE (PR #1 open, review requested)
@@ -620,3 +591,78 @@ tools (protoc parse checks, ripgrep) are fine locally.**
     2.2 — scope caveat to ≤1.17; sha256/metadata boundary cite CHANGELOG
     not assert; note /show + 204-no-content outcome.
   Push fixes → CI green → delta re-review. Then finish T8.
+
+### 2026-11-13 02:10 UTC — agent-2
+- STATUS: DONE (PR #3 r3 pushed, delta re-review requested)
+- TASK: T6 — review fixes applied
+- FILES: core/src/commonMain/kotlin/ec0/core/kdeconnect/{IdentityPacket,Discovery}.kt, core/src/commonTest/**/{Sha256,IdentityPacket}Test.kt, docs/re/kdeconnect-port.md
+- WHAT: All findings addressed. P0-a/b/c were already fixed in ba27b77
+  (CI 43288581817 green — the review predates that push; verified against
+  review claims before assuming). P1: PROTOCOL_VERSION = 8 ported
+  (DeviceHelper.kt:31 evidence) + DeviceIdentity defaults to it + test
+  pinning the default. P2s all applied: UDP-newline comment corrected
+  (LanLinkProvider:541-543 evidence); targetProtocolVersion + targetDeviceId
+  handshake fields ported (string-echo semantics, :259-261/:180-187) with
+  buildTcpHandshakeFrame helper + roundtrip test; timeout/unpair doc refs
+  corrected (30s :153, 25s :90, unpair :232-234 vs cancelPairing :202-213);
+  IdentityPacketCompanionAccess indirection removed; million-'a' NIST vector
+  added; isCanceled/cancel + MdnsDiscovery noted under Not-ported.
+  HONESTY: million-'a' first push FAILED — my hardcoded expected string was a
+  half-remembered value; hashlib ground truth proves the PORT digest was
+  correct (first 62 hex chars matched), fixed expected to
+  cdc76e5c...6d39ccc7112cd0. Final CI GREEN @063d3ef (run 43290673808).
+  Requesting delta re-review on PR https://github.com/ARYAN007H/Ec0/pull/3.
+
+### 2026-11-13 02:38 UTC — agent-1
+- STATUS: DONE (T5 r2 pushed to PR #4, delta re-review requested; CI GREEN
+  run 43291424338)
+- TASK: T5 — PR #4 review fixes (3×P1 + 6×P2)
+- FILES: core/src/commonMain/kotlin/ec0/core/localsend/api/LocalsendV2Routes.kt,
+  core/src/commonMain/kotlin/ec0/core/localsend/security/LocalsendSecurity.kt,
+  docs/re/localsend-port.md
+- WHAT: Every finding verified against the Rust core before applying:
+  ① prepare-upload optional pin (client pin_params, server check_pin at :235)
+  → route optionalQuery=["pin"]; ② prepare-download sessionId optional
+  (client session_id: Option<&str> "browser refresh", web.rs:317) → moved to
+  optionalQuery; ③ token misattribution confirmed — server/v2.rs:326
+  `Uuid::new_v4()`, :400 equality compare, crypto/token.rs sole caller is
+  webrtc.rs → security doc + port doc rewritten (plain-UUID equality model;
+  token.rs = WebRTC-signaling-only). P2s: 401-vs-403 split (401 wrong-pin,
+  403 decline — incl. prepare-upload sender-cancel 403 + decline "Rejected"),
+  upload = empty 200, prepare-upload-nothing-accepted = 204 (verified
+  server/v2.rs:338), deviceType-leniency wording (only protocol strict),
+  version caveat scoped to ≤1.17 w/ CHANGELOG.md:275 citation + explicit
+  "sha256/metadata boundary not provable from clone", /show route noted
+  (server/mod.rs:676). Pushed 7309d0b → PR #4 updated.
+
+### 2026-11-13 02:3x UTC — agent-0
+- STATUS: MERGED ×2 + ROUND COMPLETE + NEW ASSIGNMENTS
+- TASK: T5 + T6 — PRs #3/#4 MERGED (both reviewer-APPROVE, CI green)
+- FILES: core/ now carries kdeconnect/ + localsend/ + synergy/ — the
+  tri-protocol core is real. T7 draft (synergy-protocol.md) also on main.
+  Excellent work both — every wire model survived independent verification.
+- NEXT ASSIGNMENTS:
+  ### T10 — Synergy WebSocket transport in core — owner: agent-2 (NEW)
+  - BRANCH/WORKTREE: `feat/agent-2-synergy-transport` (off latest main)
+  - SPEC: core/src/jvmMain/kotlin/ec0/core/synergy/ — WS client (ktor-client
+    OkHttp/CIO) implementing: envelope send/recv (extend SynergyMessage.kt;
+    nonce/signature base path 0x0FFFFFFF + Random(timestamp)), per-profile
+    port walk (SynergyTransport.COMPUTER/PAD_PORT_LIST, retry=list.size(),
+    FirstPort reset semantics), TLS pinned-cert trust (certs agent-0 is
+    extracting from the APK — see hub note), TCP handshake frames
+    (targetDeviceId/targetProtocolVersion echo per T6's contract discovery —
+    coordinate: kdeconnect handshake ≠ synergy handshake, synergy one is
+    [T4]/unknown; implement configurable handshake + log). Unit tests for
+    envelope codec + port walk. Live-probe test marked @Ignore("T4") .
+  - ONLY: core/src/jvmMain/kotlin/ec0/core/synergy/** + core/src/jvmTest/** +
+    docs/re/synergy-transport.md. Do NOT touch synergy-proto module or
+    commonMain synergy types (agent-0's) without logging.
+  ### T11 — desktop app UI — owner: agent-1 (NEW, after T8 lands)
+  - BRANCH/WORKTREE: `feat/agent-1-desktop-ui`
+  - SPEC: desktop/src/jvmMain/kotlin/ec0/desktop/ — Compose UI: device list
+    (mock data source behind interface), transfer queue view, settings pane,
+    Material theme, window/tray glue. Main.kt: you own the desktop subtree
+    now (agent-0 steps back from it). Keep :desktop consuming only :core
+    public API; propose core API additions via log comments (agent-0 applies
+    gradle/core changes).
+  - ONLY: desktop/src/jvmMain/**. Gate: CI green, lead review.
