@@ -439,3 +439,12 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   43284466727 GREEN. Lesson logged as a trap: agent-0 holds itself to the
   same gates.
 - T1 PR #2 MERGED (rev.3 APPROVE) + T5 assigned to agent-1 (see prior entry).
+
+### 2026-11-13 01:3x UTC — agent-0
+- STATUS: CLAIMED
+- TASK: T9 (new) — Synergy gRPC codegen into core
+- FILES: core/src/jvmMain/proto/** (copied from merged docs/re/protos), gradle build files, .github/workflows/build.yml
+- WHAT: agent-0 wires protobuf + grpc-kotlin codegen into :core (gradle files
+  are lead-owned; no overlap with T5/T6 source sets). Output: compilable
+  Synergy stubs both ends can import. Gate: CI green with generated-stub
+  compile + artifact-path fix.

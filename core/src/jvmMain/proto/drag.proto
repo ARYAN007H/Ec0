@@ -1,0 +1,72 @@
+// Reconstructed from decompiled protobuf-generated Java (OPSynergy 17.7.35,
+// com.oplus.linker.synergy.Drag outer class). See
+// docs/re/synergy-proto-reconstruction.md for methodology and confidence notes.
+//
+// NOTE: these messages have NO gRPC service — no generated *Grpc class
+// references Drag.getDescriptor(). They travel on the cross-device databus
+// (cross-device drag & drop + Mac connect control), i.e. inside the
+// SynergyMessage WebSocket envelope (see oplus-connect-findings.md §4), and
+// between PC/phone via topic-tagged channels.
+syntax = "proto3";
+
+option java_multiple_files = false;
+option java_outer_classname = "Drag";
+option java_package = "com.oplus.linker.synergy";
+
+// Outer databus frame: one topic channel carrying key->message pairs.
+message DataBusChannelMessage {
+  int32 app_id = 1;
+  string topic_name = 2;
+  int32 topic_tag = 3;
+  MacConnectMessage msg = 4;   // optional (hasMsg())
+}
+
+// Mac-connect transport: a string key with a DragDatabusMessage value.
+message MacConnectMessage {
+  string key = 1;
+  DragDatabusMessage value = 2;  // optional (hasValue())
+}
+
+// Cross-device drag task envelope.
+message DragDatabusMessage {
+  string msg_type = 1;      // payload discriminator (DragStarted/Dropped/Finished…)
+  string payload = 2;       // JSON/text payload (parse uses readString)
+  int32 version = 3;
+  string drag_task_id = 4;
+  int32 msg_sequence = 5;
+}
+
+// Identity of a device participating in a drag session.
+message DragDeviceInfo {
+  int32 device_type = 1;    // phone/PC/pad (values unknown)
+  string device_id = 2;
+  string device_name = 3;
+}
+
+// One file inside a drag operation.
+message DragFileInfo {
+  string uri = 1;
+  int64 size = 2;
+  string name = 3;
+}
+
+// Emitted when a drag starts (sent by the initiator device).
+message DragStartedPayload {
+  string content_type = 1;
+  repeated DragFileInfo file_info = 2;
+  string thumbnail = 3;     // encoded thumbnail (format unknown)
+  string caller = 4;
+  DragDeviceInfo initiator_device_info = 5;  // optional (has…())
+  string package_name = 6;
+}
+
+// Emitted when the drag is dropped on the receiver.
+message DragDroppedPayload {
+  DragDeviceInfo receiver_device_info = 1;   // optional (has…())
+}
+
+// Emitted when a drag task finishes (success or error).
+message DragFinishedPayload {
+  int32 error_code = 1;
+  string error_message = 2;
+}
