@@ -92,6 +92,10 @@ Log entry format (one blank line between entries):
   it without a logged SUITE LOCK + reason.
 - System java is 27; use Gradle toolchains (17 for AGP) instead of changing the
   system JVM.
+- **CI is the compiler.** The local box never runs Gradle —
+  `.github/workflows/build.yml` builds every push/PR. Repo is public during
+  work hours for free Actions minutes; Aryan flips it private afterwards.
+  Keep secrets out of git history: no phone identifiers, no session keys.
 
 ## Tasks
 
@@ -129,7 +133,14 @@ Log entry format (one blank line between entries):
   module (commonMain: protocol placeholder types + module README),
   `desktop/` Compose Multiplatform shell that builds and runs, `android-app/`
   placeholder, root `README.md`, `LICENSE` (GPL-3.0).
-- GATE: `./gradlew build` green; `desktop` `run` task exists.
+- GATE: **CI green** (`.github/workflows/build.yml` — compilation runs on
+  GitHub Actions; the local machine does NOT build).
+- STATUS: scaffold landed @35d5332, CI run 43277468950 in flight.
+
+**ALL AGENTS — compilation happens on GitHub Actions only. Do NOT run
+`./gradlew build` locally (Aryan's machine is a potato). Validate code changes
+by pushing your branch and watching CI (`gh run list/watch`). Light static
+tools (protoc parse checks, ripgrep) are fine locally.**
 
 ## Backlog — unassigned; do NOT self-assign (agent-0 hands these out)
 
@@ -152,3 +163,47 @@ Log entry format (one blank line between entries):
   agent-1 + agent-2. Tasks T1/T2 assigned to workers (proto reconstruction;
   message catalog), T3 (scaffold) claimed by agent-0. Traps seeded from
   today's RE session. Findings doc committed as baseline.
+
+### 2026-11-12 18:08 UTC — agent-1
+- STATUS: CLAIMED
+- TASK: T1 — Synergy gRPC proto reconstruction
+- FILES: (none yet) → docs/re/protos/*.proto, docs/re/synergy-proto-reconstruction.md
+- WHAT: Worktree `~/.cache/ec0-worktrees/agent-1-protos` on
+  `feat/agent-1-protos` @ 6df4216. protoc available on PATH — gate can run
+  locally. Starting survey of generated protobuf/gRPC Java in the decompiled
+  synergy package.
+
+### 2026-11-12 18:09 UTC — agent-2
+- STATUS: CLAIMED
+- TASK: T2 — Synergy message catalog + transport constants
+- FILES: (none yet) → docs/re/synergy-message-catalog.md, docs/re/synergy-catalog.yaml
+- WHAT: Worktree `~/.cache/ec0-worktrees/agent-2-catalog` off origin/main @6df4216,
+  branch feat/agent-2-catalog. Plan: extract SynergyCmd/SynergyInfo/SynergyMessage
+  constants + base/socket port/TLS + scene keys from decompiled OPSynergy sources
+  (read-only), build YAML + MD catalog, cross-check ≥95% of SynergyCmd constants,
+  then push + PR. agent-1: noted — T1 files only; no overlap with my set.
+
+### 2026-11-12 18:13 UTC — agent-2
+- STATUS: DONE (PR #1 open, review requested)
+- TASK: T2 — Synergy message catalog + transport constants
+- FILES: docs/re/synergy-message-catalog.md, docs/re/synergy-catalog.yaml
+- WHAT: Full catalog extracted from decompiled OPSynergy 17.7.35. Gate:
+  SynergyCmd 65/65 string consts + 11/11 flag ints (100%, grep-verified vs
+  source); YAML parses, full value coverage PASS. Key findings: envelope
+  noncestr/signature are LONGs; base send path uses signature=0x0FFFFFFF
+  constant + Random(timestamp) nonce (WebSocketConnectManager:558); port
+  fallback 8080→39888→49888→59888 + scene port 8792; RESPONSE_KSC_CODE
+  (32 zeros) is a response code not a key; src_role="synergy"; TLS via
+  pairing-exchanged certs. 5 explicit unknowns queued for T4. Branch
+  feat/agent-2-catalog @ origin, PR https://github.com/ARYAN007H/Ec0/pull/1.
+
+### 2026-11-12 18:16 UTC — agent-0
+- STATUS: WORKING
+- TASK: T3 — monorepo scaffold
+- FILES: settings.gradle.kts, gradle/libs.versions.toml, core/, desktop/, README.md, LICENSE, .github/workflows/build.yml
+- WHAT: Scaffold landed @35d5332 (core KMP w/ SynergyMessage+Transport types from
+  RE findings; desktop Compose MP shell; GPL-3; CI workflow). Repo flipped PUBLIC
+  for Actions minutes (Aryan's call — flips private after hours). Gate changed:
+  CI is the compiler, no local Gradle (see traps). CI run 43277468950 queued.
+- NOTE: agent-1/agent-2 claims received — clean split, no overlap. PRs reviewed
+  on arrival.
