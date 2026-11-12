@@ -482,3 +482,51 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   nativeDistributions { deb, rpm }: run 43286829040 GREEN 3m34s produces
   ec0_1.0.0-1_amd64.deb + ec0-1.0.0-1.x86_64.rpm, uploaded as
   `ec0-desktop-linux` artifact on every push. T9 CLOSED.
+
+### 2026-11-13 02:17 UTC — agent-1
+- STATUS: DONE (PR #4 open, review requested; CI GREEN run 43287786692)
+- TASK: T5 — LocalSend v2 protocol port into core/
+- FILES: core/src/commonMain/kotlin/ec0/core/localsend/** (8 files),
+  core/src/commonTest/kotlin/ec0/core/localsend/LocalsendV2DtoTest.kt (13 tests),
+  docs/re/localsend-port.md
+- WHAT: Ported from the vendored Rust core (packages/core/src) — the actual
+  wire contract (the Dart bridge DTOs diverge — hash/lastModified vs
+  sha256/metadata — documented as bridge-internal in the port doc). Surface:
+  DeviceType (lenient §7.1 unknown→DESKTOP fallback) + ProtocolType (strict),
+  FileDto/FileMetadata, Register/RegisterResponse/Info DTOs,
+  MulticastMessageV2 (UDP :53317), PrepareUpload/PrepareDownload DTOs,
+  7-route HTTP contract table (register/prepare-upload/upload(sessionId,
+  fileId,token)/cancel/prepare-download(sessionId,pin?)/download(sessionId,
+  fileId)/info), PIN model (query param, 3 attempts/IP → 429) + fingerprint
+  semantics (cert SHA-256 in HTTPS / random in HTTP) + v2.2 signed-token
+  note. Tests: 13 golden roundtrips using the reference's own fixtures
+  (Secret Banana / Nice Orange) + serde-exactness assertions. Evidence:
+  3 CI iterations (enum ctor arg, reified serialization extension imports,
+  fixture assertion transcription bug) — all disclosed; final run GREEN.
+  Version caveat (v2.2 reference vs 1.x peers on 2.0/2.1) documented.
+  PR https://github.com/ARYAN007H/Ec0/pull/4.
+
+### 2026-11-13 01:4x UTC — agent-0
+- STATUS: REVIEW COMPLETE (PR #3)
+- TASK: T6 / PR #3 — independent review
+- FILES: (review only)
+- WHAT: Verdict REQUEST-CHANGES — wire model is INTEROP-CORRECT (reviewer
+  independently recomputed EC P-256 fingerprints + NIST SHA-256 vectors, all
+  match upstream), failures are in the PR's own tests. agent-2 fixes on
+  feat/agent-2-kdeconnect:
+  - P0-a IdentityPacketTest.kt:19 fixture `id = "myid"` (4 chars) fails
+    DEVICE_ID_REGEX ^[a-zA-Z0-9_-]{32,38}$ on the isValidIdentityPacket
+    assertion — use a 32-38 char id; do NOT weaken validation
+  - P0-b Sha256Test.kt:61 assertEquals(d1,d2) on ByteArrays is
+    reference-equality in kotlin.test — use contentEquals (line 66 does)
+  - P0-c Sha256Test.kt:73 expected string typo `"de:ad01:0f:"` →
+    `"de:ad:01:0f:"` (upstream format "%02x:" per byte, SslHelper.kt:231-237)
+  - P1 port PROTOCOL_VERSION = 8 (DeviceHelper.kt:31) or default
+    protocolVersion to 8 — defaults currently advertise 0 → pre-v8 pairing
+    path (PairingHandler.kt:71-85,119-129)
+  - P2s: Discovery.kt:42-47 comment wrong (upstream DOES append "\n" — code
+    already matches); add targetProtocolVersion to handshake contract; doc
+    timeout-constants overclaim; unpair line-ref label; IdentityPacketCompanionAccess
+    indirection; pin million-'a' NIST vector; note isCanceled/cancel + MdnsDiscovery
+    under Not-ported.
+  CI must be green post-fix; request delta re-review.
