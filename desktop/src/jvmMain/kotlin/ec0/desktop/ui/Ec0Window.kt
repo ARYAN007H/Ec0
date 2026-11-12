@@ -101,7 +101,7 @@ private fun MainScaffold(appState: AppState) {
                 )
                 Panel.SETTINGS -> SettingsPanel(
                     settings = settings,
-                    onUpdate = { appState.updateSettings(it) },
+                    onUpdate = { newState -> appState.updateSettings { newState } },
                     modifier = Modifier.weight(1f),
                 )
             }
