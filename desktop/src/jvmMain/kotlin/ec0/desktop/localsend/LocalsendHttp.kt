@@ -26,6 +26,12 @@ class PinRequiredException(val requiredPin: Boolean) : Exception("PIN required (
 /** Raised when the recipient declines (403). */
 class RecipientDeclinedException : Exception("Recipient declined (403)")
 
+/** Raised on 429 (PIN attempt limit exceeded for this source IP). */
+class TooManyAttemptsException : Exception("Too many PIN attempts (429)")
+
+/** Raised when a transfer is cancelled mid-upload (connection aborted). */
+class UploadCancelledException : Exception("Upload cancelled")
+
 /** Raised when nothing was accepted (204). */
 class NothingAcceptedException : Exception("No files accepted (204)")
 
@@ -70,6 +76,7 @@ class LocalsendHttp(
                 204 -> throw NothingAcceptedException()
                 401 -> throw PinRequiredException(true)
                 403 -> throw RecipientDeclinedException()
+                429 -> throw TooManyAttemptsException()
                 else -> throw IllegalStateException("prepare-upload failed: HTTP $code")
             }
         } finally {
@@ -77,7 +84,10 @@ class LocalsendHttp(
         }
     }
 
-    /** Stream [bytes] to /upload with progress callbacks (percent 0..100). */
+    /** Stream [bytes] to /upload with progress callbacks (percent 0..100).
+     *  [cancelSignal] is polled between chunks: when it returns true the
+     *  connection is disconnected immediately and
+     *  [UploadCancelledException] is thrown. */
     fun uploadFile(
         peer: UiDevice,
         sessionId: String,
@@ -86,6 +96,7 @@ class LocalsendHttp(
         fileName: String,
         bytes: InputStream,
         size: Long,
+        cancelSignal: () -> Boolean = { false },
         onProgress: (Int) -> Unit,
     ) {
         val route = ec0.core.localsend.api.LocalsendV2Route.UPLOAD
@@ -102,6 +113,10 @@ class LocalsendHttp(
                 var written = 0L
                 var lastPct = -1
                 while (true) {
+                    if (cancelSignal()) {
+                        conn.disconnect() // abort the in-flight request now
+                        throw UploadCancelledException()
+                    }
                     val n = bytes.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
@@ -140,14 +155,20 @@ class LocalsendHttp(
     }
 
     private fun pinnedFactory(expectedSha256Hex: String): javax.net.ssl.SSLSocketFactory {
+        // Fail closed: the announced fingerprint IS the peer identity (with
+        // the lenient hostname verifier, an empty fingerprint would accept
+        // any cert on the LAN). Reference: server_cert_verifier.rs.
         val expected = expectedSha256Hex.replace(":", "").lowercase()
+        require(expected.isNotEmpty()) {
+            "HTTPS peer announced an empty fingerprint — refusing to connect unpinned"
+        }
         val tm = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
                 val cert = chain.firstOrNull() ?: throw java.security.cert.CertificateException("empty chain")
                 val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
                 val hex = digest.joinToString("") { "%02x".format(it) }
-                if (expected.isNotEmpty() && hex != expected) {
+                if (hex != expected) {
                     throw java.security.cert.CertificateException(
                         "fingerprint mismatch: got $hex want $expected",
                     )

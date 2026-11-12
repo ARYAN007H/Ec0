@@ -51,31 +51,44 @@ class LocalsendUdpDiscovery(
     suspend fun discoverSweep(timeoutMs: Int = 3_500): List<UiDevice> =
         withContext(Dispatchers.IO) {
             val announce = buildAnnounce()
+            // Reference wraps every announce in the legacy v2 flag:
+            // `AnnouncedMessage { #[serde(flatten)] message, announce: bool }`
+            // (multicast/mod.rs:174-181). Desktop has no serialization codegen
+            // plugin, so the wrapper is spliced into the serialized body —
+            // byte-identical to the reference wire shape. Incoming messages
+            // parse fine either way (ignoreUnknownKeys).
+            val messageJson = LocalsendV2.json.encodeToString(MulticastMessageV2.serializer(), announce)
             val announceBytes =
-                LocalsendV2.json.encodeToString(MulticastMessageV2.serializer(), announce).encodeToByteArray()
+                ("""{"announce":true,""" + messageJson.substring(1)).encodeToByteArray()
             val group = InetAddress.getByName(MULTICAST_GROUP)
 
             val socket = MulticastSocket(null)
             try {
                 socket.reuseAddress = true
                 socket.bind(InetSocketAddress(LocalsendV2.DISCOVERY_PORT))
-                socket.broadcast = true
                 socket.soTimeout = 250
                 joinOnInterfaces(socket, group)
 
-                // announce (multicast + broadcast)
-                socket.send(DatagramPacket(announceBytes, announceBytes.size, group, LocalsendV2.DISCOVERY_PORT))
-                runCatching {
-                    socket.send(
-                        DatagramPacket(announceBytes, announceBytes.size,
-                            InetAddress.getByName("255.255.255.255"), LocalsendV2.DISCOVERY_PORT),
-                    )
-                }
-
+                // Announce burst: 3 datagrams at 100/500/2000ms (reference
+                // ANNOUNCE_DELAYS, multicast/mod.rs:45-49) interleaved with
+                // listening. Multicast only — the reference has no broadcast.
+                val announceTimesMs = listOf(100L, 500L, 2000L)
+                val start = System.currentTimeMillis()
+                var nextAnnounce = 0
                 val found = LinkedHashMap<String, UiDevice>()
-                val deadline = System.currentTimeMillis() + timeoutMs
+                val deadline = start + timeoutMs
                 val buf = ByteArray(65_536)
                 while (System.currentTimeMillis() < deadline) {
+                    if (nextAnnounce < announceTimesMs.size &&
+                        System.currentTimeMillis() - start >= announceTimesMs[nextAnnounce]
+                    ) {
+                        runCatching {
+                            socket.send(
+                                DatagramPacket(announceBytes, announceBytes.size, group, LocalsendV2.DISCOVERY_PORT),
+                            )
+                        }
+                        nextAnnounce++
+                    }
                     val packet = DatagramPacket(buf, buf.size)
                     try {
                         socket.receive(packet)
@@ -121,6 +134,5 @@ class LocalsendUdpDiscovery(
     companion object {
         /** Reference: packages/core/src/multicast/mod.rs:28 */
         const val MULTICAST_GROUP = "224.0.0.167"
-        const val BROADCAST = "255.255.255.255"
     }
 }

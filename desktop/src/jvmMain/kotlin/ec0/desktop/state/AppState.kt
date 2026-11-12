@@ -10,6 +10,8 @@ import ec0.desktop.localsend.LocalsendHttp
 import ec0.desktop.localsend.NothingAcceptedException
 import ec0.desktop.localsend.PinRequiredException
 import ec0.desktop.localsend.RecipientDeclinedException
+import ec0.desktop.localsend.TooManyAttemptsException
+import ec0.desktop.localsend.UploadCancelledException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,7 +114,9 @@ class AppState(
     }
 
     /** Send a real file to a LocalSend peer: prepare-upload → upload with
-     *  progress, states updated on the queue item as the protocol advances. */
+     *  progress, states updated on the queue item as the protocol advances.
+     *  [cancelTransfer] aborts a running upload at the next chunk boundary
+     *  (the connection is disconnected) — see the CANCELLED mapping below. */
     fun sendFile(file: File, peer: UiDevice) {
         val item = TransferItem(
             id = "out-${System.nanoTime()}",
@@ -123,9 +127,9 @@ class AppState(
             state = TransferState.RUNNING,
         )
         _transfers.update { it + item }
-        ensureTicker()
         scope.launch(Dispatchers.IO) {
             runCatching {
+                if (isCancelled(item.id)) throw UploadCancelledException()
                 val fileDto = FileDto(
                     id = item.id,
                     fileName = file.name,
@@ -136,10 +140,13 @@ class AppState(
                     peer = peer,
                     info = toRegisterDto(),
                     files = mapOf(item.id to fileDto),
-                    pin = _settings.value.pin.takeIf { _settings.value.requirePin },
+                    // PIN goes whenever the user stored one — the peer decides
+                    // whether it's required (401 tells us otherwise).
+                    pin = _settings.value.pin.takeIf { it.isNotEmpty() },
                 )
                 val token = response.files[item.id]
                     ?: throw NothingAcceptedException()
+                if (isCancelled(item.id)) throw UploadCancelledException()
                 updateItem(item.id) { it.copy(progressPct = 0) }
                 file.inputStream().use { input ->
                     http.uploadFile(
@@ -150,21 +157,33 @@ class AppState(
                         fileName = file.name,
                         bytes = input,
                         size = file.length(),
+                        cancelSignal = { isCancelled(item.id) },
                     ) { pct -> updateItem(item.id) { it.copy(progressPct = pct) } }
                 }
             }.onSuccess {
-                updateItem(item.id) { it.copy(progressPct = 100, state = TransferState.DONE) }
+                // Guard: a cancelled transfer must not be flipped to DONE by
+                // a late success path.
+                updateItem(item.id) { current ->
+                    if (current.state in FINISHED_STATES) current
+                    else current.copy(progressPct = 100, state = TransferState.DONE)
+                }
             }.onFailure { t ->
-                if (t is CancellationException) {
-                    updateItem(item.id) { it.copy(state = TransferState.CANCELLED) }
-                } else {
-                    val msg = when (t) {
-                        is PinRequiredException -> "PIN required / wrong PIN (401)"
-                        is RecipientDeclinedException -> "Recipient declined (403)"
-                        is NothingAcceptedException -> "No files accepted (204)"
-                        else -> "Failed: ${t.message ?: t.javaClass.simpleName}"
-                    }
-                    updateItem(item.id) { it.copy(state = TransferState.FAILED, error = msg) }
+                when (t) {
+                    is UploadCancelledException, is kotlinx.coroutines.CancellationException ->
+                        updateItem(item.id) { current ->
+                            if (current.state in FINISHED_STATES) current
+                            else current.copy(state = TransferState.CANCELLED)
+                        }
+                    is PinRequiredException ->
+                        updateItem(item.id) { it.copy(state = TransferState.FAILED, error = "PIN required / wrong PIN (401)") }
+                    is RecipientDeclinedException ->
+                        updateItem(item.id) { it.copy(state = TransferState.FAILED, error = "Recipient declined (403)") }
+                    is TooManyAttemptsException ->
+                        updateItem(item.id) { it.copy(state = TransferState.FAILED, error = "Too many PIN attempts (429)") }
+                    is NothingAcceptedException ->
+                        updateItem(item.id) { it.copy(state = TransferState.FAILED, error = "No files accepted (204)") }
+                    else ->
+                        updateItem(item.id) { it.copy(state = TransferState.FAILED, error = "Failed: ${t.message ?: t.javaClass.simpleName}") }
                 }
             }
         }
