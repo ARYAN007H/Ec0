@@ -1,5 +1,3 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
@@ -15,11 +13,6 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(compose.material)
             implementation(libs.kotlinx.coroutines.swing)
-        }
-        jvmMain {
-            compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_17)
-            }
         }
     }
 
