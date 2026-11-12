@@ -71,9 +71,11 @@ class ClipboardClientTest {
     @Test
     fun serverStreamErrorPropagates() = runBlocking {
         val channel = FakeGrpcChannel { FakeRpcBehavior(respond = { _, _ -> emptyList<Any>() }, status = Status.INTERNAL) }
-        assertFailsWith<StatusRuntimeException> {
+        val thrown = assertFailsWith<StatusRuntimeException> {
             ClipboardClient(channel).getClipData(Clipboard.Type.newBuilder().build()).toList()
         }
+        assertEquals(Status.Code.INTERNAL, thrown.status.code)
+        Unit
     }
 
     @Test
@@ -163,9 +165,11 @@ class FileClientTest {
     @Test
     fun unaryErrorPropagates() = runBlocking {
         val channel = FakeGrpcChannel { FakeRpcBehavior(respond = { _, _ -> emptyList<Any>() }, status = Status.UNAVAILABLE) }
-        assertFailsWith<StatusRuntimeException> {
+        val thrown = assertFailsWith<StatusRuntimeException> {
             FileClient(channel).createFile(info)
         }
+        assertEquals(Status.Code.UNAVAILABLE, thrown.status.code)
+        Unit
     }
 }
 
