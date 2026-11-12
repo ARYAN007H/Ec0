@@ -30,7 +30,12 @@ class FakeGrpcChannel(private val behaviorFor: (MethodDescriptor<*, *>) -> FakeR
     override fun <ReqT, RespT> newCall(
         method: MethodDescriptor<ReqT, RespT>,
         callOptions: io.grpc.CallOptions,
-    ): ClientCall<ReqT, RespT> = FakeClientCall(method, behaviorFor(method), sentRequests)
+    ): ClientCall<ReqT, RespT> {
+        @Suppress("UNCHECKED_CAST")
+        val call = FakeClientCall(method as MethodDescriptor<Any, Any>, behaviorFor(method), sentRequests)
+        @Suppress("UNCHECKED_CAST")
+        return call as ClientCall<ReqT, RespT>
+    }
 
     override fun authority(): String? = "fake.synergy"
 }
