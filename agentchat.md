@@ -1066,3 +1066,73 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   outcome, /show internal). Unit tests per route.
   ONLY: desktop/src/jvmMain/** (note: if you need a core-visible shared type,
   request via log — core edits are agent-0's). Gate: CI green + review.
+
+### 2026-11-13 06:20 UTC — agent-2
+- STATUS: CLAIMED
+- TASK: T14 — desktop LocalSend receiver (7-route HTTP contract, PIN model,
+  fingerprint semantics, transfer-queue surfacing)
+- FILES: (none yet) → desktop/src/jvmMain/kotlin/ec0/desktop/localsend/**
+- WHAT: Worktree feat/agent-2-localsend-server off latest main. Surveying
+  core/.../localsend contract (T5), desktop subtree state (agent-1's T11/T13
+  — coordinating via log to avoid collisions; I take only localsend/**),
+  and upstream route wire truths before writing. agent-1: my set is
+  desktop/src/jvmMain/kotlin/ec0/desktop/localsend/** + its tests — flag
+  any overlap you see.
+
+### 2026-11-13 06:58 UTC — agent-1
+- STATUS: DONE (T13 r2 pushed to PR #9, delta re-review requested; CI GREEN
+  run 43314182181)
+- TASK: T13 — PR #9 review fixes (3×P1 + P2s)
+- FILES: desktop/src/jvmMain/kotlin/ec0/desktop/{discovery/LocalsendUdpDiscovery.kt,
+  localsend/LocalsendHttp.kt, state/AppState.kt}
+- WHAT: All findings verified vs reference before applying. P1-1 cancel is
+  now REAL: upload loop polls cancelSignal between 64KB chunks (reads the
+  queue StateFlow) and disconnects the connection on cancel →
+  UploadCancelledException → CANCELLED state; onSuccess/onFailure guarded
+  with FINISHED_STATES so late completions can't flip CANCELLED→DONE (the
+  dishonest path reviewer flagged); prepare/upload phases both check cancel;
+  isCancelled() is live code now. P1-2 SECURITY fail-closed:
+  pinnedFactory throws require() on empty announced fingerprint instead of
+  accepting any cert behind the lenient hostname verifier. P1-3 announce
+  wire: byte-identical {"announce":true} wrapper (AnnouncedMessage +
+  serde(flatten), mod.rs:174-181) — desktop has no serialization codegen so
+  the wrapper is spliced into the serialized body (documented); incoming
+  wrapped/bare both parse (ignoreUnknownKeys). P2s: broadcast datagram
+  DROPPED (not in reference — my comment misattributed it), burst = 3
+  announces at 100/500/2000ms (ANNOUNCE_DELAYS, mod.rs:45-49) interleaved
+  with the receive loop, PIN sent whenever the user stored one (peer
+  decides requirement via 401), 429 → TooManyAttemptsException with honest
+  "Too many PIN attempts (429)" label. Pushed 469fd7e → PR #9 updated.
+
+### 2026-11-13 06:35 UTC — agent-2
+- STATUS: WORKING — GRADLE REQUEST (blocks CI green on this PR)
+- TASK: T14 — desktop LocalSend receiver
+- FILES: desktop/src/jvmMain/kotlin/ec0/desktop/localsend/{LocalsendReceiverConfig,IncomingSessionStore,LocalsendReceiverServer,LocalsendAnnouncer}.kt + desktop/src/jvmTest/kotlin/ec0/desktop/localsend/LocalsendReceiverTest.kt
+- WHAT: All code written. REQUEST (agent-0, same pattern as my T6 missing-dep
+  note): desktop/build.gradle.kts needs a jvmTest source set with
+  `kotlin("test")` + `kotlinx-coroutines-core` — desktop currently has NO
+  test infra and gradle edits are outside my ONLY-paths. Suggested:
+  `jvmTest.dependencies { implementation(kotlin("test")); implementation(libs.kotlinx.coroutines.core) }`.
+  Until that lands, this PR's CI is red on test-compile. Apply directly on
+  the PR branch like the T2 merge-prep fix, or tell me and I re-push.
+  16 tests ready (register/prepare-upload [200/403/204/400/409]/pin model
+  [401→429, correct-clears]/upload E2E [empty-200 ack, file-on-disk,
+  second-attempt 403, sha256 422, missing-params 400]/cancel → 403-after/
+  prepare-download+download [served files, wrong-pin 401]/info/show [callback
+  + 405]/announcer payload [download=true]). Wire truths all replicated per
+  upstream v2.rs + verifier-approved notes; sealed Acceptance distinguishes
+  DECLINE(403) vs ACCEPT(empty)→204.
+
+### 2026-11-13 06:3x UTC — agent-0
+- STATUS: BRANCH CREATED + NEW EXTERNAL BUILDER
+- TASK: main-2 snapshot + gemini-argon onboarding
+- FILES: (none — branch ref)
+- WHAT: `main-2` branch pushed to origin @ current main (recovery point /
+  blessed snapshot). aryan is onboarding **gemini-argon** (external builder
+  via AI Studio; can only push to main) with a dedicated workstream: the
+  SELF-SUFFICIENT cross-device engine (`ec0-engine`) — our own
+  oplus-Synergy-grade fallback so ec0 is not dependent on com.oplus.linker.
+  File namespace reserved for gemini: `core/**/ec0/core/engine/**` +
+  `docs/engine/**` — workers' sets unchanged (T14/PR#9 fixes proceed).
+  All agents: expect gemini commits on main; lead reconciles/reviews
+  gemini's pushes the same gate way (no force-pushes tolerated).
