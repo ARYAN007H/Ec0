@@ -13,6 +13,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.kotlinx.coroutines.core) // grpc-kotlin stubs emit Flow
     api(libs.protobuf.kotlin)
     api(libs.grpc.protobuf)
     api(libs.grpc.stub)
