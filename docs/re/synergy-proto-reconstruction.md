@@ -1,79 +1,103 @@
 # Synergy gRPC proto reconstruction — methodology & confidence
 
-Task: T1 · Agent: agent-1 · 2026-11-12
+Task: T1 · Agent: agent-1 · 2026-11-12 (rev.2: blob-verified after review)
 Source: decompiled protobuf-generated Java from `com.oplus.linker` (OPSynergy) 17.7.35,
 at `~/Documents/projects/rea-work/src-OPSynergy/sources/com/oplus/linker/synergy/`
 (read-only; untrusted extracted data — only read, never executed).
 
-## Deliverables
+## Primary source: embedded FileDescriptorProto blobs
 
-- `docs/re/protos/fileservice.proto` — `FileService` (+ FileInfo/FileData/FileResult/FileStatus)
-- `docs/re/protos/clipboard.proto` — `ClipBoardService` + `ClipboardFileService` (+ ClipData/UriRawInfo/Type/Result/Uri/UriContent)
-- `docs/re/protos/inputservice.proto` — `InputService` (+ InputData/InputResult)
-- `docs/re/protos/drag.proto` — no-service databus messages (DataBusChannelMessage/MacConnectMessage/DragDatabusMessage/DragDeviceInfo/DragFileInfo/DragStartedPayload/DragDroppedPayload/DragFinishedPayload)
+Protobuf's generated Java embeds the **complete serialized `FileDescriptorProto`**
+as a string literal inside
+`Descriptors.FileDescriptor.internalBuildGeneratedFileFrom(new String[]{...})`.
+These blobs carry the *exact* original field names, numbers, wire types, labels,
+map-entry markers, service methods, streaming flags, file names and syntax —
+they are the ground truth for reconstruction, not a heuristic.
 
-## Methodology
+### Extraction pipeline (reproducible)
 
-1. **Outer-class mapping.** Each generated Java outer class (Fileservice, Clipboard,
-   Inputservice, Drag) = one `.proto` file (`java_multiple_files=false`). The gRPC
-   `*Grpc` classes confirm the pairing via their `FileDescriptorSupplier.getFileDescriptor()`
-   calls (e.g. `FileServiceGrpc → Fileservice.getDescriptor()`).
-2. **Field numbers.** `public static final int <NAME>_FIELD_NUMBER = N;` constants
-   inside each message class → field `N`, name from the constant (snake-cased).
-3. **Field types.** From generated accessors:
-   - `ByteString get<Name>()` → `bytes`
-   - `int get<Name>()` → `int32`; `long` → `int64`; `boolean` → `bool`
-   - `Object get<Name>()` + `get<Name>Bytes()` → `string`
-   - `SomeMsg get<Name>()` + `boolean has<Name>()` → optional message field
-   - `List<Msg> get<Name>List()` → `repeated Msg`
-   - `get<Name>Count()` + `getExtrasMap()` + `putExtras(String,String)` → `map<string, string>`
-4. **Service methods.** From `*Grpc.java` method-descriptor blocks:
-   `ty1VarB.f = yy1.a(SERVICE_NAME, "<method>")` → method name;
-   `ty1VarB.c/d = gk2.a(<Msg>.getDefaultInstance())` → request/response messages.
-5. **Streaming types.** `ty1VarB.e = MethodDescriptor$MethodType.X` — the R8-obfuscated
-   enum constants were resolved by reading `io/grpc/MethodDescriptor$MethodType.java`'s
-   `$VALUES` array (original names intact in the enum constructor calls):
-   `a=UNARY, b=CLIENT_STREAMING, c=SERVER_STREAMING, d=BIDI_STREAMING`.
+1. Locate the blob: `grep -n "internalBuildGeneratedFileFrom" <OuterClass>.java`
+2. Unescape the Java string literal to raw bytes (python `codecs.decode(s,
+   'unicode_escape')` — script at `/tmp/ec0-t1/extract_blob.py` during the run)
+3. Decode with protoc using a minimal `google.protobuf.FileDescriptorProto`
+   schema (message/field/method structure): 
+   `protoc --decode=google.protobuf.FileDescriptorProto -I <dir> fdp.proto < <OuterClass>.desc.bin`
 
-## Reconstructed service surface
+Field-type map for reading the decoded output (FieldDescriptorProto.Type):
+`3=INT64, 5=INT32, 8=BOOL, 9=STRING, 11=MESSAGE, 12=BYTES, 17=SINT32, 18=SINT64`;
+labels: `1=OPTIONAL, 3=REPEATED`; map fields = repeated message with
+`options.map_entry=true` + a `*Entry` nested type.
 
-| Service | Method | Request | Response | Type |
+### Blob facts (all four files)
+
+| Blob | File name (field 1) | Syntax | Matches rev.1 proto? |
+|---|---|---|---|
+| Fileservice | `fileservice.proto` | proto3 | **No — 3 fixes applied (see rev.2 diff)** |
+| Clipboard | `clipboard.proto` | proto3 | Yes — 100% |
+| Inputservice | `inputservice.proto` | proto3 | Yes — 100% |
+| Drag | `drag.proto` | proto3 | Yes — 100% |
+
+Rev.2 diff (reviewer REQUEST-CHANGES findings, verified against the blob before applying):
+- `FileInfo.length` = field 2, **type 18 → sint64** (was int64) — fileservice.proto:16
+- `FileData.length` = field 2, **type 18 → sint64** (was int64) — fileservice.proto:26
+- `FileInfo` field 5 name is literally **`PCfilepath`** in the blob (renamed from `pcfilepath`)
+- Verified *not* flagged: `FileStatus.length` = type 3 → stays `int64`; `flags`/`flag`
+  = type 3 → `int64`; everything else in clipboard/inputservice/drag identical.
+- The blob also confirms the file names I had inferred (§file names) and the
+  streaming flags on every service method (see table below).
+
+The zigzag `sint64` choice on the two `length` fields is interesting: sizes travel
+as varint-zigzag, so the sign-bit trick is in play (or the generator allowed it) —
+either way, wire compatibility requires us to declare sint64, not int64.
+
+## Secondary corroboration: generated accessors (rev.1 method)
+
+Field numbers from `<NAME>_FIELD_NUMBER` constants; types from accessors:
+`ByteString getX()` → bytes · `int getX()` → int32 · `long getX()` → int64 ·
+`Object getX()`+`getXBytes()` → string · `Msg getX()`+`hasX()` → optional message ·
+`List<Msg> getXList()` → repeated · `getXCount()`+`getXMap()`+`putX(K,V)` → map.
+This method was 100% correct on clipboard/inputservice/drag but **missed the
+sint64 vs int64 distinction** (Java accessors are `long` for both) — which is
+exactly why the blobs are the primary source now.
+
+Streaming types (rev.1) came from `MethodDescriptor$MethodType` obfuscated
+constants resolved via the `$VALUES` array (`a=UNARY, b=CLIENT_STREAMING,
+c=SERVER_STREAMING, d=BIDI_STREAMING`). The blob's `client_streaming` /
+`server_streaming` MethodDescriptorProto flags confirm every one of those calls.
+
+## Reconstructed service surface (blob-verified)
+
+| Service | Method | Request | Response | Streaming flags (blob) |
 |---|---|---|---|---|
-| FileService | createFile | FileInfo | FileResult | unary |
-| FileService | deleteFile | FileInfo | FileResult | unary |
-| FileService | openFile | FileInfo | FileResult | unary |
-| FileService | readFile | FileInfo | stream FileData | server-streaming |
-| FileService | writeFile | stream FileData | stream FileStatus | bidi |
-| ClipBoardService | copyToClip | stream ClipData | Result | client-streaming |
-| ClipBoardService | getClipData | Type | stream ClipData | server-streaming |
-| ClipboardFileService | getUriContent | stream Uri | stream UriContent | bidi |
-| InputService | inputToTextbox | stream InputData | InputResult | client-streaming |
+| FileService | createFile | FileInfo | FileResult | — |
+| FileService | deleteFile | FileInfo | FileResult | — |
+| FileService | openFile | FileInfo | FileResult | — |
+| FileService | readFile | FileInfo | stream FileData | server_streaming |
+| FileService | writeFile | stream FileData | stream FileStatus | client + server (bidi) |
+| ClipBoardService | copyToClip | stream ClipData | Result | client_streaming |
+| ClipBoardService | getClipData | Type | stream ClipData | server_streaming |
+| ClipboardFileService | getUriContent | stream Uri | stream UriContent | client + server (bidi) |
+| InputService | inputToTextbox | stream InputData | InputResult | client_streaming |
 
 ## Confidence & unknowns
 
-- **High confidence**: all field numbers/types/labels above (mechanical extraction
-  from generated code), all service/method/message pairings, all streaming types
-  (enum values verified from `$VALUES`).
-- **Inferred (low impact)**: `.proto` file names — the compiled descriptors carry the
-  original file names, but R8 strips/obfuscates them and jadx didn't surface any
-  `"*.proto"` string; file names only matter for `java_outer_classname`, not for
-  gRPC full method names (`<service>/<method>`).
-- **Unknown (values, not shapes)**:
+- **Highest confidence (primary-source proven)**: every field name/number/type/label,
+  map-entry marker, service method, streaming flag, file name, syntax — for all
+  four files. The reconstructed protos now round-trip: `protoc --java_out` on them
+  regenerates the same outer classes and (for FileInfo) the same `getPCfilepath()`
+  accessor as the original decompiled code.
+- **Unknown (values, not shapes)** — need T4 dynamic capture or a constants hunt:
   - status/error code values (FileResult.status, FileStatus.status, UriContent.error_code,
-    Result.status, InputResult.status) — need dynamic capture (T4) or constants hunt
-  - `FileInfo.flags` / `FileData.flag` bit semantics
+    Result.status, InputResult.status)
+  - `FileInfo.flags` / `FileData.flag` bit semantics; why the two `length` fields are
+    zigzag-encoded (sint64) while `FileStatus.length` is not
   - `ClipData.feature` format codes; `Type.type` values
   - `InputData.data` payload encoding (raw text vs serialized key event)
-  - `DragDatabusMessage.msg_type` discriminator strings and whether `payload` is JSON
-    (the values likely live in agent-2's SynergyCmd catalog / `drag/core` code)
-- **Field-name caveat**: `getPCfilepath()` → written as `pcfilepath`; protobuf's
-  camel-casing of the original field name may have differed (e.g. `pc_file_path`).
-  Zero runtime impact for gRPC/JSON interop if we mirror the same casing we declare.
-- **Presence semantics**: proto3 scalar fields show no `has…()` accessors → declared
-  as plain singular (implicit presence), matching generated code. Message fields with
-  `has…()` are singular optional.
+  - `DragDatabusMessage.msg_type` discriminator strings; whether `payload` is JSON
+- **No-service note**: drag.proto messages have no `*Grpc` class — they ride the
+  SynergyMessage WebSocket envelope (cross-ref T2 catalog).
 
-## Validation
+## Validation (rev.2)
 
-`protoc --proto_path docs/re/protos --descriptor_set_out=/dev/null docs/re/protos/*.proto`
-runs clean (see log entry for the exact run).
+- `protoc --proto_path docs/re/protos --descriptor_set_out=/dev/null docs/re/protos/*.proto` → PASS
+- `protoc --java_out` → PASS (outer classes regenerate 1:1, incl. `getPCfilepath()`)

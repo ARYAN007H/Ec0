@@ -13,17 +13,17 @@ option java_package = "com.oplus.linker.synergy";
 // echoed inside every FileData chunk for writeFile).
 message FileInfo {
   string filepath = 1;      // phone-side path (or URI text) of the file
-  int64 length = 2;         // total file size in bytes
+  sint64 length = 2;        // total file size in bytes (zigzag-encoded)
   int64 flags = 3;          // operation flags (bit meaning unknown)
   string uri = 4;           // content URI of the file on the phone
-  string pcfilepath = 5;    // PC-side destination path
+  string PCfilepath = 5;    // PC-side destination path (exact blob name)
   map<string, string> extras = 6;
 }
 
 // One chunk streamed by the phone in readFile / streamed by the PC in writeFile.
 message FileData {
   string info = 1;          // chunk metadata echo (FileInfo serialized? — text)
-  int64 length = 2;         // payload length in bytes
+  sint64 length = 2;        // payload length in bytes (zigzag-encoded)
   bytes buffer = 3;         // chunk payload
   int64 flag = 4;           // chunk flag (e.g. EOF marker — unknown)
   string uri = 5;           // content URI of the chunk source
