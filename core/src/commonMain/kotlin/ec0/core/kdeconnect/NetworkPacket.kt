@@ -185,7 +185,7 @@ class NetworkPacket private constructor(
     /** The on-the-wire representation. */
     @OptIn(ExperimentalSerializationApi::class)
     @Serializable
-    private class WirePacket(
+    internal class WirePacket(
         val id: Long = 0,
         val type: String,
         val body: JsonObject,
@@ -211,7 +211,10 @@ class NetworkPacket private constructor(
         internal val json: Json = Json {
             ignoreUnknownKeys = true // tolerate extra fields — mirrors upstream JsonHelper
             encodeDefaults = true
-            maxNestingDepth = 64 // don't decode infinitely deep packets
+            // NOTE: upstream also sets maxNestingDepth = 64 as a decode-depth
+            // guard; kotlinx-serialization on our classpath (1.7.3) does not
+            // expose that knob yet (upstream ships a newer version). Re-add
+            // when the version catalog is bumped.
         }
 
         @Throws(SerializationException::class)

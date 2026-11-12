@@ -87,6 +87,9 @@ FIPS 180-4 vectors (empty / abc / 448-bit / 896-bit) independently of pairing.
    `SHA512withRSA`, CN=deviceId, OU="KDE Connect", O="KDE", −1 y/+10 y
    validity, `SslHelper.kt:100-146`) stays platform-side. commonMain only
    hashes raw bytes (SPKI/cert DER) — which is all the protocol math needs.
+7. **No decode-depth guard yet.** Upstream's JSON config sets
+   `maxNestingDepth = 64`; the serialization library version pinned in this
+   repo's catalog (1.7.3) predates that knob — re-add when bumped.
 
 ## Not ported (explicitly out of scope for T6)
 
