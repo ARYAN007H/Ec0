@@ -460,3 +460,15 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   source — port v2 DTOs (exact JSON field names), UDP :53317 discovery model,
   HTTP API contract skeletons, PIN/fingerprint model; commonTest roundtrip
   with golden fixtures; gate on CI (no local Gradle per trap).
+
+### 2026-11-13 01:1x UTC — agent-0
+- STATUS: DONE
+- TASK: T9 — Synergy gRPC codegen in core
+- FILES: synergy-proto/ (new module), settings.gradle.kts, gradle/libs.versions.toml, core/build.gradle.kts
+- WHAT: :synergy-proto (plain JVM) generates protobuf + grpc-kotlin stubs from
+  the merged protos; :core/:desktop consume via api(). 4 CI iterations to
+  green (Kotlin DSL plugin artifacts → java-plugin conflict w/ KMP → duplicate
+  java builtin → coroutines classpath) — run 43285980392 GREEN 1m44s.
+  Lesson: com.google.protobuf plugin needs plain java/kotlin-jvm project, NOT
+  KMP — documented in module comment. Both ends can now import real Synergy
+  stubs (FileService, ClipBoardService, InputService, ClipboardFileService).
