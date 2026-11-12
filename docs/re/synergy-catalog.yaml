@@ -1,0 +1,223 @@
+# ec0 — Synergy control-plane catalog (machine-readable)
+# Extracted 2026-11-12/13 from decompiled OPSynergy 17.7.35 (com.oplus.linker)
+# Sources: protocol/SynergyCmd.java, protocol/SynergyInfo.java,
+# protocol/SynergyMessage.java, base/socket/WebSocketConnectManager.java,
+# base/socket/RetryAndChangePortInterceptor.java, bus/PCSynergyConnection.java,
+# bus/PCSynergyReceive.java, bus/websocket/WebSocketScene.java,
+# wisecast/{CastActionScene,MirageScene}.java, wisetransfer/vdc/InterruptManager.java,
+# util/Config.java (com.oplus.linker.synergy.util),
+# com/oplus/synergy/utils/Config.java (embedded engine namespace)
+# NOTE: static analysis only — runtime-observed values pending T4 capture.
+# GLOSS RULE: every `meaning` field is inferred from constant names unless
+# explicitly marked meaning_source: code-evidence (usage site shown).
+
+meta:
+  apk: OPSynergy-linker-17.7.35.apk
+  package: com.oplus.linker.synergy
+  serialization: Gson (@SerializedName annotations)
+  proto_package: com.oplus.linker.synergy  # gRPC layer, see agent-1 T1 protos
+
+envelope:  # SynergyMessage.java
+  fields:
+    msg_type:  {type: string, values: [cmd, info]}          # TYPE_CMD / TYPE_INFO
+    msg_body:  {type: object, of: SynergyCmd | SynergyInfo}
+    src_role:  {type: string, observed_value: synergy}       # Config.SYNERGY_NOTIFICATION_CHANNEL_NAME
+    category:  {type: string, json_key: category}            # ParserTag.TAG_CATEGORY
+    timestamp: {type: long}                                   # System.currentTimeMillis()
+    noncestr:  {type: long}                                   # new Random(timestamp).nextLong() in base send path
+    signature: {type: long}                                   # constant 0x0FFFFFFF (268435455) in base send path; real scheme unknown
+  send_path_evidence:
+    file: base/socket/WebSocketConnectManager.java
+    line: 558
+    notes: >
+      Base notification-channel send: Gson().toJson(new SynergyMessage.Builder()
+      .setType(type).setBody(body).setSrcRole("synergy").setCategory(category)
+      .setTimestamp(now).setNonceStr(new Random(now).nextLong())
+      .setSignature(268435455L)). Signature/nonce derivation for other
+      message classes is an OPEN UNKNOWN (T4 capture must verify).
+
+cmd_schema:  # SynergyCmd.java — msg_body when msg_type=cmd
+  fields:
+    cmd_type:  {type: string}
+    cmd_body:  {type: object, nullable: true}
+    cmd_value: {type: int, default: -1}
+    reason:    {type: string, default: ""}
+
+info_schema:  # SynergyInfo.java — msg_body when msg_type=info
+  fields:
+    info_type:  {type: string}
+    info_body:  {type: object, nullable: true}
+    info_value: {type: int}
+
+flag_values:  # SynergyCmd FLAG_* ints — semantic values documented from constant
+  # names. Transport slot UNVERIFIED: no send site in the decompiled app
+  # namespace sets any FLAG_*; review asserts they ride cmd_body (not
+  # cmd_value) — consistent with PC-peer consumption — CONFIRM VIA T4.
+  transport_slot: cmd_body  # per review; unverified — T4
+  app_side_send_sites: 0
+  values:
+    FLAG_MIRAGE_WINDOW_STATUS_CLOSE: 0
+    FLAG_MIRAGE_WINDOW_STATUS_OPEN: 1
+    FLAG_PAD_ROTATION: 4
+    FLAG_RELAY_CLOSE: 0
+    FLAG_RELAY_OPEN: 1
+    FLAG_SHARED_CLIPBOARD_CLOSE: 0
+    FLAG_SHARED_CLIPBOARD_OPEN: 1
+    FLAG_SINGLE_PHONE_CALL: 0
+    FLAG_SINGLE_PHONE_CALL_PRIVATE_DIALOG: 100
+    FLAG_START_MIRROR_FAIL: 0
+    FLAG_START_MIRROR_SUCCESS: 1
+
+cmd_type_values:  # constants sent/compared as cmd_type (or info_type) values — NOT body keys
+  - {const: KEY_CMD_CHECK_WEB_SOCKET,      value: check_web_socket,     meaning_source: code-evidence, evidence: "PCSynergyReceive.java:527 equals(synergyCmd.mCmdType)"}
+  - {const: KEY_CMD_INTERRUPT_RING,        value: synergy_interrupt_ring_phone, meaning_source: code-evidence, evidence: "InterruptManager.java setType(KEY_CMD_INTERRUPT_RING).setBody(\"\")"}
+  - {const: KEY_CMD_NEED_PRIVACY_TOAST,    value: synergy_need_privacy_toast, meaning_source: code-evidence, evidence: "PCSynergyReceive.java equals(mCmdType)"}
+  - {const: KEY_CMD_PHONE_ACCEPT,          value: synergy_accept_phone, meaning_source: code-evidence, evidence: "PCSynergyReceive.java:481 equals(mCmdType)"}
+  - {const: KEY_CMD_PHONE_END_CALL,        value: synergy_end_phone,    meaning_source: code-evidence, evidence: "PCSynergyReceive.java equals(mCmdType)"}
+  - {const: KEY_CMD_PHONE_IGNORE,          value: synergy_ignore_phone, meaning_source: code-evidence, evidence: "PCSynergyReceive.java equals(mCmdType)"}
+  - {const: KEY_CMD_SMS_RESPOND,           value: synergy_respond_via_message, meaning_source: code-evidence, evidence: "PCSynergyReceive.java equals(mCmdType)"}
+  - {const: KEY_CMD_SPLIT_SCREEN_STATE,    value: split_screen_state,   meaning_source: code-evidence, evidence: "CastActionScene.java setType(KEY_CMD_SPLIT_SCREEN_STATE)"}
+  - {const: KEY_CMD_SYNERGY_OS_CONFIG,     value: synergy_os_config,    meaning_source: code-evidence, evidence: "PCSynergyReceive.java:519 equals(mCmdType)"}
+  - {const: KEY_CMD_TOP_PACKAGE_NAME,      value: top_package_name,     meaning_source: code-evidence, evidence: "CastActionScene.java SynergyInfo.Builder().setType(KEY_CMD_TOP_PACKAGE_NAME) (info_type use)"}
+  - {const: KEY_CMD_TOP_TASK_PACKAGE_NAME, value: task_package_names,   meaning_source: code-evidence, evidence: "CastActionScene.java SynergyInfo.Builder().setType(KEY_CMD_TOP_TASK_PACKAGE_NAME) (info_type use)"}
+
+payload_body_keys:  # constants used as keys INSIDE cmd_body / info_body JSON
+  - {const: KEY_CMD_MIRAGE_APP_ICON,    value: icon,        meaning_source: code-evidence, evidence: "defpackage/hc3.java jSONObject.optInt(KEY_CMD_MIRAGE_APP_ICON); p52.java bundle.putInt"}
+  - {const: KEY_CMD_MIRAGE_PACKAGE_NAME, value: packagename, meaning_source: code-evidence, evidence: "wisecast/MirageScene.java jsonObject.addProperty(KEY_CMD_MIRAGE_PACKAGE_NAME, pkg)"}
+
+unreferenced_constants:  # defined but no usage site found in decompiled app code
+  - {const: KEY_CMD_MIRAGE_APP_NAME, value: app_name}
+
+reasons:
+  - {const: REASON_CMD_FILE_MANAGER_REMOVED, value: file_manager_removed}
+
+cmds:  # TYPE_CMD_* — command types (cmd_type string values); meanings are name-inferences
+  - {const: TYPE_CMD_CLIPBOARD_STATUS,             value: clipboardstatus}
+  - {const: TYPE_CMD_CLOSE_MIRAGE_WINDOW,          value: close_mirage_window}
+  - {const: TYPE_CMD_DISCONNECT,                   value: synergy_disconnect}
+  - {const: TYPE_CMD_DISCONNECT_CAST_AND_CONNECT,  value: synergy_disconnect_bt}
+  - {const: TYPE_CMD_DRAG_FILE_TO_PC_START,        value: startdragfile}
+  - {const: TYPE_CMD_DRAG_FILE_TO_PC_STOP,         value: enddragfile}
+  - {const: TYPE_CMD_ENABLE_KEY_EVENT,             value: enable_key_event}
+  - {const: TYPE_CMD_FILE_OPEN,                    value: file_open}
+  - {const: TYPE_CMD_FILE_PC_BACKUP,               value: file_pc_backup}
+  - {const: TYPE_CMD_FILE_TRANSFER,                value: file_transfer}
+  - {const: TYPE_CMD_FILE_TRANSFER_MODE,           value: file_transfer_mode}
+  - {const: TYPE_CMD_IS_SEND_FILE_TO_PC,           value: sendfiletopcresult}
+  - {const: TYPE_CMD_IS_SEND_FILE_TO_PC_error,     value: send_file_to_pc_error}
+  - {const: TYPE_CMD_KEY_EVENTS,                   value: key_events}
+  - {const: TYPE_CMD_MAX_RESOLUTION,               value: max_resolution}
+  - {const: TYPE_CMD_MINIMIZE_WINDOW,              value: minimize_window}
+  - {const: TYPE_CMD_MIRAGE_WINDOW,                value: mirageWindow}
+  - {const: TYPE_CMD_OPEN_MIRAGE_WINDOW,           value: open_mirage_window}
+  - {const: TYPE_CMD_OPEN_MIRAGE_WINDOW_BY_PHONE,  value: open_mirage_window_by_phone}
+  - {const: TYPE_CMD_OPEN_MIRAGE_WINDOW_STATUS,    value: open_mirage_window_status}
+  - {const: TYPE_CMD_PAD_ROTATION,                 value: pad_rotation}
+  - {const: TYPE_CMD_PC_INPUT_MODE_START,          value: synergy_pc_input_mode_start}
+  - {const: TYPE_CMD_PC_INPUT_MODE_STOP,           value: synergy_pc_input_mode_stop}
+  - {const: TYPE_CMD_PC_UPDATE_CURSOR_POSITION,    value: synergy_pc_update_cursor_position}
+  - {const: TYPE_CMD_RESPONSE_KSC,                 value: rspksc, meaning_source: code-evidence, evidence: "PCSynergyConnection RESPONSE_KSC_CODE / REQUEST_KSC_WAIT_TIME"}
+  - {const: TYPE_CMD_SCREEN_STATUS,                value: screen_status}
+  - {const: TYPE_CMD_SEND_API_LEVEL,               value: api_level}
+  - {const: TYPE_CMD_SEND_CODEC_INFO,              value: codec_info}
+  - {const: TYPE_CMD_SEND_PC_TEL_SUPPORT,          value: is_pc_tel_support}
+  - {const: TYPE_CMD_START_MIRROR,                 value: start_mirror}
+  - {const: TYPE_CMD_START_MIRROR_RESULT,          value: start_mirror_result}
+  - {const: TYPE_CMD_STREAM_INIT,                  value: stream_init}
+  - {const: TYPE_CMD_STREAM_PREPARED,              value: stream_prepared}
+  - {const: TYPE_CMD_STREAM_START,                 value: stream_start}
+  - {const: TYPE_CMD_STREAM_STOP,                  value: stream_stop}
+  - {const: TYPE_CMD_SUPPORT_RESOLUTION,           value: support_resolution}
+  - {const: TYPE_CMD_SYNC_LOCK_STATUS,             value: sync_lock_status}
+  - {const: TYPE_CMD_VDC_AUDIO_DISABLE,            value: vdc_audio_disable}
+  - {const: TYPE_CMD_VDC_AUDIO_ENABLE,             value: vdc_audio_enable}
+  - {const: TYPE_CMD_WINDOW_STATE_CHANGED,         value: window_state_changed}
+
+info_types:  # TYPE_INFO_* — info types (info_type string values); meanings are name-inferences
+  - {const: TYPE_INFO_FOLD_MODE_CHANGE,        value: fold_mode_change}
+  - {const: TYPE_INFO_PHONE_END_CALL_RESULT,   value: synergy_end_phone_result}
+  - {const: TYPE_INFO_SHOW_PRIVACY_TOAST,      value: synergy_show_privacy_toast}
+  - {const: TYPE_INFO_VDC_AUDIO_DEVICE_INFO,   value: vdc_audio_device_info}
+  - {const: TYPE_INFO_VDC_AUDIO_DEVICE_INFO_INCALLUI, value: vdc_audio_device_info_incallui}
+  - {const: TYPE_INFO_VDC_AUDIO_DISABLE_RESULT, value: vdc_audio_disable_result}
+  - {const: TYPE_INFO_VDC_AUDIO_DISABLE_RESULT_NOTIFICATION, value: vdc_audio_disable_result_notification}
+  - {const: TYPE_INFO_VDC_AUDIO_ENABLE_RESULT, value: vdc_audio_enable_result}
+  - {const: TYPE_INFO_VDC_AUDIO_ENABLE_RESULT_NOTIFICATION, value: vdc_audio_enable_result_notification}
+  - {const: TYPE_INFO_VDC_PHONE_INIT,          value: vdc_phone_init}
+
+transport:
+  websocket:
+    client_library: okhttp3
+    managers: [base/socket/WebSocketConnectManager.java, bus/websocket/WebSocketScene.java]
+    default_port_list:              # buildWebClient default (WSCM:267, verbatim incl. duplicate)
+      - "8080"
+      - "39888"
+      - "8080"
+      - "49888"
+      - "59888"
+    computer_profile_port_list: default_port_list   # buildWebClientForComputer uses mPortList
+    pad_profile_port_list:                          # buildWebClientForPad (WSCM ~:481, verbatim incl. duplicate)
+      - "8792"
+      - "39888"
+      - "8792"
+      - "49888"
+      - "59888"
+    effective_fallback_order_default: [8080, 39888, 49888, 59888]
+    effective_fallback_order_pad:    [8792, 39888, 49888, 59888]
+    fallback_mechanism: >
+      RetryAndChangePortInterceptor: swaps port in URL across SERVERS list,
+      then falls back to first port; retry count = list.size() at call sites
+      (WSCM passes list.size() → 5 for the 5-entry lists; the 2-arg ctor
+      default is 3 — RetryAndChangePortInterceptor.java:20)
+    scene_server_port: "8792"       # WebSocketScene.java:190,212,237 (synergy.mServerPort)
+    runtime_override: setWebSocketPortList(String)
+    client_timeouts: {write_s: 50, read_s: 50, connect_s: 3, ping_s: 5, retry_on_connection_failure: true}
+    tls:
+      trust_model: APK-bundled CA pinning
+      computer_profile: {cert_asset: server.cer,     tls_version: TLSv1.2, evidence: "WSCM:447 context.getAssets().open(\"server.cer\")"}
+      pad_profile:      {cert_asset: server_pad.cer, tls_version: TLS,     evidence: "WSCM:477 context.getAssets().open(\"server_pad.cer\")"}
+      trust_manager: custom X509TrustManager via trustManagerForCertificates(InputStream) + newEmptyKeyStore
+      hostname_verifier: custom (obfuscated class oq3)
+      socket_binding: binds to local P2P IP via SynergyLocalInfo.getLocalP2PIpByAsync() (falls back to default factory)
+    softap_gateways: ["192.168.137.1", "192.168.49.*"]
+    scene_registry_key: webSocketScene
+  non_ports:
+    - {value: "30409", actual: BI/telemetry track id (PCSynergyConnection:306), not_a_port: true}
+    - {value: "3007701", actual: BI event id, not_a_port: true}
+
+ksc:  # key/mouse/screen-cast control channel
+  response_success_code: "00000000000000000000000000000000"  # RESPONSE_KSC_CODE, PCSynergyConnection:63
+  request_wait_time_ms: 2000                                # REQUEST_KSC_WAIT_TIME
+  state_key: pc_connect_state                                # Settings.Secure, PCSynergyConnection:61
+
+engine_services:  # from com/oplus/synergy/utils/Config.java (embedded engine namespace)
+  cast_engine: com.oplus.linker.synergy.castengine.engine.CastEngineService
+  pc_cast_engine: com.oplus.linker.synergy.castengine.engine.pc.PcCastEngineService
+  file_share_engine: com.oplus.linker.synergy.fileshareengine.engine.FileShareEngineService
+  handoff_engine: com.oplus.linker.synergy.engine.HandOffEngineService
+  heysynergy_appid: 503
+  engine_info_file: synergycore_engine_info.xml
+  notification_channel_id: com.heytap.synergy.service
+  notification_channel_name: synergy
+  notify_id: 1001
+  file_provider_authority: com.oplus.linker.devicemanager.fileprovider
+  request_error_reason_engine_info: ENGINE_INFO_ERR
+
+actions:  # Intent actions — from com.oplus.linker.synergy.util.Config.java (partial, high-signal subset)
+  - com.oplus.synergy.action.bind.opsynergy
+  - com.oplus.synergy.action.command
+  - com.oplus.synergy.action.qr.display
+  - com.oplus.synergy.action.setting_page_start_synergy_cast
+  - com.oplus.synergy.action.nfc_relay
+  - oplus.intent.action.synergy.capture
+  - oplus.intent.action.device_panel_end_synergy_dialog_showing
+  - oplus.intent.action.synergy.launch.state.connect
+  - oplus.intent.action.synergy.launch.state.devicelist.show
+
+unknowns:  # explicitly not answered by static pass — feed T4 capture
+  - exact WebSocket URL path (built from pantaconnect discovery P2P info at runtime)
+  - signature derivation for non-notification message paths (base path uses constant 0x0FFFFFFF)
+  - mDNS/advertising service names + TXT keys
+  - device-level pairing/trust model (bundled-CA TLS pins the CHANNEL; how pairing authorizes a peer — QR code contents, key/pin exchange — is still unknown)
+  - flag transport slot (app-side send sites absent; review asserts cmd_body — confirm in T4)
+  - gRPC service endpoint mapping onto ports (see agent-1 protos for schema)
