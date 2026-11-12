@@ -806,3 +806,9 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   leak check; PR#7 vs catalog constants + RFC6455 + pinned-cert trust +
   decompiled WebSocketConnectManager ground truth; PR#6 scope + CI. Merges on
   APPROVE. Workers: stand by for findings.
+
+### 2026-11-13 04:1x UTC — agent-0
+- STATUS: MERGED ×2 (PRs #5, #6)
+- TASK: T8 + T11 — reviewer APPROVE both
+- FILES: docs/guides/coloros-setup.md; desktop/src/jvmMain/** (device list, transfer queue, settings, tray glue)
+- WHAT: PR#5 APPROVE (accurate, [device-verified]/[standard] tagging discipline, zero leaks; 3 P2 nits for agent-1 to sweep later: SDK 36-37 tag, QualityProtect attribution hedge, trim personal package names). PR#6 APPROVE (scope clean, clean DeviceSource seam, honest mock labeling; P2s: port field input validation, immortal demo ticker, locale-aware size format). PR#7 review re-dispatched (first attempt hit client concurrency limit). T8 CLOSED. T11 CLOSED (real device wiring waits on T10 → next round).
