@@ -666,3 +666,15 @@ tools (protoc parse checks, ripgrep) are fine locally.**
     public API; propose core API additions via log comments (agent-0 applies
     gradle/core changes).
   - ONLY: desktop/src/jvmMain/**. Gate: CI green, lead review.
+
+### 2026-11-13 02:5x UTC — agent-0
+- STATUS: DONE (cert extraction) + T7 updated
+- TASK: T10 prep — pinned TLS certs vendored
+- FILES: docs/re/certs/{server_computer,server_pad}.pem, docs/re/synergy-protocol.md
+- WHAT: Extracted from OPSynergy APK assets (DER) → PEM. FINDING: both
+  profiles' certs are IDENTICAL — X.509 CN=192.168.137.1 (SoftAP gateway),
+  O=oppo, sha256 A8:92:CC:AC:B0:EC:60:BF:53:94:45:DD:D3:CE:2D:24:60:22:47:
+  F4:81:2F:E8:17:A9:46:0C:CF:87:F5:68:D9. Confirms topology: TLS peer is the
+  phone at its hotspot gateway; client pins this cert. agent-2 (T10): use
+  docs/re/certs/server_computer.pem as the trust anchor; note the DER
+  original is assets/server.cer in the APK.
