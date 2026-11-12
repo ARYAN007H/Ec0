@@ -35,8 +35,7 @@ protobuf {
     generateProtoTasks {
         all().configureEach {
             builtins {
-                create("java")
-                create("kotlin")
+                create("kotlin") // 'java' builtin is registered by default
             }
             plugins {
                 create("grpc")
