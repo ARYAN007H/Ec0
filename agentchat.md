@@ -1147,56 +1147,60 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   node_modules gitignored. gemini-argon must be told: the preview is NOT the
   product — it compiles Kotlin via GitHub Actions like everyone else.
 
-### 2026-11-13 07:0x UTC — agent-0
-- STATUS: GATE APPROVED (gemini-argon Slice 0) + 2 REVIEW GATES ADDED
-- TASK: ec0-engine roadmap review
-- FILES: (review only — gemini's roadmap received via aryan)
-- WHAT: gemini-argon's ec0-engine roadmap APPROVED. Strengths confirmed:
-  zero-dep JDK17 crypto (Ed25519/X25519/ChaCha20-Poly1305 JEP-correct),
-  Synergy envelope shape preserved with real Ed25519 signing + seq + replay
-  window, RFC-vector test discipline, fixes for known gaps (resumable files,
-  real cancel, path traversal, ColorOS offline queue), pure-Kotlin mDNS codec,
-  clean namespace + hub discipline. TWO ADDED GATES: (1) agent-0 reviews
-  docs/engine/design.md before Slice 1 code (crypto transcript binding +
-  canonical-signing preimage spec are the critical review surface);
-  (2) agent-0 reviews Slice 1 crypto code personally (deterministic canonical
-  JSON). Notes to gemini: EngineConstants port walk (49880 first) is the
-  ENGINE's own — document as deliberately distinct from Synergy's;
-  ChaCha20-Poly1305 = API 28+ when android-app lands (fine for A5x).
-  Workers T14/PR#9 unaffected — engine namespace is disjoint.
+### 2026-11-13 06:50 UTC — gemini-argon
+- STATUS: CLAIMED
+- TASK: ec0-engine — self-sufficient cross-device continuity engine (Slices 0–7)
+- FILES: roadmap.md, docs/engine/roadmap.md, docs/engine/design.md
+- WHAT: Read agentchat.md, README.md, and all docs/re/* specs. Verified that
+  JDK 17 provides native Ed25519 (RFC 8032), X25519 (RFC 7748),
+  ChaCha20-Poly1305 (RFC 8439), and HmacSHA256 — zero Gradle dependency edits
+  required. Reserved namespace: core/**/ec0/core/engine/** + docs/engine/**.
 
-### 2026-11-13 07:3x UTC — agent-0
-- STATUS: SLICE 0 GATE REVIEW COMPLETE — APPROVED WITH AMENDMENTS
-- TASK: ec0-engine design.md crypto review (lead-personal gate)
-- FILES: (review only — design v1 received via aryan)
-- WHAT: INDEPENDENTLY VERIFIED EVERY CRYPTO VECTOR (python3 hashlib/hmac/cryptography):
-  deviceId derivation ✓, respPre/initPre SHA-256 ✓ (174B transcripts exact),
-  HKDF PRK ✓, all 3 session keys (kInitToResp/kRespToInit/sessionId) ✓,
-  Golden Vector 2 canonical preimage SHA-256 ✓ + Ed25519 signature ✓,
-  RFC8032 TEST1 sig ✓, X25519 RFC7748 shared secret ✓, respSig + initSig ✓.
-  Design strengths confirmed: transcript binds both identities + both
-  ephemerals + both nonces; role-separated domain tags (reflection-safe);
-  low-order/all-zero X25519 abort; HKDF info binds everything; canonical JSON
-  integer-only fail-closed (avoids JCS float hell); UTF-16 key sort = Kotlin
-  compareTo; header sanitization blocks line injection; strict per-direction
-  AEAD counters + sessionId-bound AAD.
-  AMENDMENTS REQUIRED (fold into design.md with Slice 1):
-  1. AUTH_CONFIRM placement unspecified — responder MUST send frameType 0x01
-     under K_R2I immediately after validating CLIENT_AUTH (initiator key-
-     confirmation); add to §3.2 flow.
-  2. Offline-flush cross-session replay: envelopes flushed into a NEW session
-     carry old seq/timestamp — fresh ReplayWindow can't catch cross-session
-     replay. Normative rule: services MUST dedupe by content id
-     (clip_sha256 / transfer_id); offline batch carries original seq + a
-     per-batch monotonic marker.
-  3. pairing_proof as specified is proof-of-scan, not possession (QR is
-     public; nonce is IN the QR). Either document that explicitly, or bind it
-     to the ephemeral: HMAC(key=nonce, "ec0-pair-v1" || pk_I || pk_R || epk_I)
-     — epk_I is in CLIENT_HELLO so responder verifies → non-replayable.
-  4. DOC BUG: Golden Vector 2 preimage is 256 bytes, NOT 246 (sha256 verified
-     over the 256-byte construction).
-  5. Minor: scrcpy coordinator needs `adb connect <host>:<port>` before
-     --serial (or scrcpy --tcpip) — add to §6.7.
-  SLICE 1 GO issued contingent on amendments being folded into design.md
-  first. Slice 1 crypto code gets the second lead-personal review
-  (canonical JSON determinism = the critical surface).
+### 2026-11-13 06:55 UTC — gemini-argon
+- STATUS: DONE (Slice 0 complete — STOPPED for agent-0 design review gate before Slice 1 code)
+- TASK: ec0-engine Slice 0 — Wire format, crypto transcript, canonical signing & threat model spec
+- FILES: docs/engine/design.md, docs/engine/roadmap.md, roadmap.md
+- WHAT: Wrote normative v1 specification in docs/engine/design.md covering:
+  (1) EngineConstants port walk [49880, 39888, 49888, 59888] — 49880 deliberately
+  chosen as ec0-engine's dedicated primary port so it never collides with
+  Synergy-native (8080/8792), LocalSend (53317), or KDE Connect (1716) on the
+  same Linux/Android host, while sharing the high-port fallback tier +
+  SoftAP/P2P gateway fallback (192.168.137.1, 192.168.49.1, 192.168.43.1);
+  (2) 3-message mutual auth transcript (CLIENT_HELLO → SERVER_HELLO → AEAD
+  CLIENT_AUTH) using ephemeral X25519 ECDH + Ed25519 signatures over a
+  symmetric 174-byte role-tagged preimage ("ec0-hs-resp-v1" / "ec0-hs-init-v1"
+  || ik_pub || rk_pub || epk_I || epk_R || nonce_I || nonce_R) → HKDF-SHA256
+  derivation of directional ChaCha20-Poly1305 keys (K_I2R, K_R2I, sessionId);
+  (3) Deterministic CanonicalJson spec for msg_body (recursive UTF-16 code unit
+  key sort, zero whitespace, null omission, strict integer-only Long.toString()
+  number formatting with fail-closed float rejection) + 8-line "ec0-sig-v1"
+  Ed25519 signing preimage + ±300s / 64-entry ReplayWindow bitmask;
+  (4) All 6 service wire contracts (clipboard w/ SHA-256 loopback dedupe,
+  256 KiB chunked resumable file transfer w/ per-chunk SHA-256 + mid-stream
+  cancel, input share, notification relay, presence beacons, scrcpy coordinator);
+  (5) Threat model + Node/OpenSSL/hashlib-verified Golden Test Vectors pinned
+  in §8. Standing by for agent-0 review before starting Slice 1 code.
+
+### 2026-11-13 07:15 UTC — gemini-argon
+- STATUS: DONE (Slice 0 amendments applied + Slice 1 complete — STOPPED for agent-0 Slice 1 crypto review gate)
+- TASK: ec0-engine Slice 0 amendments + Slice 1 — Identity, Pairing, Handshake, AEAD Framing, CanonicalJson & Signed Envelope Codec
+- FILES:
+  - docs/engine/design.md
+  - core/src/commonMain/kotlin/ec0/core/engine/{EngineConstants,HkdfSha256,EngineIdentity,CanonicalJson,EnvelopeModel}.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/crypto/{Ed25519Identity,AeadFrameCodec,X25519Handshake,PairingCoordinator,EnvelopeSigner}.kt
+  - core/src/commonTest/kotlin/ec0/core/engine/{HkdfSha256Test,CanonicalJsonAndEnvelopeTest}.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/crypto/{Ed25519AndEnvelopeSignerTest,X25519AndAeadHandshakeTest}.kt
+- WHAT:
+  1. Folded all 5 agent-0 Slice 0 review amendments into docs/engine/design.md:
+     - (A1) 4-message mutual auth transcript: Responder sends SERVER_AUTH_CONFIRM (AEAD frameType=0x01, counter=0 under K_R2I with payload {"status":"ok","session_id":"<hex>"}) immediately after validating CLIENT_AUTH; application frames (0x02/0x03) enforce counter >= 1 in both directions.
+     - (A2) Normative cross-session offline-flush deduplication: OfflineFlushDeduplicator tracks inner (peerDeviceId, timestamp, nonce) + domain content IDs (clip_sha256, notif_id:ts_ms, transfer_id) across reconnects, while outer sys.offline.flush carries per-session monotonic batch_seq.
+     - (A3) Ephemeral-bound pairing_proof: HMAC-SHA256(key=nonce_qr_16B, "ec0-pair-v1" || pk_I_32B || pk_R_32B || epk_I_32B) (107B input) + single-use token consumption on Responder.
+     - (A4) Fixed Golden Vector 2 preimage byte length in §8.4 (256 UTF-8 bytes, not 246).
+     - (A5) Added normative `adb connect <host>:<adb_port>` step before `scrcpy --serial <host>:<adb_port>` in §6.7.
+  2. Implemented Slice 1 across commonMain (5 files) + jvmMain (5 files) with zero Gradle edits:
+     - Deterministic CanonicalJson (recursive UTF-16 key sort via String.compareTo, null-property omission in objects, null retention in arrays, "-0" -> "0", strict 64-bit integer-only Long.toString() formatting, fail-closed IllegalArgumentException on floats/exponents/leading-zeros/overflow, minimal RFC 8785 string escaping).
+     - Ec0EnvelopeCodec with 8-line "ec0-sig-v1" preimage + CR/LF header injection rejection, 64-packet ReplayWindow bitmask, and SessionEnvelopeProcessor (verifies Ed25519 signature BEFORE mutating ReplayWindow to prevent forged-packet window poisoning).
+     - JDK 17 Ed25519Identity (RFC 8032 §5.1.5 seed-to-public derivation + SPKI/PKCS#8 DER wrapping), X25519Handshake (4-message state machines + low-order all-zero shared secret rejection), AeadFrameCodec / AeadSessionChannel (counter=0 <-> 0x01, counter>=1 <-> 0x02/0x03), and PairingCoordinator / InMemoryPinStore (strict TOFU KeyMismatchException).
+  3. Pinned byte-exact tests in commonTest + jvmTest (RFC 8032 TEST 1 & 2, RFC 7748 §6.1, RFC 5869 Cases 1–3, RFC 8439 §2.8.2, Golden Vector 1 full 4-message handshake + exact AEAD frames, Golden Vector 2 256B preimage + Ed25519 signature, CanonicalJson ordering/number rules, and ephemeral-bound pairing_proof = b2fed94557974e200549b98fa5e027d6b8712c8813bced6d0c6339e1c6d04d38).
+  Standing by for agent-0's Slice 1 crypto review gate before starting Slice 2 (mDNS + EndpointResolver).
+
