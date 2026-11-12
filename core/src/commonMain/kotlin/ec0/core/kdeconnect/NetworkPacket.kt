@@ -166,7 +166,10 @@ class NetworkPacket private constructor(
             payloadSize = if (hasPayload()) payload!!.payloadSize else null,
             payloadTransferInfo = if (hasPayload()) payloadTransferInfo else null,
         )
-        return json.encodeToString(serialized) + "\n"
+        // Explicit serializer (not the reified overload): serializer resolution
+        // for a nested @Serializable class is compiler-version sensitive, and
+        // this call is unambiguous.
+        return json.encodeToString(WirePacket.serializer(), serialized) + "\n"
     }
 
     val payloadSize: Long
@@ -219,7 +222,7 @@ class NetworkPacket private constructor(
 
         @Throws(SerializationException::class)
         fun unserialize(s: String): NetworkPacket {
-            val serialized = json.decodeFromString<WirePacket>(s)
+            val serialized = json.decodeFromString(WirePacket.serializer(), s)
             val payloadSize = serialized.payloadSize
             val payload = if (payloadSize != null) Payload(payloadSize) else null
             val payloadTransferInfo = if (payloadSize != null) {
