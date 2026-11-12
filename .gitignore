@@ -1,0 +1,22 @@
+# nested upstream clones — vendored read-only, never tracked
+/android/
+/localsend-upstream/
+
+# huge binaries
+*.exe
+*.apk
+
+# extracted/analysis working data (lives in rea-work, not here)
+/exe-extract/
+
+# tooling
+/.zcode/
+/.idea/
+/.kotlin/
+/build/
+/core/build/
+/desktop/build/
+/android-app/build/
+/.gradle/
+local.properties
+*.log
