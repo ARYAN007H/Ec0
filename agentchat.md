@@ -835,3 +835,52 @@ tools (protoc parse checks, ripgrep) are fine locally.**
     hostname-verifier deviation wording; PortWalk comment precision.
   Also acknowledged: commonMain SynergyMessage.kt (my scaffold) diverges from
   wire truth — agent-0 will align it to the PR's jvmMain codec at merge time.
+
+### 2026-11-13 04:30 UTC — agent-2
+- STATUS: DONE (PR #7 r2 pushed, delta re-review requested)
+- TASK: T10 — review fixes applied (per-profile pinning et al.)
+- FILES: core/src/jvmMain/kotlin/ec0/core/synergy/{SynergyTrust,SynergyWsClient}.kt, core/src/jvmTest/kotlin/ec0/core/synergy/SynergyTrustTest.kt, docs/re/synergy-transport.md
+- WHAT: P1 applied — SynergyTrust now profile-parameterized: BOTH vendored
+  anchors embedded (computer a892ccac…68d9/CN=192.168.137.1, pad
+  afc50cd2…f0ea/CN=192.168.49.1 — openssl-verified against the vendored PEMs
+  after rebasing on main), fingerprintFor/pemFor/pinnedCertificate/
+  pinnedTrustManager/sslContext/sslSocketFactory all take Profile. Tests:
+  per-profile fingerprint+CN assertions, distinct-certs check, cross-profile
+  rejection (computer TM rejects pad cert). P2s: 5s daemon ping loop
+  (WSCM pingInterval analog), CONTINUATION reassembly + BINARY-as-violation
+  in receive(), close-frame echo per RFC 6455 §5.5.1, path comment updated
+  to "confirmed statically (PCSynergyDevice.java:90)" per reviewer,
+  hostname-verifier wording now cites per-profile verifiers
+  (WSCM:289-294/:297-305). Rebased on main (agent-0's doc corrections) —
+  force-with-lease push (own branch, own rebase). CI GREEN @18756be
+  (run 43306071672). Requesting delta re-review on PR #7.
+
+### 2026-11-13 04:5x UTC — agent-0
+- STATUS: MERGED (PR #7) + commonMain reconciled + ROUND 2 COMPLETE
+- TASK: T10 — PR #7 MERGED (r2 APPROVE)
+- FILES: core/src/commonMain/kotlin/ec0/core/synergy/SynergyMessage.kt (rewritten)
+- WHAT: T10 MERGED — Synergy WS transport (envelope codec, port walk,
+  per-profile pinned TLS, RFC6455 + ping/fragmentation/close-echo) is on main.
+  commonMain scaffold reconciled to wire truth (SynergyMessageSchema constants;
+  wrong data classes removed — zero consumers). P2 follow-ups filed for T4
+  round: sendFrame write lock (3 lines), SynergyPortWalk comment precision.
+  ROUND 2 COMPLETE: T8+T10+T11 all merged. core/ = tri-protocol with full
+  Synergy transport.
+- NEXT ROUND ASSIGNMENTS (workers claim from hub):
+  ### T12 — Synergy gRPC service clients — owner: agent-2 (NEW)
+  - BRANCH: `feat/agent-2-grpc-clients` (off latest main)
+  - SPEC: core/src/jvmMain/kotlin/ec0/core/synergy/rpc/ — gRPC clients over
+    the T10 pinned-TLS channel: ClipBoardService (copyToClip client-stream,
+    getClipData server-stream), FileService (createFile etc. + readFile/
+    writeFile streaming), InputService (inputToTextbox), ClipboardFileService
+    (getUriContent bidi) — using :synergy-proto stubs. Thin, testable adapters
+    (transport injected), unit tests w/ fake channels. ONLY:
+    core/src/jvmMain/kotlin/ec0/core/synergy/rpc/** + core/src/jvmTest/** +
+    docs/re/synergy-rpc.md. No gradle edits.
+  ### T13 — Desktop real device source — owner: agent-1 (NEW, after T12 review starts)
+  - BRANCH: `feat/agent-1-desktop-real-source`
+  - SPEC: desktop/ — replace DemoDeviceSource with a real DeviceSource that
+    (a) uses T10 SynergyWsClient for discovery-probe + connect (T4-gated
+    steps behind the existing seam), (b) LocalSend discovery (UDP 53317)
+    as the working fallback TODAY, (c) UI wiring for transfers via the
+    LocalSend route contract. ONLY: desktop/src/jvmMain/**.
