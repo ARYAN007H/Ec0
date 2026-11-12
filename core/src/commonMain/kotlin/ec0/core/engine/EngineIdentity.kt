@@ -22,8 +22,19 @@ enum class EngineCapability(val wireName: String) {
     MIRROR("mirror");
 
     companion object {
-        fun fromWireName(name: String): EngineCapability? =
-            entries.firstOrNull { it.wireName == name.trim() }
+        val NOTIF: EngineCapability = NOTIFICATION
+        val PRESENCE: EngineCapability = BATTERY
+        val SCRCPY: EngineCapability = MIRROR
+
+        fun fromWireName(name: String): EngineCapability? = when (val token = name.trim().lowercase()) {
+            "clip", "clipboard" -> CLIPBOARD
+            "file", "files" -> FILE
+            "input" -> INPUT
+            "notif", "notification" -> NOTIFICATION
+            "battery", "presence" -> BATTERY
+            "mirror", "scrcpy" -> MIRROR
+            else -> entries.firstOrNull { it.wireName == token }
+        }
 
         fun parseCsv(csv: String): Set<EngineCapability> =
             csv.split(',')
@@ -32,8 +43,24 @@ enum class EngineCapability(val wireName: String) {
 
         fun encodeCsv(caps: Iterable<EngineCapability>): String =
             caps.map { it.wireName }.distinct().joinToString(",")
+
+        fun formatCsv(caps: Iterable<EngineCapability>): String = encodeCsv(caps)
     }
 }
+
+/** Discovered or paired peer metadata advertised via mDNS (`_ec0._tcp.local.`). */
+data class PeerInfo(
+    val deviceId: String,
+    val displayName: String,
+    val role: String = EngineConstants.ROLE_DESKTOP,
+    val protocolVersion: Int = EngineConstants.PROTOCOL_VERSION,
+    val capabilities: Set<EngineCapability> = EngineCapability.entries.toSet(),
+    val shortFingerprint: String = deviceId.take(12),
+    val pairingOpen: Boolean = false,
+    val addresses: List<String> = emptyList(),
+    val port: Int = EngineConstants.PRIMARY_PORT,
+    val lastSeenMs: Long = 0L,
+)
 
 /** Pure-Kotlin identity helpers shared by phone and desktop. */
 object EngineIdentity {

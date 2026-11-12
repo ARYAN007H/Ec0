@@ -17,6 +17,13 @@ object EngineConstants {
     const val MDNS_MULTICAST_IPV4: String = "224.0.0.251"
     const val MDNS_PORT: Int = 5353
     const val MDNS_SERVICE_TYPE: String = "_ec0._tcp.local."
+    const val MDNS_DEFAULT_TTL_SECONDS: Int = 120
+    val MDNS_BURST_DELAYS_MS: List<Long> = listOf(100L, 500L, 2_000L)
+
+    // Peer roles advertised in mDNS TXT (`role=...`)
+    const val ROLE_PHONE: String = "phone"
+    const val ROLE_DESKTOP: String = "desktop"
+    const val ROLE_TABLET: String = "tablet"
 
     // WebSocket upgrade path
     const val WS_PATH: String = "/ec0/v1"
@@ -36,6 +43,7 @@ object EngineConstants {
         "192.168.49.1",  // Android Wi-Fi Direct (P2P) group owner
         "192.168.43.1",  // Legacy Android tether gateway
     )
+    val FALLBACK_GATEWAY_IPS: List<String> = GATEWAY_FALLBACK_HOSTS
 
     // Cryptographic domain-separation ASCII tags (docs/engine/design.md §3–§4)
     const val HS_RESP_TAG: String = "ec0-hs-resp-v1"
@@ -65,6 +73,7 @@ object EngineConstants {
     const val MAX_ENVELOPE_JSON_BYTES: Int = 128 * 1024
     const val DEFAULT_FILE_CHUNK_BYTES: Int = 256 * 1024
     const val MAX_WS_FRAME_BYTES: Int = 512 * 1024
+    const val MAX_AEAD_FRAME_BYTES: Int = MAX_WS_FRAME_BYTES
 
     // Replay window & offline deduplication constants (docs/engine/design.md §4.4)
     const val LIVE_CLOCK_SKEW_MS: Long = 300_000L
@@ -87,6 +96,14 @@ object EngineEncoding {
         this['+'.code] = 62
         this['/'.code] = 63
     }
+
+    fun toHex(bytes: ByteArray): String = bytes.toHex()
+
+    fun fromHex(hex: String): ByteArray = hex.decodeHex()
+
+    fun toBase64UrlUnpadded(bytes: ByteArray): String = bytes.toBase64UrlUnpadded()
+
+    fun decodeBase64Url(encoded: String): ByteArray = encoded.decodeBase64Url()
 
     fun ByteArray.toHex(): String {
         val out = CharArray(size * 2)
