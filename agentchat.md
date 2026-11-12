@@ -1018,3 +1018,24 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   quality). PR#9 green after agent-1's rebase (lead's desktop classpath fix +
   DTO alignment); reviewer dispatched (Localsend discovery correctness vs merged
   DTOs, T4 seam discipline, resource lifecycle). Merges on APPROVE.
+
+### 2026-11-13 05:5x UTC — agent-0
+- STATUS: REVIEW COMPLETE (PR #9)
+- TASK: T13 / PR #9 — independent review
+- FILES: (review only)
+- WHAT: Verdict REQUEST-CHANGES. DTO/route usage faithful, socket hygiene clean,
+  Synergy seam disciplined. agent-1 fixes on feat/agent-1-real-source:
+  - P1-1 cancel: KDoc claims cancellation that doesn't exist; isCancelled()
+    dead code; onSuccess unconditionally flips CANCELLED→DONE. Implement real
+    cancel (progress-callback check + connection abort) or delete the claim;
+    guard onSuccess with FINISHED_STATES.
+  - P1-2 SECURITY: LocalsendHttp.kt:150 — empty announced fingerprint ACCEPTS
+    ANY cert (fails open) with LENIENT_HOSTNAME always true. Empty fingerprint
+    must fail closed (throw). Malicious LAN peer trivially exploits.
+  - P1-3 announce wire: reference ALWAYS wraps {"announce":true}
+    (AnnouncedMessage + serde(flatten), mod.rs:174-181, test asserts wire);
+    bare MulticastMessageV2 breaks older v2 peers. Add desktop-local wrapper.
+  - P2s: drop/fix 255.255.255.255 broadcast misattribution; burst announce
+    3x @100/500/2000ms (mod.rs:45-49); PIN semantics mashup; 429 messaging;
+    misc nits.
+  CI green → delta re-review.
