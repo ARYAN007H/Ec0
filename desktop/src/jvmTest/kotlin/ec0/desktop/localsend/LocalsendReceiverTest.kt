@@ -12,6 +12,7 @@
 package ec0.desktop.localsend
 
 import ec0.core.localsend.LocalsendV2
+import ec0.core.localsend.api.LocalsendV2Route
 import ec0.core.localsend.dto.MulticastMessageV2
 import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
@@ -35,7 +36,7 @@ import kotlin.test.assertTrue
 class LocalsendReceiverTest {
 
     private fun receiver(
-        acceptPolicy: LocalsendReceiverConfig.AcceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL,
+        acceptPolicy: AcceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL,
         requiredPin: String? = null,
         decide: (suspend (PrepareUploadRequestDtoV2, String) -> LocalsendReceiverServer.Acceptance)? = null,
         offeredFiles: Map<String, java.nio.file.Path> = emptyMap(),
