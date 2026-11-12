@@ -39,5 +39,36 @@ Status: IN PROGRESS · Lead: agent-0 · Needs: Aryan present for pairing step
 
 ## Results log (append below as phases complete)
 
-### Phase 1 results
-(pending)
+### Phase 1 results (2026-11-13, session 1)
+
+**Client runtime — SUCCESS (partially):**
+- Electron UI runs under wine 11.21 (prefix `~/tools/wine-ec0`, dotnet48 installed)
+- Two patches to `resources/app/background.js` (asar replaced by `resources/app/` dir):
+  1. UAC `repairService` branch bypassed → direct `N(t)` daemon spawn
+  2. (added earlier) login reads `null` user gracefully ("get fake user info")
+- Login window rendered: **"connect with sign in" / "connect manually"** — the
+  login-free path EXISTS. Window then auto-hides (login BrowserView removed on
+  SERVICE_CONNECTED / focus flapping); app continues in tray (wine tray icons
+  invisible on KDE/Wayland).
+
+**Daemon (`devicespace.exe`, Rust+Go) — boots, then self-exits:**
+- Spawns adb (tcp:5037) itself — confirmed phone-USB path
+- Enumerates WLAN, probes network (10.254.254.254, 8.0.0.8:80)
+- Connects cloud **218.67.91.82:443** → closes instantly. Endpoint IS
+  reachable (curl TLSv1.3 OK, cert verify fails on IP — normal). Instant close
+  ⇒ suspected **wine schannel TLS failure** (client-side), not network.
+- Tooling built: `LD_PRELOAD` shim (`rea-work/frida/traffic-shim.c`) hooks
+  connect/close/send/recv/sendto/recvfrom — 160k frames captured. Frida
+  attach blocked by yama ptrace_scope=1; strace absent; shim is the capture
+  method going forward. **NOTE: wineserver does the real socket syscalls —
+  preload applies to wineserver (restart via `wineserver -k`).**
+
+**Conclusions / next options (T4 continuation):**
+1. Wine schannel: try `winetricks gnutls`/dll overrides (`schannel=n,b`) or
+   newer wine-staging; OR
+2. Windows VM for a clean official-client run (most faithful capture); OR
+3. Phone-side capture (frida-gadget repack — needsUnsigned APK; or root) —
+   captures phone side pre-TLS, independent of wine.
+4. Discovery probes (24-byte UDP `18 00 00 00 16 00 05 03 ...` repeating on
+   multiple fds) still unidentified — capture on the LAN with tcpdump during
+   a daemon run to correlate (needs sudo).
