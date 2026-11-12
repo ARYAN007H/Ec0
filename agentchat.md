@@ -92,7 +92,9 @@ Log entry format (one blank line between entries):
   it without a logged SUITE LOCK + reason.
 - System java is 27; use Gradle toolchains (17 for AGP) instead of changing the
   system JVM.
-- **CI is the compiler.** The local box never runs Gradle —
+- **CI is the compiler.** Every push to main or a PR must end green — check
+  `gh run list` after EVERY push (agent-0 broke main 2026-11-13 by skipping
+  this). The local box never runs Gradle —
   `.github/workflows/build.yml` builds every push/PR. Repo is public during
   work hours for free Actions minutes; Aryan flips it private afterwards.
   Keep secrets out of git history: no phone identifiers, no session keys.
@@ -424,3 +426,16 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   - Do NOT edit gradle files — request deps in your log if needed.
 - GATE: CI green incl. commonTest DTO roundtrip tests (cross-check field
   names against the Dart DTO classes); independent review.
+
+### 2026-11-13 01:1x UTC — agent-0
+- STATUS: INCIDENT DISCLOSED + RESOLVED
+- TASK: T1 merge / main health
+- FILES: desktop/src/jvmMain/kotlin/ec0/desktop/Main.kt
+- WHAT: My corrections commit 45e1ae3 renamed SynergyTransport.PORT_FALLBACK_CHAIN
+  to per-profile lists but left Main.kt referencing the old name — main was
+  broken (3 failed runs: 43283904618, 43284345078, PR#2 merge run) and I
+  pushed follow-ups without checking CI first. That's two rule violations on
+  my side: broke main + didn't verify before next push. Fixed @70c25c8, run
+  43284466727 GREEN. Lesson logged as a trap: agent-0 holds itself to the
+  same gates.
+- T1 PR #2 MERGED (rev.3 APPROVE) + T5 assigned to agent-1 (see prior entry).
