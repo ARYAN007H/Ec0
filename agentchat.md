@@ -382,3 +382,45 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   - Do NOT edit gradle files — ktor-network (TCP/UDP), serialization already
     on core's classpath. Request anything missing in your log.
 - GATE: CI green incl. commonTest roundtrip tests; independent review.
+
+### 2026-11-12 18:51 UTC — agent-2
+- STATUS: CLAIMED (SUITE LOCK: none taken — CI-only builds per trap)
+- TASK: T6 — KDE Connect protocol core into core/ (NetworkPacket, identity,
+  discovery :1716, TLS pairing model, roundtrip tests)
+- FILES: (none yet) → core/src/commonMain/kotlin/ec0/core/kdeconnect/**,
+  core/src/commonTest/**, docs/re/kdeconnect-port.md
+- WHAT: Worktree ~/.cache/ec0-worktrees/agent-2-kdeconnect off origin/main
+  @a6f8664, branch feat/agent-2-kdeconnect. Plan: survey vendored clone's
+  NetworkPacket/identity/discovery/pairing code (read-only), port shapes into
+  commonMain w/ kotlinx-serialization, golden-fixture roundtrip tests in
+  commonTest, gate on CI (no local Gradle per trap).
+
+### 2026-11-13 01:0x UTC — agent-0
+- STATUS: MERGED + ASSIGNMENT
+- TASK: T1 — PR #2 MERGED into main (rev.3, reviewer APPROVE)
+- FILES: docs/re/protos/{fileservice,clipboard,inputservice,drag}.proto, docs/re/synergy-proto-reconstruction.md
+- WHAT: T1 COMPLETE — 3 review rounds, descriptor-blob-verified round-trip
+  (bare SERVICE_NAMEs, package-less, sint64 lengths, PCfilepath).
+  Outstanding work agent-1 — the blob-diff methodology you built is now the
+  team standard (documented in the PR doc).
+
+### T5 — LocalSend v2 protocol port into core — owner: agent-1 (NEW)
+- BRANCH/WORKTREE: `feat/agent-1-localsend` →
+  `~/.cache/ec0-worktrees/agent-1-localsend` (branch off latest main)
+- SPEC: Port the LocalSend v2 protocol from the vendored clone
+  `/home/aryan/Downloads/ec0/localsend-upstream` (READ-ONLY; Dart app/lib,
+  protocol docs at localsend-upstream/app/... or docs/) into
+  `core/src/commonMain/kotlin/ec0/core/localsend/`:
+  - DTOs (kotlinx-serialization): Device/DeviceInfo (alias, deviceId, port,
+    protocol, download, fingerprint...), FileInfo, PrepareUploadRequest/
+    Response, file status models — match the v2 JSON field names exactly
+  - Discovery: UDP :53317 multicast/announce model (message DTOs + port)
+  - HTTP API contract: /api/localsend/v2/* endpoints (register,
+    prepare-upload, upload, cancel, prepare-download, download, info) as
+    Kotlin interfaces/skeletons (ktor server/client already on classpath)
+  - Pin/verification model (device fingerprint, PIN flow)
+  - ONLY these paths: core/src/commonMain/kotlin/ec0/core/localsend/** +
+    core/src/commonTest/** + docs/re/localsend-port.md
+  - Do NOT edit gradle files — request deps in your log if needed.
+- GATE: CI green incl. commonTest DTO roundtrip tests (cross-check field
+  names against the Dart DTO classes); independent review.
