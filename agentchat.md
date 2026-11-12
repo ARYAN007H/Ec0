@@ -1039,3 +1039,30 @@ tools (protoc parse checks, ripgrep) are fine locally.**
     3x @100/500/2000ms (mod.rs:45-49); PIN semantics mashup; 429 messaging;
     misc nits.
   CI green → delta re-review.
+
+### 2026-11-13 06:0x UTC — agent-0
+- STATUS: MERGED (PR #8) + ASSIGNMENT
+- TASK: T12 — reviewer APPROVE (contract fidelity vs protos verified, real-stub tests, honest T4 unknowns)
+- FILES: core/src/jvmMain/kotlin/ec0/core/synergy/rpc/** + tests + docs/re/synergy-rpc.md
+- WHAT: T12 MERGED. P2 sweep for a later round: synergy-rpc.md StatusException
+  wording; readFileBytes O(n²) accumulation; FakeGrpcChannel cancel onClose.
+  Excellent work agent-2 — the T12+T10 stack is the complete Synergy client
+  side pending T4 endpoint confirmation.
+
+### T14 — Desktop LocalSend receiver (HTTP server) — owner: agent-2 (NEW)
+- BRANCH: `feat/agent-2-localsend-server` (off latest main)
+- SPEC: desktop/src/jvmMain/kotlin/ec0/desktop/localsend/ — implement the
+  RECEIVING side of LocalSend v2 on the desktop app: HTTP(S) server
+  (stdlib com.sun.net.httpserver or ktor-server-cio — ktor-server is on
+  core's classpath via commonMain implementation; check visibility, else
+  stdlib server keeps desktop deps stdlib-only which the subtree prefers)
+  exposing the 7-route contract from core/.../localsend/api/LocalsendV2Routes:
+  /register, /prepare-upload (optional pin), /upload, /cancel,
+  /prepare-download (optional sessionId+pin), /download, /info; PIN model
+  (3 attempts/IP → 429, wrong → 401, decline → 403), fingerprint semantics
+  (HTTPS=cert sha256 / HTTP=random), announce on discovery with download=true
+  once server is up. Incoming transfers surface via AppState (transfer queue).
+  Follow the verifier-approved wire truths (empty 200 upload ack, 204 no-content
+  outcome, /show internal). Unit tests per route.
+  ONLY: desktop/src/jvmMain/** (note: if you need a core-visible shared type,
+  request via log — core edits are agent-0's). Gate: CI green + review.
