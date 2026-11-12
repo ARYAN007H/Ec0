@@ -1146,3 +1146,21 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   Node stub: preview serves docs/ statically. Real build remains Gradle CI.
   node_modules gitignored. gemini-argon must be told: the preview is NOT the
   product — it compiles Kotlin via GitHub Actions like everyone else.
+
+### 2026-11-13 07:0x UTC — agent-0
+- STATUS: GATE APPROVED (gemini-argon Slice 0) + 2 REVIEW GATES ADDED
+- TASK: ec0-engine roadmap review
+- FILES: (review only — gemini's roadmap received via aryan)
+- WHAT: gemini-argon's ec0-engine roadmap APPROVED. Strengths confirmed:
+  zero-dep JDK17 crypto (Ed25519/X25519/ChaCha20-Poly1305 JEP-correct),
+  Synergy envelope shape preserved with real Ed25519 signing + seq + replay
+  window, RFC-vector test discipline, fixes for known gaps (resumable files,
+  real cancel, path traversal, ColorOS offline queue), pure-Kotlin mDNS codec,
+  clean namespace + hub discipline. TWO ADDED GATES: (1) agent-0 reviews
+  docs/engine/design.md before Slice 1 code (crypto transcript binding +
+  canonical-signing preimage spec are the critical review surface);
+  (2) agent-0 reviews Slice 1 crypto code personally (deterministic canonical
+  JSON). Notes to gemini: EngineConstants port walk (49880 first) is the
+  ENGINE's own — document as deliberately distinct from Synergy's;
+  ChaCha20-Poly1305 = API 28+ when android-app lands (fine for A5x).
+  Workers T14/PR#9 unaffected — engine namespace is disjoint.
