@@ -44,8 +44,8 @@ object SynergyEnvelopeCodec {
 
     internal val json: Json = Json {
         ignoreUnknownKeys = true // upstream Gson is lenient on unknown keys
-        encodeDefaults = false   // Gson omits nulls — do the same on the wire
-        explicitNulls = false
+        encodeDefaults = true    // Gson emits every non-null field — parity (no default-elision)
+        explicitNulls = false    // Gson omits nulls — do the same on the wire
     }
 
     /**
@@ -109,11 +109,14 @@ object SynergyEnvelopeCodec {
 }
 
 /** Envelope — keys are the wire keys (protocol/SynergyMessage.java @SerializedName). */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 @Serializable
 data class SynergyEnvelope(
     @SerialName("msg_type") val msgType: String,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     @SerialName("msg_body") val msgBody: JsonElement? = null,
     @SerialName("src_role") val srcRole: String = SynergyEnvelopeCodec.BASE_SRC_ROLE,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     @SerialName("category") val category: String? = null,
     @SerialName("timestamp") val timestamp: Long = 0,
     @SerialName("noncestr") val nonceStr: Long = 0,
