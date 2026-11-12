@@ -1,0 +1,25 @@
+// Reconstructed from decompiled protobuf-generated Java (OPSynergy 17.7.35,
+// com.oplus.linker.synergy.Inputservice outer class). See
+// docs/re/synergy-proto-reconstruction.md for methodology and confidence notes.
+syntax = "proto3";
+
+option java_multiple_files = false;
+option java_outer_classname = "Inputservice";
+option java_package = "com.oplus.linker.synergy";
+
+// One input event (keystroke/text) sent by the PC into the phone's focused
+// text box. Payload encoding unknown (raw bytes — likely UTF-8 text or a
+// serialized key event).
+message InputData {
+  bytes data = 1;
+}
+
+// Acknowledgement for input events.
+message InputResult {
+  int32 status = 1;       // status code (values unknown)
+}
+
+service InputService {
+  // PC streams input events into the phone; single ack at stream end.
+  rpc inputToTextbox (stream InputData) returns (InputResult);
+}

@@ -1,0 +1,51 @@
+// Reconstructed from decompiled protobuf-generated Java (OPSynergy 17.7.35,
+// com.oplus.linker.synergy.Fileservice outer class). See
+// docs/re/synergy-proto-reconstruction.md for methodology and confidence notes.
+syntax = "proto3";
+
+option java_multiple_files = false;
+option java_outer_classname = "Fileservice";
+option java_package = "com.oplus.linker.synergy";
+
+// Metadata describing one file operation (request for create/open/delete/read;
+// echoed inside every FileData chunk for writeFile).
+message FileInfo {
+  string filepath = 1;      // phone-side path (or URI text) of the file
+  sint64 length = 2;        // total file size in bytes (zigzag-encoded)
+  int64 flags = 3;          // operation flags (bit meaning unknown)
+  string uri = 4;           // content URI of the file on the phone
+  string PCfilepath = 5;    // PC-side destination path (exact blob name)
+  map<string, string> extras = 6;
+}
+
+// One chunk streamed by the phone in readFile / streamed by the PC in writeFile.
+message FileData {
+  string info = 1;          // chunk metadata echo (FileInfo serialized? — text)
+  sint64 length = 2;        // payload length in bytes (zigzag-encoded)
+  bytes buffer = 3;         // chunk payload
+  int64 flag = 4;           // chunk flag (e.g. EOF marker — unknown)
+  string uri = 5;           // content URI of the chunk source
+}
+
+// Result of a unary file operation.
+message FileResult {
+  int32 status = 1;         // operation status code (values unknown)
+  string info = 2;          // human-readable/info payload
+  string file = 3;          // resulting file identifier/path
+}
+
+// Progress/status streamed back while writing.
+message FileStatus {
+  int32 status = 1;         // status code (values unknown)
+  int64 length = 2;         // bytes written so far
+}
+
+service FileService {
+  rpc createFile (FileInfo) returns (FileResult);
+  rpc deleteFile (FileInfo) returns (FileResult);
+  rpc openFile (FileInfo) returns (FileResult);
+  // Phone streams file chunks.
+  rpc readFile (FileInfo) returns (stream FileData);
+  // PC streams chunks, phone acknowledges with status.
+  rpc writeFile (stream FileData) returns (stream FileStatus);
+}
