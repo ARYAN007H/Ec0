@@ -9,8 +9,6 @@
 // between PC/phone via topic-tagged channels.
 syntax = "proto3";
 
-package com.oplus.linker.synergy;
-
 option java_multiple_files = false;
 option java_outer_classname = "Drag";
 option java_package = "com.oplus.linker.synergy";

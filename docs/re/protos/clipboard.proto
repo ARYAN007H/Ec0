@@ -3,8 +3,6 @@
 // docs/re/synergy-proto-reconstruction.md for methodology and confidence notes.
 syntax = "proto3";
 
-package com.oplus.linker.synergy;
-
 option java_multiple_files = false;
 option java_outer_classname = "Clipboard";
 option java_package = "com.oplus.linker.synergy";

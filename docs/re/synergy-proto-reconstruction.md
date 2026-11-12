@@ -50,6 +50,17 @@ The zigzag `sint64` choice on the two `length` fields is interesting: sizes trav
 as varint-zigzag, so the sign-bit trick is in play (or the generator allowed it) —
 either way, wire compatibility requires us to declare sint64, not int64.
 
+### Rev.3 — package-less originals (delta review P0-3)
+
+The original protos declare **no `package`**: the blobs carry no package field
+(FileDescriptorProto field 2 absent; only `options.java_package` = field 8.1 =
+`com.oplus.linker.synergy`), and the generated `SERVICE_NAME` constants are bare
+(`"FileService"`, `"ClipBoardService"`, …). gRPC full method names therefore are
+`/<Service>/<Method>` (e.g. `/FileService/createFile`). Declaring a package would
+silently rewrite every path to `/com.oplus.linker.synergy.FileService/createFile`
+and break interop — so the reconstructed protos are **package-less**, keeping
+`option java_package` (which affects generated Java only, not the wire path).
+
 ## Secondary corroboration: generated accessors (rev.1 method)
 
 Field numbers from `<NAME>_FIELD_NUMBER` constants; types from accessors:
