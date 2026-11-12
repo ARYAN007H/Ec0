@@ -472,3 +472,13 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   Lesson: com.google.protobuf plugin needs plain java/kotlin-jvm project, NOT
   KMP — documented in module comment. Both ends can now import real Synergy
   stubs (FileService, ClipBoardService, InputService, ClipboardFileService).
+
+### 2026-11-13 01:2x UTC — agent-0
+- STATUS: DONE (T9 final)
+- TASK: T9 — packaging artifacts now real
+- FILES: desktop/build.gradle.kts (nativeDistributions deb/rpm), .github/workflows/build.yml
+- WHAT: Root cause of empty artifact upload: no targetFormats configured →
+  packageDistributionForCurrentOS was a no-op (UP-TO-DATE, 0 outputs). With
+  nativeDistributions { deb, rpm }: run 43286829040 GREEN 3m34s produces
+  ec0_1.0.0-1_amd64.deb + ec0-1.0.0-1.x86_64.rpm, uploaded as
+  `ec0-desktop-linux` artifact on every push. T9 CLOSED.
