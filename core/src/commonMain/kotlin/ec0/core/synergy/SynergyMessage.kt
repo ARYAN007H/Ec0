@@ -1,32 +1,40 @@
 package ec0.core.synergy
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-
 /**
- * Synergy control-plane envelope, reverse-engineered from
- * com.oplus.linker 17.7.35 (protocol/SynergyMessage.java).
+ * Synergy control-plane envelope schema constants — wire truth, verified
+ * against com.oplus.linker 17.7.35 `protocol/SynergyMessage.java` (7
+ * @SerializedName keys) and PR #7's independent review.
  *
- * All fields are the JSON keys the wire format uses. Messages are signed:
- * [signature] covers the body using key material exchanged during pairing,
- * with [noncestr] + [timestamp] guarding replay.
+ * IMPORTANT: there are NO top-level `cmd`/`info` envelope keys — "cmd" and
+ * "info" are the VALUES of [Fields.MSG_TYPE] (TYPE_CMD / TYPE_INFO), and the
+ * per-command payload lives in `msg_body`. Nonce/signature are LONGs.
+ *
+ * The serializable codec lives in the JVM source set
+ * (`core/src/jvmMain/kotlin/ec0/core/synergy/SynergyEnvelope.kt`) because the
+ * transport is JVM-target today; common code should reference these constants
+ * rather than re-declaring models.
  */
-@Serializable
-data class SynergyMessage(
-    @SerialName("cmd") val cmd: String,
-    @SerialName("info") val info: SynergyInfo? = null,
-    @SerialName("msg_body") val msgBody: String? = null,
-    @SerialName("msg_type") val msgType: Int,
-    @SerialName("noncestr") val nonceStr: String,
-    @SerialName("signature") val signature: String,
-    @SerialName("src_role") val srcRole: String,
-    @SerialName("timestamp") val timestamp: Long,
-)
+object SynergyMessageSchema {
+    /** Envelope field names, exactly as Gson serializes them. */
+    object Fields {
+        const val MSG_TYPE = "msg_type"
+        const val MSG_BODY = "msg_body"
+        const val SRC_ROLE = "src_role"
+        const val CATEGORY = "category"
+        const val NONCE_STR = "noncestr"
+        const val SIGNATURE = "signature"
+        const val TIMESTAMP = "timestamp"
+    }
 
-/** Synergy info block (protocol/SynergyInfo.java): info_body/info_type/info_value. */
-@Serializable
-data class SynergyInfo(
-    @SerialName("info_body") val infoBody: String? = null,
-    @SerialName("info_type") val infoType: String,
-    @SerialName("info_value") val infoValue: String? = null,
-)
+    /** Envelope message types (SynergyMessage.java:8-9). */
+    object MessageType {
+        const val CMD = "cmd"
+        const val INFO = "info"
+    }
+
+    /** Base signing path (WebSocketConnectManager:558): constant signature, seeded nonce. */
+    object BaseSigning {
+        const val SIGNATURE = 0x0FFFFFFFL // 268435455
+        // nonce = java.util.Random(timestamp).nextLong()
+    }
+}
