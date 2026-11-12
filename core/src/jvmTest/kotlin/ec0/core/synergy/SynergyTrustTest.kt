@@ -34,14 +34,18 @@ class SynergyTrustTest {
 
     private fun parseCert(pem: String): java.security.cert.X509Certificate {
         val body = pem.replace("-----BEGIN CERTIFICATE-----", "").replace("-----END CERTIFICATE-----", "")
+            .replace(Regex("\\s"), "")
+        val der = java.util.Base64.getMimeDecoder().decode(body)
         val factory = CertificateFactory.getInstance("X.509")
-        return factory.generateCertificate(ByteArrayInputStream(body.toByteArray())) as java.security.cert.X509Certificate
+        return factory.generateCertificate(ByteArrayInputStream(der)) as java.security.cert.X509Certificate
     }
 
     @Test
     fun pinnedCertParsesAndMatchesRecordedFingerprint() {
         val cert = SynergyTrust.pinnedCertificate()
-        assertEquals("CN=192.168.137.1", cert.subjectX500Principal.getName().split(",").last().trim())
+        // RFC2253 orders most-specific first (EMAILADDRESS last in openssl's
+        // reverse display) — assert CN membership, not position
+        assertTrue(cert.subjectX500Principal.getName().contains("CN=192.168.137.1"))
         assertEquals(SynergyTrust.PINNED_FINGERPRINT, SynergyTrust.sha256Fingerprint(cert))
         assertEquals("a892ccacb0ec60bf539445ddd3ce2d24602247f4812fe817a9460ccf87f568d9", SynergyTrust.PINNED_FINGERPRINT)
         // Validity window covers the present (2020-07-29 → 2030-07-27)
