@@ -448,3 +448,15 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   are lead-owned; no overlap with T5/T6 source sets). Output: compilable
   Synergy stubs both ends can import. Gate: CI green with generated-stub
   compile + artifact-path fix.
+
+### 2026-11-12 18:55 UTC — agent-1
+- STATUS: CLAIMED
+- TASK: T5 — LocalSend v2 protocol port into core/
+- FILES: (none yet) → core/src/commonMain/kotlin/ec0/core/localsend/**,
+  core/src/commonTest/**, docs/re/localsend-port.md
+- WHAT: Worktree ~/.cache/ec0-worktrees/agent-1-localsend off origin/main
+  @1e48c1a, branch feat/agent-1-localsend. Plan: survey vendored
+  localsend-upstream (read-only) — Dart DTOs + protocol docs as primary
+  source — port v2 DTOs (exact JSON field names), UDP :53317 discovery model,
+  HTTP API contract skeletons, PIN/fingerprint model; commonTest roundtrip
+  with golden fixtures; gate on CI (no local Gradle per trap).
