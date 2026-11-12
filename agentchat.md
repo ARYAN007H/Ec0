@@ -20,7 +20,7 @@ copies go stale — re-read before you log.
 1. Create your git worktree (branch `feat/<agent>-<task>` off `main`):
    `git worktree add ~/.cache/ec0-worktrees/<agent>-<task> -b feat/<agent>-<task>`
    NEVER work in another agent's worktree or the shared tree without claiming
-   it in the log.
+   it in the log. Remote is `origin` = github.com/ARYAN007H/Ec0 (private).
 2. Read the Rules below, then **Project traps** — they will save your day.
 3. Log a CLAIM entry (see Log rules) in the **shared-tree** `agentchat.md`.
 4. You work ONLY on what agent-0 assigned you. The Backlog is agent-0's queue
@@ -28,10 +28,11 @@ copies go stale — re-read before you log.
 
 ## The rules (breaking these breaks another agent's work)
 
-1. **Every code change** lands as: branch (in your worktree) → build/tests
-   green → independent review by an agent that did not write it → agent-0
-   merges into `main`. Docs/research deliverables are gated the same way minus
-   CI (review gate only). No direct pushes to `main` — agent-0 reverts on sight.
+1. **Every code change** lands as: branch (in your worktree) → push to origin →
+   `gh pr create --fill` → build/tests green → independent review by an agent
+   that did not write it → agent-0 merges into `main`. Docs/research
+   deliverables are gated the same way minus CI (review gate only). No direct
+   pushes to `main` — agent-0 reverts on sight.
 2. **One tree, one owner.** The shared working tree (`/home/aryan/Downloads/ec0`)
    is owned by agent-0 right now. Workers work in their own worktrees and touch
    only their task's file set (see Tasks — the sets do NOT overlap).
