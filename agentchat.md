@@ -1164,3 +1164,39 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   ENGINE's own — document as deliberately distinct from Synergy's;
   ChaCha20-Poly1305 = API 28+ when android-app lands (fine for A5x).
   Workers T14/PR#9 unaffected — engine namespace is disjoint.
+
+### 2026-11-13 07:3x UTC — agent-0
+- STATUS: SLICE 0 GATE REVIEW COMPLETE — APPROVED WITH AMENDMENTS
+- TASK: ec0-engine design.md crypto review (lead-personal gate)
+- FILES: (review only — design v1 received via aryan)
+- WHAT: INDEPENDENTLY VERIFIED EVERY CRYPTO VECTOR (python3 hashlib/hmac/cryptography):
+  deviceId derivation ✓, respPre/initPre SHA-256 ✓ (174B transcripts exact),
+  HKDF PRK ✓, all 3 session keys (kInitToResp/kRespToInit/sessionId) ✓,
+  Golden Vector 2 canonical preimage SHA-256 ✓ + Ed25519 signature ✓,
+  RFC8032 TEST1 sig ✓, X25519 RFC7748 shared secret ✓, respSig + initSig ✓.
+  Design strengths confirmed: transcript binds both identities + both
+  ephemerals + both nonces; role-separated domain tags (reflection-safe);
+  low-order/all-zero X25519 abort; HKDF info binds everything; canonical JSON
+  integer-only fail-closed (avoids JCS float hell); UTF-16 key sort = Kotlin
+  compareTo; header sanitization blocks line injection; strict per-direction
+  AEAD counters + sessionId-bound AAD.
+  AMENDMENTS REQUIRED (fold into design.md with Slice 1):
+  1. AUTH_CONFIRM placement unspecified — responder MUST send frameType 0x01
+     under K_R2I immediately after validating CLIENT_AUTH (initiator key-
+     confirmation); add to §3.2 flow.
+  2. Offline-flush cross-session replay: envelopes flushed into a NEW session
+     carry old seq/timestamp — fresh ReplayWindow can't catch cross-session
+     replay. Normative rule: services MUST dedupe by content id
+     (clip_sha256 / transfer_id); offline batch carries original seq + a
+     per-batch monotonic marker.
+  3. pairing_proof as specified is proof-of-scan, not possession (QR is
+     public; nonce is IN the QR). Either document that explicitly, or bind it
+     to the ephemeral: HMAC(key=nonce, "ec0-pair-v1" || pk_I || pk_R || epk_I)
+     — epk_I is in CLIENT_HELLO so responder verifies → non-replayable.
+  4. DOC BUG: Golden Vector 2 preimage is 256 bytes, NOT 246 (sha256 verified
+     over the 256-byte construction).
+  5. Minor: scrcpy coordinator needs `adb connect <host>:<port>` before
+     --serial (or scrcpy --tcpip) — add to §6.7.
+  SLICE 1 GO issued contingent on amendments being folded into design.md
+  first. Slice 1 crypto code gets the second lead-personal review
+  (canonical JSON determinism = the critical surface).
