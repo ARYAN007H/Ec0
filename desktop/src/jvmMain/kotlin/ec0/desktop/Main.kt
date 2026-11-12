@@ -25,7 +25,7 @@ fun main() = application {
             ) {
                 Text("ec0 desktop shell", style = MaterialTheme.typography.h4)
                 Text(
-                    "Synergy ports: ${ec0.core.synergy.SynergyTransport.PORT_FALLBACK_CHAIN.joinToString()}",
+                    "Synergy ports (computer profile): ${ec0.core.synergy.SynergyTransport.COMPUTER_PORT_LIST.joinToString()}",
                     style = MaterialTheme.typography.body1,
                 )
             }
