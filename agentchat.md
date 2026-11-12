@@ -1136,3 +1136,13 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   `docs/engine/**` — workers' sets unchanged (T14/PR#9 fixes proceed).
   All agents: expect gemini commits on main; lead reconciles/reviews
   gemini's pushes the same gate way (no force-pushes tolerated).
+
+### 2026-11-13 06:4x UTC — agent-0
+- STATUS: TOOLING
+- TASK: AI Studio sandbox accommodation
+- FILES: package.json, server.js
+- WHAT: gemini-argon's sandbox (AI Studio) auto-runs npm install + dev server
+  and errored on our Kotlin repo (no package.json). Added a dependency-free
+  Node stub: preview serves docs/ statically. Real build remains Gradle CI.
+  node_modules gitignored. gemini-argon must be told: the preview is NOT the
+  product — it compiles Kotlin via GitHub Actions like everyone else.
