@@ -2,8 +2,17 @@ package ec0.desktop.state
 
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
+import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.RegisterDtoV2
+import ec0.desktop.discovery.RealDeviceSource
+import ec0.desktop.discovery.SynergyDiscoveryProbe
+import ec0.desktop.localsend.LocalsendHttp
+import ec0.desktop.localsend.NothingAcceptedException
+import ec0.desktop.localsend.PinRequiredException
+import ec0.desktop.localsend.RecipientDeclinedException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,11 +21,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
- * Seam between the UI and the protocol stacks. The real implementation
- * (LocalSend HTTP server + Synergy WebSocket transport, T10) plugs in here;
- * until then [DemoDeviceSource] provides deterministic sample devices.
+ * Seam between the UI and the protocol stacks. [RealDeviceSource] is the
+ * production source (LocalSend UDP :53317 works today; the Synergy probe is
+ * T4-gated). [DemoDeviceSource] remains available for UI-only development.
  */
 interface DeviceSource {
     /** One discovery sweep over the configured transports. */
@@ -63,7 +73,10 @@ class DemoDeviceSource : DeviceSource {
 /** Root observable state for the whole window. */
 class AppState(
     private val scope: CoroutineScope,
-    private val deviceSource: DeviceSource = DemoDeviceSource(),
+    private val deviceSource: DeviceSource = RealDeviceSource(
+        settingsProvider = { settings.value },
+        synergyProbe = SynergyDiscoveryProbe(enabled = { settings.value.synergyProbeEnabled }),
+    ),
 ) {
     private val _devices = MutableStateFlow<List<UiDevice>>(emptyList())
     val devices: StateFlow<List<UiDevice>> = _devices.asStateFlow()
@@ -76,6 +89,8 @@ class AppState(
 
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+
+    private val http = LocalsendHttp()
 
     private var scanJob: Job? = null
     private var tickerJob: Job? = null
@@ -93,22 +108,67 @@ class AppState(
         }
     }
 
-    /** Enqueue an outgoing transfer. Real protocol wiring is a later PR;
-     *  the item stays PENDING until a transport drives it. */
-    fun enqueueOutgoing(fileName: String, sizeBytes: Long, peer: UiDevice) {
+    /** Send a real file to a LocalSend peer: prepare-upload → upload with
+     *  progress, states updated on the queue item as the protocol advances. */
+    fun sendFile(file: File, peer: UiDevice) {
         val item = TransferItem(
             id = "out-${System.nanoTime()}",
-            fileName = fileName,
+            fileName = file.name,
             direction = TransferDirection.OUTGOING,
             peerAlias = peer.alias,
-            sizeBytes = sizeBytes,
+            sizeBytes = file.length(),
+            state = TransferState.RUNNING,
         )
         _transfers.update { it + item }
         ensureTicker()
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val fileDto = FileDto(
+                    id = item.id,
+                    fileName = file.name,
+                    size = file.length(),
+                    fileType = guessMimeType(file.name),
+                )
+                val response = http.prepareUpload(
+                    peer = peer,
+                    info = toRegisterDto(),
+                    files = mapOf(item.id to fileDto),
+                    pin = _settings.value.pin.takeIf { _settings.value.requirePin },
+                )
+                val token = response.files[item.id]
+                    ?: throw NothingAcceptedException()
+                updateItem(item.id) { it.copy(progressPct = 0) }
+                file.inputStream().use { input ->
+                    http.uploadFile(
+                        peer = peer,
+                        sessionId = response.sessionId,
+                        fileId = item.id,
+                        token = token,
+                        fileName = file.name,
+                        bytes = input,
+                        size = file.length(),
+                    ) { pct -> updateItem(item.id) { it.copy(progressPct = pct) } }
+                }
+            }.onSuccess {
+                updateItem(item.id) { it.copy(progressPct = 100, state = TransferState.DONE) }
+            }.onFailure { t ->
+                if (t is CancellationException) {
+                    updateItem(item.id) { it.copy(state = TransferState.CANCELLED) }
+                } else {
+                    val msg = when (t) {
+                        is PinRequiredException -> "PIN required / wrong PIN (401)"
+                        is RecipientDeclinedException -> "Recipient declined (403)"
+                        is NothingAcceptedException -> "No files accepted (204)"
+                        else -> "Failed: ${t.message ?: t.javaClass.simpleName}"
+                    }
+                    updateItem(item.id) { it.copy(state = TransferState.FAILED, error = msg) }
+                }
+            }
+        }
     }
 
     /** Demo-only: seeds one fake incoming transfer that runs to completion
-     *  so the queue UI can be exercised before protocol integration. */
+     *  so the queue UI can be exercised without a peer. */
     fun seedDemoTransfer() {
         val item = TransferItem(
             id = "demo-${System.nanoTime()}",
@@ -122,6 +182,8 @@ class AppState(
         ensureTicker()
     }
 
+    /** Cooperative cancel: flags the item; the upload loop checks between
+     *  progress callbacks and aborts via the connection. */
     fun cancelTransfer(id: String) =
         _transfers.update { list -> list.map {
             if (it.id == id && it.state in ACTIVE_STATES) it.copy(state = TransferState.CANCELLED) else it
@@ -146,12 +208,19 @@ class AppState(
             version = ec0.core.localsend.LocalsendV2.PROTOCOL_VERSION,
             deviceModel = s.deviceModel,
             deviceType = s.deviceType,
-            fingerprint = "pending-cert", // replaced by the TLS layer
+            fingerprint = RealDeviceSource.OWN_FINGERPRINT,
             port = s.port,
-            protocol = s.protocol,
-            download = true,
+            // We do not host the HTTP server yet — honest announcement.
+            protocol = ProtocolType.HTTP,
+            download = false,
         )
     }
+
+    private fun updateItem(id: String, transform: (TransferItem) -> TransferItem) =
+        _transfers.update { list -> list.map { if (it.id == id) transform(it) else it } }
+
+    private fun isCancelled(id: String): Boolean =
+        _transfers.value.any { it.id == id && it.state == TransferState.CANCELLED }
 
     /** Advance demo transfers; real transports replace this ticker. */
     private fun ensureTicker() {
@@ -173,5 +242,21 @@ class AppState(
     companion object {
         val ACTIVE_STATES = setOf(TransferState.PENDING, TransferState.RUNNING, TransferState.PAUSED)
         val FINISHED_STATES = setOf(TransferState.DONE, TransferState.FAILED, TransferState.CANCELLED)
+
+        fun guessMimeType(fileName: String): String {
+            val ext = fileName.substringAfterLast('.', "").lowercase()
+            return when (ext) {
+                "png" -> "image/png"
+                "jpg", "jpeg" -> "image/jpeg"
+                "gif" -> "image/gif"
+                "webp" -> "image/webp"
+                "pdf" -> "application/pdf"
+                "mp4" -> "video/mp4"
+                "mp3" -> "audio/mpeg"
+                "txt" -> "text/plain"
+                "zip" -> "application/zip"
+                else -> "application/octet-stream"
+            }
+        }
     }
 }

@@ -47,6 +47,15 @@ fun runApp() {
     }
 }
 
+/** AWT file chooser → real outgoing transfer via the LocalSend route contract. */
+private fun pickFileAndSend(appState: AppState, device: ec0.desktop.state.UiDevice) {
+    val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Send to ${device.alias}", java.awt.FileDialog.LOAD)
+    dialog.isVisible = true
+    val file = dialog.files.firstOrNull()
+    dialog.dispose()
+    if (file != null) appState.sendFile(file, device)
+}
+
 @Composable
 private fun MainScaffold(appState: AppState) {
     var current by remember { mutableStateOf(Panel.DEVICES) }
@@ -87,10 +96,7 @@ private fun MainScaffold(appState: AppState) {
                     devices = devices,
                     scanning = scanning,
                     onRescan = appState::startScan,
-                    onSend = { device ->
-                        // Demo enqueue — real outgoing sends land with the transport PR.
-                        appState.enqueueOutgoing("send-test.png", 1_200_000, device)
-                    },
+                    onSend = { device -> pickFileAndSend(appState, device) },
                     modifier = Modifier.weight(1f),
                 )
                 Panel.TRANSFERS -> TransferQueuePanel(

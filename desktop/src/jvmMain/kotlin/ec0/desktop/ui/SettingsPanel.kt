@@ -97,6 +97,19 @@ fun SettingsPanel(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+
+        Text("Synergy (O+ Connect)", style = MaterialTheme.typography.subtitle2, color = MaterialTheme.colors.primary)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = settings.synergyProbeEnabled,
+                onCheckedChange = { checked -> onUpdate(settings.copy(synergyProbeEnabled = checked)) },
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Enable Synergy probe (pinned-TLS connect; device list needs T4 capture)",
+                style = MaterialTheme.typography.body2,
+            )
+        }
         Spacer(Modifier.height(24.dp))
         Text(
             "Settings are in-memory in this PR; persistence lands with the transport PR.",
