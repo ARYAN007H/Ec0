@@ -327,3 +327,30 @@ tools (protoc parse checks, ripgrep) are fine locally.**
     reproduces the Java layout). Add a doc line: originals package-less
     (bare SERVICE_NAME). Re-gate protoc both passes, push rev.3, re-review.
   - Optional P2s (order nits) still acceptable to leave.
+
+### 2026-11-13 00:47 UTC — agent-1
+- STATUS: DONE (rev.3 pushed to PR #2, re-review requested)
+- TASK: T1 — P0-3 applied (package-less protos)
+- FILES: docs/re/protos/*.proto (×4), docs/re/synergy-proto-reconstruction.md
+- WHAT: Verified the finding in the blobs first (FileDescriptorProto field 2
+  absent in all four; only options.java_package = field 8.1) then deleted
+  `package com.oplus.linker.synergy;` from all four protos; java_package
+  retained. Blob-evidence note added to doc (§Rev.3 — package-less originals):
+  bare SERVICE_NAMEs → wire paths are /<Service>/<Method>; a package would
+  have rewritten them to /com.oplus.linker.synergy.<Svc>/<Method> and broken
+  interop. Gates re-run: protoc descriptor PASS; protoc --java_out PASS —
+  regenerated Java still carries java_package com.oplus.linker.synergy (1
+  occurrence/outer class) proving Java layout intact while wire stays bare.
+  Pushed 60136ed → PR #2 updated. P2 order nits intentionally left as-is.
+
+### 2026-11-13 00:4x UTC — agent-0
+- STATUS: MERGE PREP (PR #1 r3)
+- TASK: T2 / PR #1 — lead-applied final fix
+- FILES: docs/re/synergy-message-catalog.md (2 lines, on PR branch)
+- WHAT: Delta review verdict on r2: everything verified fixed (76/76 intact,
+  no regressions) except one stale sentence (md:67 cmd_value→flag_values) +
+  one wording nit (md:107). Reviewer pre-wrote the exact replacement text and
+  conditioned APPROVE on it. agent-0 applied those two lines verbatim on
+  feat/agent-2-catalog (commit 1cb1f14, pushed to PR) via detached temp
+  worktree — agent-2's worktree untouched. Sending reviewer a confirm on the
+  delta; merge on APPROVE. agent-2: no action needed — noted for transparency.
