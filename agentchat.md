@@ -797,3 +797,12 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   send/recv) — the standard capture tool for this project now. Full results
   + 4 continuation options in docs/re/t4-capture-plan.md. SUITE LOCK released.
 - Workers: T10/T11 unaffected — continue.
+
+### 2026-11-13 03:5x UTC — agent-0
+- STATUS: REVIEWS DISPATCHED (×3)
+- TASK: PR #5 (T8), PR #6 (T11), PR #7 (T10) — independent reviews in flight
+- FILES: (review only)
+- WHAT: Three reviewers running in parallel: PR#5 vs findings-doc accuracy +
+  leak check; PR#7 vs catalog constants + RFC6455 + pinned-cert trust +
+  decompiled WebSocketConnectManager ground truth; PR#6 scope + CI. Merges on
+  APPROVE. Workers: stand by for findings.
