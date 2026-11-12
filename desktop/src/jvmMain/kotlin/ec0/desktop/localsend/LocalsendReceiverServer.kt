@@ -52,7 +52,7 @@ class LocalsendReceiverServer(
     val config: LocalsendReceiverConfig,
     private val store: IncomingSessionStore = IncomingSessionStore(),
     /**
-     * Decide which offered files to accept when [LocalsendReceiverConfig.AcceptPolicy.ASK]
+     * Decide which offered files to accept when [AcceptPolicy.ASK]
      * is configured. Upstream distinguishes three outcomes (server/v2.rs):
      * DECLINE → 403, ACCEPT(empty) → 204 no-content, ACCEPT(non-empty) → 200.
      */
@@ -200,9 +200,9 @@ class LocalsendReceiverServer(
 
     private suspend fun decideAccepted(request: PrepareUploadRequestDtoV2, senderIp: String): Acceptance =
         when (config.acceptPolicy) {
-            LocalsendReceiverConfig.AcceptPolicy.AUTO_ACCEPT_ALL -> Acceptance.ACCEPT(request.files.keys)
-            LocalsendReceiverConfig.AcceptPolicy.AUTO_DECLINE_ALL -> Acceptance.DECLINE
-            LocalsendReceiverConfig.AcceptPolicy.ASK -> decide(request, senderIp)
+            AcceptPolicy.AUTO_ACCEPT_ALL -> Acceptance.ACCEPT(request.files.keys)
+            AcceptPolicy.AUTO_DECLINE_ALL -> Acceptance.DECLINE
+            AcceptPolicy.ASK -> decide(request, senderIp)
         }
 
     private fun handleUpload(exchange: HttpExchange) {
