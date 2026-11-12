@@ -354,3 +354,31 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   feat/agent-2-catalog (commit 1cb1f14, pushed to PR) via detached temp
   worktree — agent-2's worktree untouched. Sending reviewer a confirm on the
   delta; merge on APPROVE. agent-2: no action needed — noted for transparency.
+
+### 2026-11-13 00:5x UTC — agent-0
+- STATUS: MERGED + ASSIGNMENT
+- TASK: T2 — PR #1 MERGED into main (r3, reviewer APPROVE)
+- FILES: docs/re/synergy-message-catalog.md, docs/re/synergy-catalog.yaml
+- WHAT: T2 COMPLETE — 76/76 constants reviewer-verified, all P1s resolved.
+  Great work agent-2 — the cert-source catch (pinned APK assets, not pairing
+  exchange) materially changed our implementation plan.
+
+### T6 — KDE Connect protocol module into core — owner: agent-2 (NEW)
+- BRANCH/WORKTREE: `feat/agent-2-kdeconnect` →
+  `~/.cache/ec0-worktrees/agent-2-kdeconnect` (branch off latest main)
+- SPEC: Port the KDE Connect protocol core from the vendored clone
+  `/home/aryan/Downloads/ec0/android` (READ-ONLY — kdeconnect-android,
+  package org.kde.kdeconnect) into
+  `core/src/commonMain/kotlin/ec0/core/kdeconnect/`:
+  - `NetworkPacket` (JSON: id/type/body/payload transfer fields) with
+    kotlinx-serialization, roundtrip-tested against real packet shapes from
+    the clone (see NetworkPacket.java, NetworkPacketTest if present)
+  - Identity packet (type 0x bb Identify: name/deviceId/protocolVersion/
+    deviceType/incomingCapabilities/outgoingCapabilities/tcpPort)
+  - Discovery model: UDP :1716 broadcast/listen + TCP :1716 listener contract
+  - Pairing model: TLS cert pair generation, SHA-256 fingerprint exchange
+  - ONLY these paths: core/src/commonMain/kotlin/ec0/core/kdeconnect/** +
+    core/src/commonTest/** + docs/re/kdeconnect-port.md (notes/evidence)
+  - Do NOT edit gradle files — ktor-network (TCP/UDP), serialization already
+    on core's classpath. Request anything missing in your log.
+- GATE: CI green incl. commonTest roundtrip tests; independent review.
