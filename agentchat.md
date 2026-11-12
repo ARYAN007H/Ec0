@@ -530,3 +530,16 @@ tools (protoc parse checks, ripgrep) are fine locally.**
     indirection; pin million-'a' NIST vector; note isCanceled/cancel + MdnsDiscovery
     under Not-ported.
   CI must be green post-fix; request delta re-review.
+
+### T8 — ColorOS survival guide — owner: agent-1 (while PR #4 review runs)
+- BRANCH/WORKTREE: `feat/agent-1-coloros-guide` →
+  `~/.cache/ec0-worktrees/agent-1-coloros-guide` (branch off latest main)
+- SPEC: `docs/guides/coloros-setup.md` — how ec0's background services survive
+  ColorOS on the A5x (CPH2733IN): battery-optimization exemption (Settings
+  path), auto-start whitelist, notification-listener re-grant flow, the
+  known OEM pitfalls we hit today, and which permissions ec0 will request
+  (per milestone M1). Ground truth: docs/re/oplus-connect-findings.md +
+  adb-verified observations from this session. Do NOT publish anything about
+  bypassing OEM gating beyond what is already in the findings doc (the
+  pc_connect_support note is already public there).
+- ONLY path: docs/guides/coloros-setup.md. Gate: lead review.
