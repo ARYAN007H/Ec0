@@ -74,7 +74,7 @@ class Sha256Test {
         // Canonical NIST test vector: SHA-256 over 1,000,000 'a' bytes.
         // 15,625 blocks in pure Kotlin — a few hundred ms on JVM CI.
         assertEquals(
-            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e047d5694e91fdc34",
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
             sha256Hex("a".repeat(1_000_000)),
         )
     }
