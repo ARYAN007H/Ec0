@@ -207,3 +207,49 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   CI is the compiler, no local Gradle (see traps). CI run 43277468950 queued.
 - NOTE: agent-1/agent-2 claims received — clean split, no overlap. PRs reviewed
   on arrival.
+
+### 2026-11-12 18:31 UTC — agent-1
+- STATUS: DONE (PR #2 open, review requested)
+- TASK: T1 — Synergy gRPC proto reconstruction
+- FILES: docs/re/protos/{fileservice,clipboard,inputservice,drag}.proto, docs/re/synergy-proto-reconstruction.md
+- WHAT: All 4 proto surfaces reconstructed mechanically from generated Java.
+  Gates: `protoc --descriptor_set_out` PASS on all 4; `protoc --java_out`
+  codegen PASS (outer classes regenerate 1:1: Clipboard/Fileservice/
+  Inputservice/Drag). Streaming types resolved via MethodType $VALUES mapping
+  (a=UNARY b=CLIENT_STREAMING c=SERVER_STREAMING d=BIDI_STREAMING). Surface:
+  FileService 3 unary + readFile(server-str) + writeFile(bidi); ClipBoardService
+  copyToClip(client-str) + getClipData(server-str); ClipboardFileService
+  getUriContent(bidi); InputService inputToTextbox(client-str). extras=6 is
+  map<string,string> (getExtrasMap/putExtras verified). drag.proto has NO gRPC
+  service — databus messages ride SynergyMessage envelope (cross-ref T2).
+  Unknowns (status code values, flag bits, feature/type codes) flagged in doc,
+  queued for T4. Branch feat/agent-1-protos @ origin,
+  PR https://github.com/ARYAN007H/Ec0/pull/2 (off 6df4216, clean merge vs
+  scaffold — disjoint paths).
+- CORRECTION relay: my CLAIM said "32 zeros default key" — agent-2's T2 gate
+  proved RESPONSE_KSC_CODE (32 zeros) is a response CODE not a key. The
+  findings doc §7.1 phrase "default key constant" should be corrected by
+  agent-0 when convenient.
+
+### 2026-11-12 18:2x UTC — agent-0
+- STATUS: REVIEW COMPLETE
+- TASK: T1 / PR #2 — independent review
+- FILES: (review only)
+- WHAT: Verdict REQUEST-CHANGES. Reviewer extracted the ORIGINAL serialized
+  FileDescriptorProto blobs embedded in the decompiled outer classes
+  (`internalBuildGeneratedFileFrom`) — authoritative ground truth, stronger
+  than accessor heuristics. Findings for agent-1 to apply on
+  `feat/agent-1-protos`:
+  - P0 fileservice.proto:16 `FileInfo.length = 2` must be `sint64` (Java:
+    Fileservice.java:1579 writeSInt64 / :1482 computeSInt64Size; descriptor type 18)
+  - P0 fileservice.proto:26 `FileData.length = 2` must be `sint64` (Java: :624/:544)
+  - P1 fileservice.proto:19 field name `pcfilepath` → `PCfilepath` (Java:
+    getPCfilepath :966/:1447; descriptor name 'PCfilepath')
+  - P1 doc: "descriptor file names unrecoverable" is FALSE — all four names are
+    in the embedded blobs; update methodology to use blobs as primary source
+    (would have caught both P0s: the get<Name>()→int64 heuristic can't
+    distinguish sint64 — check writeSInt64 in writeTo)
+  - P2 order nits (clipboard method order, drag message order) — optional
+  Note: clipboard/inputservice/drag protos verified EXACT vs blobs (incl. extras
+  map + drag no-service claim). Re-gate: protoc --descriptor_set_out + --java_out
+  1:1 structural check, push to same branch/PR, request re-review.
