@@ -1,5 +1,6 @@
 package ec0.desktop.state
 
+import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.dto.RegisterDtoV2
 import kotlinx.coroutines.CoroutineScope
