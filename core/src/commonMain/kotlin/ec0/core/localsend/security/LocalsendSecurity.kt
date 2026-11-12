@@ -16,10 +16,14 @@ package ec0.core.localsend.security
  *   mode it is a random string. Clients pin TLS against the announced
  *   fingerprint (`src/http/client/server_cert_verifier.rs`,
  *   `tests/v2_tls_pinning.rs`).
- * - Session tokens (v2.2): `packages/core/src/crypto/token.rs` — file tokens
- *   issued by prepare-upload are signed (timestamp + nonce, ed25519-style
- *   signing keys); the server verifies token signature, freshness and nonce
- *   on upload/download. This port treats tokens as opaque strings.
+ * - File tokens (v2 HTTP): plain random **UUIDs** issued by prepare-upload
+ *   (`server/v2.rs:326` — `Uuid::new_v4()`), verified by **string equality**
+ *   plus file-pending state (`server/v2.rs:400`). No signature, no crypto —
+ *   do NOT confuse them with `crypto/token.rs`, which implements signed
+ *   (timestamp+nonce) tokens used **only for WebRTC signaling**
+ *   (`webrtc/webrtc.rs` is its only caller).
+ * - PIN status codes: wrong/missing PIN → **401**; recipient declines →
+ *   **403** (distinct semantics, see `server/v2.rs` decline paths).
  */
 object LocalsendSecurity {
     /** Query parameter carrying the PIN. */
@@ -28,10 +32,12 @@ object LocalsendSecurity {
     /** Failed PIN attempts allowed per source IP before 429. */
     const val MAX_PIN_ATTEMPTS = 3
 
-    /**
-     * Pure decision model of `check_pin` (pin.rs): whether the supplied pin
-     * unlocks the request, and what the responder should answer.
-     */
+/**
+ * Pure decision model of `check_pin` (pin.rs): whether the supplied pin
+ * unlocks the request, and what the responder should answer. Note the
+ * status-code mapping: DENIED_WRONG_PIN answers **401**; a recipient's
+ * manual decline answers **403** (not modeled here).
+ */
     fun evaluatePin(
         requiredPin: String?,
         suppliedPin: String?,
@@ -51,7 +57,7 @@ enum class PinDecision {
     /** No PIN required, or correct PIN supplied (also resets the failure counter). */
     ALLOWED,
 
-    /** Wrong or missing PIN — decline (401/403). */
+    /** Wrong or missing PIN — decline with **401** (403 is recipient decline). */
     DENIED_WRONG_PIN,
 
     /** Failure limit exceeded for this source IP — 429 Too Many Requests. */

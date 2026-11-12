@@ -8,9 +8,14 @@ import ec0.core.localsend.LocalsendV2
  * (`packages/core/src/http/server/mod.rs:631-676`) and the client
  * (`packages/core/src/http/client/v2.rs`).
  *
- * Bodies: request/response DTOs in `ec0.core.localsend.dto`. `upload` and
- * `download` carry raw file bytes as the body (upload: request body = bytes,
- * response = plain text status; download: response body = bytes).
+ * Bodies: request/response DTOs in `ec0.core.localsend.dto`.
+ *
+ * Status-code semantics (reference `server/v2.rs`):
+ * - wrong/missing PIN → `401` (decline-by-recipient → `403`; sender-canceled
+ *   during the decision window → `403` as well)
+ * - prepare-upload with nothing accepted → `204` no-content (empty body)
+ * - upload success → **empty `200`** (no body, not a text status)
+ * - PIN rate-limit exceeded → `429`
  */
 enum class LocalsendV2Route(
     val method: Method,
@@ -21,21 +26,32 @@ enum class LocalsendV2Route(
     /** Device registration; request = [ec0.core.localsend.dto.RegisterDtoV2]. */
     REGISTER(Method.POST, "${LocalsendV2.API_PATH_V2}/register", emptyList()),
 
-    /** Initiate a transfer; request = PrepareUploadRequestDtoV2, response = PrepareUploadResponseDtoV2. */
-    PREPARE_UPLOAD(Method.POST, "${LocalsendV2.API_PATH_V2}/prepare-upload", emptyList()),
+    /** Initiate a transfer; request = PrepareUploadRequestDtoV2.
+     *  Success (some accepted) → 200 PrepareUploadResponseDtoV2;
+     *  nothing accepted → 204; declined by user → 403; wrong pin → 401. */
+    PREPARE_UPLOAD(
+        Method.POST,
+        "${LocalsendV2.API_PATH_V2}/prepare-upload",
+        emptyList(),
+        listOf("pin"),
+    ),
 
-    /** Stream one file's bytes; the token is issued by prepare-upload. */
+    /** Stream one file's bytes; the token is issued by prepare-upload.
+     *  Success → empty 200. */
     UPLOAD(Method.POST, "${LocalsendV2.API_PATH_V2}/upload", listOf("sessionId", "fileId", "token")),
 
     /** Abort a session. */
     CANCEL(Method.POST, "${LocalsendV2.API_PATH_V2}/cancel", listOf("sessionId")),
 
-    /** Download API: request an offered-files session; response = PrepareDownloadResponseDtoV2. */
+    /** Download API: request an offered-files session; response = PrepareDownloadResponseDtoV2.
+     *  `sessionId` is optional — omitted on first contact, supplied when
+     *  re-requesting an existing session (browser refresh scenarios;
+     *  reference client/v2.rs `session_id: Option<&str>`, web.rs:317). */
     PREPARE_DOWNLOAD(
         Method.POST,
         "${LocalsendV2.API_PATH_V2}/prepare-download",
-        listOf("sessionId"),
-        listOf("pin"),
+        emptyList(),
+        listOf("sessionId", "pin"),
     ),
 
     /** Download API: fetch one file's bytes. */

@@ -35,26 +35,56 @@ semantics documented in the Rust doc-comments (e.g. §7.1 fallback).
 | `RegisterDtoV2` / `RegisterResponseDtoV2` / `InfoResponseDtoV2` | `http/dto_v2.rs` | response echoes no port/protocol; fingerprint defaults "" but always serialized |
 | `MulticastMessageV2` | `model/discovery.rs` | UDP :53317 announce (never a response) |
 | `PrepareUploadRequestDtoV2` / `...ResponseDtoV2` / `PrepareDownloadResponseDtoV2` | `http/dto_v2.rs` | files maps keyed by file ID |
-| `LocalsendV2Route` | `http/server/mod.rs:631-676` + `http/client/v2.rs` | 7 routes: register, prepare-upload, upload(sessionId,fileId,token), cancel(sessionId), prepare-download(sessionId,pin?), download(sessionId,fileId), info |
-| `LocalsendSecurity` (PIN + fingerprint + token model) | `http/server/common/pin.rs`, `model/discovery.rs` fingerprint docs, `crypto/token.rs` | PIN via query param, 3 attempts/IP → 429; fingerprint = cert SHA-256 (HTTPS) / random (HTTP); v2.2 tokens signed — opaque strings here |
+| `LocalsendV2Route` | `http/server/mod.rs:631-676` + `http/client/v2.rs` | 7 routes: register, prepare-upload(pin?), upload(sessionId,fileId,token), cancel(sessionId), prepare-download(sessionId?,pin?), download(sessionId,fileId), info |
+| `LocalsendSecurity` (PIN + fingerprint + token model) | `http/server/common/pin.rs`, `model/discovery.rs` fingerprint docs, `server/v2.rs` token paths | PIN via query param, 3 attempts/IP → 429, wrong PIN → **401** (403 = recipient decline); fingerprint = cert SHA-256 (HTTPS) / random (HTTP); **file tokens = plain UUIDs, equality-compared** (see below) |
+
+## Token model (corrected after review)
+
+The v2 HTTP **file tokens are plain random UUIDs**: prepare-upload creates
+`SessionFileV2 { token: Uuid::new_v4().to_string() }` (`server/v2.rs:326`) and
+upload verifies by equality + pending state (`file.token != *token` —
+`server/v2.rs:400`). There is **no signing and no crypto** in the v2 HTTP
+token path. `crypto/token.rs` (signed timestamp+nonce tokens) is
+**WebRTC-signaling-only** — its sole caller is `webrtc/webrtc.rs`. An earlier
+revision of this doc attributed signed tokens to the HTTP path; that was a
+misattribution caught in review (implementers following it would
+signature-verify upload tokens and reject every real peer). ec0 treats tokens
+as opaque strings — the correct call.
+
+## Status-code contract (per reference `server/v2.rs`)
+
+- prepare-upload: wrong/missing PIN → **401** (`check_pin`); recipient
+  declines → **403** "Rejected"; sender cancels during decision → **403**;
+  all files filtered out (nothing accepted) → **204 no-content**; otherwise
+  **200** with `PrepareUploadResponseDtoV2`.
+- upload: success → **empty 200** (no body, no text status).
+- PIN attempts beyond the 3-per-IP limit → **429** ("Too many requests",
+  `pin.rs`).
+- The route table also carries `POST /api/localsend/v2/show`
+  (`server/mod.rs:676`, internal show-window route) — noted for completeness;
+  not part of ec0's ported surface yet.
 
 ## Version caveat
 
-Reference implements **v2.2** (`PROTOCOL_VERSION_V2`). LocalSend 1.x releases
-speak 2.0/2.1 on the wire (e.g. plain file tokens, no signed-token verification).
-The DTO shapes above are compatible with 2.0/2.1 JSON except: `metadata`/
-`sha256` are v2.1+ FileDto fields, and older peers may send `files` tokens
-without signatures. ec0's client/server layers (integration PRs) must send
-`version: "2.2"` but accept peers declaring "2.0"/"2.1" — the DTO set here
-parses all three (strict only on `protocol`/`deviceType` per reference).
+Reference implements **v2.2** (`PROTOCOL_VERSION_V2`). The vendored app is
+1.18.2 and speaks 2.2 through the Rust core; the ≤1.17 releases speak older
+2.x variants on the wire. The DTO shapes above parse 2.0/2.1 JSON as well
+(leniency on the wire: `deviceType` is lenient with the §7.1 fallback —
+**only `protocol` is strict**). The exact wire-shape boundary where
+`sha256`/`metadata` entered FileDto is not provable from this clone — the
+in-repo CHANGELOG only documents the v2 introduction itself
+("implement LocalSend protocol v2 with v1 fallback", CHANGELOG.md:275); check
+the official protocol-spec history before making compat claims about ≤1.17
+peers.
 
 ## Deliberately NOT ported (out of T5 scope)
 
 - Actual HTTP server/client wiring (ktor) — integration lands in the desktop/
   phone PRs; the route table is declared as data for those PRs.
-- Crypto: token signing (ed25519), TLS certificate generation, SHA-256 file
-  hashing. Tokens stay opaque strings; the security model documents the
-  semantics with file:line evidence for the implementer.
+- Crypto/TLS: certificate generation, SHA-256 file hashing, and WebRTC
+  signaling (the signed-token machinery in `crypto/token.rs` belongs to
+  WebRTC signaling, not the v2 HTTP transfer path — see the corrected token
+  model above). File tokens stay plain opaque UUID strings.
 
 ## Validation
 
