@@ -20,3 +20,4 @@
 /.gradle/
 local.properties
 *.log
+node_modules/

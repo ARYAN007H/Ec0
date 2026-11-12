@@ -1,0 +1,14 @@
+{
+  "name": "ec0-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ec0 — Kotlin Multiplatform repo. This package.json exists only so Node-based sandboxes (AI Studio) can boot; the real build is Gradle via GitHub Actions (.github/workflows/build.yml). Do NOT add JS dependencies here.",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "echo 'ec0 compiles via GitHub Actions (Gradle). Nothing to build with Node.'"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
