@@ -56,6 +56,15 @@ class LocalsendReceiverServer(
      * is configured. Upstream distinguishes three outcomes (server/v2.rs):
      * DECLINE → 403, ACCEPT(empty) → 204 no-content, ACCEPT(non-empty) → 200.
      */
+    private val decide: suspend (request: PrepareUploadRequestDtoV2, senderIp: String) -> Acceptance =
+        { _, _ -> Acceptance.DECLINE },
+    private val onShow: () -> Unit = {},
+    private val logger: Logger = Logger.getLogger("LocalsendReceiver"),
+) {
+    /**
+     * Upstream distinguishes three prepare-upload outcomes (server/v2.rs):
+     * DECLINE → 403, ACCEPT(empty) → 204 no-content, ACCEPT(non-empty) → 200.
+     */
     sealed interface Acceptance {
         /** Explicit decline by the recipient → 403. */
         data object DECLINE : Acceptance
@@ -64,11 +73,6 @@ class LocalsendReceiverServer(
         data class ACCEPT(val fileIds: Set<String>) : Acceptance
     }
 
-    private val decide: suspend (request: PrepareUploadRequestDtoV2, senderIp: String) -> Acceptance =
-        { _, _ -> Acceptance.DECLINE },
-    private val onShow: () -> Unit = {},
-    private val logger: Logger = Logger.getLogger("LocalsendReceiver"),
-) {
     /** Transfer queue for the UI (agent-1's TransferItem model). */
     val transferQueue: StateFlow<List<ec0.desktop.state.TransferItem>> get() = store.transferQueue
 
