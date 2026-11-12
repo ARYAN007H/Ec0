@@ -28,7 +28,7 @@ class Rfc6455Test {
         val frame = WsFrames.encodeClientFrame(WsOpcode.TEXT, payload)
 
         // Mask bit set in the second header byte
-        assertEquals(0x80.toByte(), frame[1].toInt() and 0x80.toByte())
+        assertEquals(0x80, frame[1].toInt() and 0x80)
 
         // Roundtrip through the reader (server frames are unmasked; the decoder
         // handles both — verify masking was applied by checking the payload
