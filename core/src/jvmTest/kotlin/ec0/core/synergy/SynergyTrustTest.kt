@@ -1,10 +1,10 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * Pinned-trust tests — the vendored anchor (docs/re/certs/server_computer.pem)
- * must parse, match agent-0's recorded fingerprint, and the trust manager
- * must reject any other certificate (represented here by the kdeconnect
- * upstream test cert from T6's fixture set).
+ * Pinned-trust tests — BOTH vendored anchors (computer + pad, distinct certs
+ * per PR #7 review) must parse and match their recorded fingerprints; the
+ * trust managers accept their own profile's cert and reject the other
+ * profile's + any third-party certificate.
  */
 package ec0.core.synergy
 
@@ -18,8 +18,7 @@ import kotlin.test.assertTrue
 
 class SynergyTrustTest {
 
-    // Foreign cert = kdeconnect-android PairingHandlerTest certA (EC P-256) —
-    // any valid-but-different certificate exercises the rejection path.
+    // Third-party cert = kdeconnect-android PairingHandlerTest certA (EC P-256)
     private val foreignCertPem = """
         -----BEGIN CERTIFICATE-----
         MIIBkzCCATmgAwIBAgIBATAKBggqhkjOPQQDBDBTMS0wKwYDVQQDDCRlZTA2MWE3NV9lNDAzXzRlY2NfOTI2
@@ -41,42 +40,54 @@ class SynergyTrustTest {
     }
 
     @Test
-    fun pinnedCertParsesAndMatchesRecordedFingerprint() {
-        val cert = SynergyTrust.pinnedCertificate()
-        // RFC2253 orders most-specific first (EMAILADDRESS last in openssl's
-        // reverse display) — assert CN membership, not position
+    fun computerCertParsesAndMatchesRecordedFingerprint() {
+        val cert = SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.COMPUTER)
         assertTrue(cert.subjectX500Principal.getName().contains("CN=192.168.137.1"))
-        assertEquals(SynergyTrust.PINNED_FINGERPRINT, SynergyTrust.sha256Fingerprint(cert))
-        assertEquals("a892ccacb0ec60bf539445ddd3ce2d24602247f4812fe817a9460ccf87f568d9", SynergyTrust.PINNED_FINGERPRINT)
-        // Validity window covers the present (2020-07-29 → 2030-07-27)
+        assertEquals(SynergyTrust.PINNED_FINGERPRINT_COMPUTER, SynergyTrust.sha256Fingerprint(cert))
+        assertEquals("a892ccacb0ec60bf539445ddd3ce2d24602247f4812fe817a9460ccf87f568d9", SynergyTrust.PINNED_FINGERPRINT_COMPUTER)
         assertTrue(cert.notBefore.time < System.currentTimeMillis())
         assertTrue(System.currentTimeMillis() < cert.notAfter.time)
     }
 
     @Test
-    fun trustManagerAcceptsPinnedCert() {
-        val tm = SynergyTrust.pinnedTrustManager()
-        val pinned = SynergyTrust.pinnedCertificate()
-        tm.checkServerTrusted(arrayOf(pinned), "RSA")
-        tm.checkClientTrusted(arrayOf(pinned), "RSA")
-        assertTrue(tm.acceptedIssuers.contains(pinned))
+    fun padCertParsesAndMatchesRecordedFingerprint() {
+        val cert = SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.PAD)
+        assertTrue(cert.subjectX500Principal.getName().contains("CN=192.168.49.1"))
+        assertEquals(SynergyTrust.PINNED_FINGERPRINT_PAD, SynergyTrust.sha256Fingerprint(cert))
+        assertEquals("afc50cd2ce6db8e45d461588da376c2ba307d8f61628a6d7dbf0ac7566c1f0ea", SynergyTrust.PINNED_FINGERPRINT_PAD)
     }
 
     @Test
-    fun trustManagerRejectsForeignCert() {
-        val tm = SynergyTrust.pinnedTrustManager()
+    fun profilesPinDistinctCertificates() {
+        val computer = SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.COMPUTER)
+        val pad = SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.PAD)
+        assertTrue(!computer.encoded.contentEquals(pad.encoded))
+    }
+
+    @Test
+    fun trustManagerAcceptsOwnProfileCert() {
+        val computerTm = SynergyTrust.pinnedTrustManager(SynergyWsClient.Profile.COMPUTER)
+        val padTm = SynergyTrust.pinnedTrustManager(SynergyWsClient.Profile.PAD)
+        computerTm.checkServerTrusted(arrayOf(SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.COMPUTER)), "RSA")
+        padTm.checkServerTrusted(arrayOf(SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.PAD)), "RSA")
+        assertTrue(computerTm.acceptedIssuers.contains(SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.COMPUTER)))
+    }
+
+    @Test
+    fun trustManagerRejectsWrongProfileAndForeignCerts() {
+        val computerTm = SynergyTrust.pinnedTrustManager(SynergyWsClient.Profile.COMPUTER)
+        val pad = SynergyTrust.pinnedCertificate(SynergyWsClient.Profile.PAD)
         val foreign = parseCert(foreignCertPem)
-        assertFailsWith<CertificateException> {
-            tm.checkServerTrusted(arrayOf(foreign), "EC")
-        }
-        assertFailsWith<CertificateException> {
-            tm.checkServerTrusted(emptyArray(), "RSA")
-        }
+
+        // Cross-profile: the pad cert must NOT satisfy the computer trust manager
+        assertFailsWith<CertificateException> { computerTm.checkServerTrusted(arrayOf(pad), "RSA") }
+        assertFailsWith<CertificateException> { computerTm.checkServerTrusted(arrayOf(foreign), "EC") }
+        assertFailsWith<CertificateException> { computerTm.checkServerTrusted(emptyArray(), "RSA") }
     }
 
     @Test
-    fun sslContextBuilds() {
-        val context = SynergyTrust.sslContext()
-        assertTrue(context.protocol.startsWith("TLS"))
+    fun sslContextBuildsForBothProfiles() {
+        assertTrue(SynergyTrust.sslContext(SynergyWsClient.Profile.COMPUTER).protocol.startsWith("TLS"))
+        assertTrue(SynergyTrust.sslContext(SynergyWsClient.Profile.PAD).protocol.startsWith("TLS"))
     }
 }

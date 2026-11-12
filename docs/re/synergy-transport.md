@@ -12,7 +12,7 @@ and the T4 dynamic-capture plan. Code:
 | `SynergyPortWalk.kt` | per-profile port walk | `RetryAndChangePortInterceptor.java` + call sites `WSCM:267/:481` |
 | `SynergyTrust.kt` | pinned-cert TLS trust + permissive hostname | `trustManagerForCertificates` `WSCM:390-410`, verifier `oq3` `WSCM:466` |
 | `Rfc6455.kt` | HTTP Upgrade + frame codec (masking, fragmentation, ping/pong/close) | RFC 6455; upstream delegated to OkHttp |
-| `SynergyWsClient.kt` | connect(): port walk → TLS → upgrade → handshake policy → envelope send/recv | `WSCM:447-470` timeouts (connect 3 s, io 50 s, retryOnConnectionFailure) |
+| `SynergyWsClient.kt` | connect(): port walk → TLS → upgrade → handshake policy → envelope send/recv; 5 s daemon ping loop; close-frame echo | `WSCM:447-470` timeouts (connect 3 s, io 50 s, pingInterval 5 s, retryOnConnectionFailure) |
 
 ## Envelope (wire truth)
 
@@ -50,17 +50,24 @@ reviewer-verified effective orders:
 (the 1-arg reading never reaches the last port within RetryCount — recorded
 here so T4 capture can adjudicate.)
 
-## TLS trust
+## TLS trust (per profile — corrected during PR #7 review)
 
-Trust anchor = the cert agent-0 extracted from the APK (`assets/server.cer`,
-vendored `docs/re/certs/server_computer.pem`): self-signed RSA, CN=192.168.137.1
-(the phone's SoftAP gateway IP), valid 2020→2030, **identical for both
-profiles** (server_pad.cer = server.cer). Security rests on **SHA-256
-fingerprint pinning** (`A8:92:CC:…:68:D9`) — chain validation is meaningless
-for a self-signed OEM cert. Hostname verification is disabled at the raw
-SSLSocket layer (`endpointIdentificationAlgorithm = null`), mirroring
-upstream's custom verifier: the CN names the hotspot gateway but peers also
-connect over Wi-Fi Direct/LAN addresses.
+Trust anchors = the two certs extracted from the APK assets (vendored
+`docs/re/certs/`): the profiles are pinned to **distinct** certificates —
+
+| Profile | Asset | Subject | SHA-256 |
+|---|---|---|---|
+| computer | `server.cer` | CN=192.168.137.1 (SoftAP gateway), O=oppo | `a892ccac…68d9` |
+| pad | `server_pad.cer` | CN=192.168.49.1 (Wi-Fi Direct group), O=oplus, OU=GameEco | `afc50cd2…f0ea` |
+
+This matches upstream's per-profile host verifiers (WSCM:289-294 computer /
+:297-305 pad). Security rests on **SHA-256 fingerprint pinning** — chain
+validation is meaningless for self-signed OEM certs. Hostname verification is
+disabled at the raw SSLSocket layer (`endpointIdentificationAlgorithm = null`)
+because each cert's CN names a gateway IP while peers also connect over other
+local addresses; upstream ships custom per-profile verifiers for the same
+reason (the `oq3` analog, per profile). Cross-profile rejection is
+unit-tested.
 
 ## Deviations (reviewed in PR)
 
@@ -79,7 +86,9 @@ connect over Wi-Fi Direct/LAN addresses.
 
 ## Unknowns → T4
 
-1. WS URL path (default "/", never observed).
+1. WS URL path — STATICALLY CONFIRMED: `PCSynergyDevice.java:90` dials
+   `wss://<host>:<port>` with no path (so "/" in the upgrade request is
+   right); T4 capture verifies end-to-end.
 2. First-message handshake after upgrade — `SynergyHandshake.None|Raw`
    (kdeconnect's identity handshake does NOT apply here).
 3. Non-base signature/nonce derivation for cast/transfer message classes.
