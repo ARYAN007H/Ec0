@@ -334,8 +334,11 @@ class AeadSessionChannel(
      */
     fun openRekeyNotice(packet: ByteArray): Int = sendLock.withLock {
         recvLock.withLock {
-            if (requireAuthConfirm && nextRecvCounter < 1L) {
-                throw AeadSecurityException("Cannot receive rekey notice before AUTH_CONFIRM (counter=0)")
+            if (nextRecvCounter < 1L) {
+                if (requireAuthConfirm) {
+                    throw AeadSecurityException("Cannot receive rekey notice before AUTH_CONFIRM (counter=0)")
+                }
+                nextRecvCounter = 1L
             }
             val counter = nextRecvCounter
             val direct = try {
@@ -445,8 +448,13 @@ class AeadSessionChannel(
     }
 
     fun sealApplicationFrame(frameType: Byte, plaintext: ByteArray): ByteArray = sendLock.withLock {
-        if (requireAuthConfirm && nextSendCounter < 1L) {
-            throw AeadSecurityException("Cannot send application frame before AUTH_CONFIRM (counter=0)")
+        if (nextSendCounter < 1L) {
+            if (requireAuthConfirm) {
+                throw AeadSecurityException("Cannot send application frame before AUTH_CONFIRM (counter=0)")
+            }
+            // No-transcript channel: counter 0 is reserved for AUTH_CONFIRM,
+            // so application frames begin at 1 (see validateFrameTypeAndCounter).
+            nextSendCounter = 1L
         }
         val counter = nextSendCounter
         val packet = AeadFrameCodec.sealFrame(
@@ -461,8 +469,11 @@ class AeadSessionChannel(
     }
 
     fun openApplicationFrame(packet: ByteArray): DecryptedAeadFrame = recvLock.withLock {
-        if (requireAuthConfirm && nextRecvCounter < 1L) {
-            throw AeadSecurityException("Cannot receive application frame before AUTH_CONFIRM (counter=0)")
+        if (nextRecvCounter < 1L) {
+            if (requireAuthConfirm) {
+                throw AeadSecurityException("Cannot receive application frame before AUTH_CONFIRM (counter=0)")
+            }
+            nextRecvCounter = 1L
         }
         val counter = nextRecvCounter
         val frame = AeadFrameCodec.openFrame(
