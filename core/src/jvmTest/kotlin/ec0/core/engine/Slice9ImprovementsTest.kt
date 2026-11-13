@@ -729,22 +729,49 @@ class Slice9ImprovementsTest {
             ByteArray(32) { (it + 129).toByte() },
         )
 
-        val initiator = AeadSessionChannel(isInitiator = true, keys = initialKeys)
-        val responder = AeadSessionChannel(isInitiator = false, keys = initialKeys)
+        val initiator = AeadSessionChannel(isInitiator = true, keys = initialKeys, requireAuthConfirm = false)
+        val responder = AeadSessionChannel(isInitiator = false, keys = initialKeys, requireAuthConfirm = false)
 
-        val keyUpdateFrame = initiator.sealApplicationFrame(EngineConstants.FRAME_KEY_UPDATE, ByteArray(0))
-        val openedUpdate = responder.openApplicationFrame(keyUpdateFrame)
-        assertEquals(EngineConstants.FRAME_KEY_UPDATE, openedUpdate.frameType)
-
-        val epoch1Initiator = initiator.rotateKeys()
-        val epoch1Responder = responder.rotateKeys()
-        assertEquals(1, epoch1Initiator)
-        assertEquals(1, epoch1Responder)
+        // Notify-then-rotate convention: notice sealed under the OLD key with
+        // an 8-byte BE target epoch; the peer adopts on receipt.
+        val notice1 = initiator.sealRekeyNotice()
+        assertEquals(1, responder.openRekeyNotice(notice1))
+        assertEquals(1, responder.rekeyEpoch)
+        assertEquals(1, initiator.rotateKeys())
 
         val postRekeyPayload = "encrypted-under-epoch-1".encodeToByteArray()
         val sealedEpoch1 = initiator.sealApplicationFrame(EngineConstants.FRAME_ENVELOPE_JSON, postRekeyPayload)
         val openedEpoch1 = responder.openApplicationFrame(sealedEpoch1)
         assertContentEquals(postRekeyPayload, openedEpoch1.plaintext)
+
+        // Recovery path: the sender rotated BEFORE notifying — the notice is
+        // sealed under the already-rotated (epoch+1) key; the receiver adopts
+        // it and stays in lockstep (payload names the sender's NEXT target).
+        assertEquals(2, initiator.rotateKeys())
+        val lateNotice = initiator.sealRekeyNotice()
+        assertEquals(3, responder.openRekeyNotice(lateNotice))
+        assertEquals(2, responder.rekeyEpoch)
+        val postRecoveryPayload = "encrypted-under-epoch-2".encodeToByteArray()
+        val sealedEpoch2 = initiator.sealApplicationFrame(EngineConstants.FRAME_ENVELOPE_JSON, postRecoveryPayload)
+        assertContentEquals(postRecoveryPayload, responder.openApplicationFrame(sealedEpoch2).plaintext)
+
+        // Gap detection: a peer that skipped a rotation can neither open the
+        // notice under its current key nor under the derived next-epoch key —
+        // the sequential prk chain is unrecoverable, must fail loudly.
+        val skippedSender = AeadSessionChannel(isInitiator = true, keys = initialKeys, requireAuthConfirm = false)
+        val skippedReceiver = AeadSessionChannel(isInitiator = false, keys = initialKeys, requireAuthConfirm = false)
+        skippedSender.rotateKeys()
+        skippedSender.rotateKeys()
+        val gapNotice = skippedSender.sealRekeyNotice()
+        assertFailsWith<AeadSecurityException> { skippedReceiver.openRekeyNotice(gapNotice) }
+
+        // Fail-loud regression: default (handshake-built) channels still
+        // refuse application frames before the counter-0 AUTH_CONFIRM exchange.
+        val strict = AeadSessionChannel(isInitiator = true, keys = initialKeys)
+        assertFailsWith<AeadSecurityException> {
+            strict.sealApplicationFrame(EngineConstants.FRAME_ENVELOPE_JSON, ByteArray(0))
+        }
+        assertFailsWith<AeadSecurityException> { strict.openRekeyNotice(ByteArray(64)) }
 
         // 2. Authenticated Loopback CLI IPC (`127.0.0.1`)
         val tempDir = Files.createTempDirectory("ec0-ipc-test").toFile()

@@ -192,6 +192,7 @@ Once `SERVER_HELLO` is processed, every frame sent over WebSocket `BINARY` opcod
   0x01 = AUTH_CONFIRM  (CLIENT_AUTH on K_I2R @ counter=0; SERVER_AUTH_CONFIRM on K_R2I @ counter=0)
   0x02 = ENVELOPE_JSON (UTF-8 encoded Ec0Envelope, counter >= 1)
   0x03 = BULK_CHUNK    (multiplexed file/clipboard binary chunk, counter >= 1)
+  0x04 = KEY_UPDATE    (8-byte re-key notice payload, counter >= 1)
 ```
 
 - **12-Byte AEAD Nonce Construction:**
@@ -200,8 +201,36 @@ Once `SERVER_HELLO` is processed, every frame sent over WebSocket `BINARY` opcod
   `aad (41B) = sessionId (32B) || frameType (1B) || counter_uint64_be (8B)`
 - **Counter Rules:**
   - Each direction maintains an independent 64-bit unsigned monotonic counter (`sendCounter`, `recvCounter`).
-  - Counter `0` in each direction is reserved exclusively for `frameType = 0x01` (`CLIENT_AUTH` on $K_{I\to R}$, `SERVER_AUTH_CONFIRM` on $K_{R\to I}$). Any `0x02` or `0x03` frame at counter `0`, or any `0x01` frame at `counter > 0`, is a fatal protocol violation.
+  - Counter `0` in each direction is reserved exclusively for `frameType = 0x01` (`CLIENT_AUTH` on $K_{I\to R}$, `SERVER_AUTH_CONFIRM` on $K_{R\to I}$). Any `0x02`, `0x03`, or `0x04` frame at counter `0`, or any `0x01` frame at `counter > 0`, is a fatal protocol violation.
   - Because WebSocket runs over ordered TCP, `recvCounter` MUST equal the expected next counter (`expectedCounter++`); any out-of-order or repeated counter or Poly1305 tag failure immediately terminates the session.
+
+#### 3.5.1 Session Re-Keying (`frameType = 0x04`, forward-secret key rotation)
+
+Key rotation uses a **deterministic HKDF ratchet** over `SessionKeyMaterial.prk`
+(`HkdfSha256.deriveRekeyedSessionKeys(current, epoch)`): because each epoch's
+`prk` is chained from the previous epoch's, rotation is strictly sequential —
+a peer that misses an epoch can never derive later ones. The protocol makes
+every rotation explicit and self-verifying:
+
+- **Notice payload:** exactly 8 bytes, big-endian TARGET epoch
+  (`sender.rekeyEpoch + 1` at seal time). No key material ever crosses the wire.
+- **Notify-then-rotate (normative order):** the sender seals the `0x04` notice
+  under its CURRENT (pre-rotation) send key, then calls `rotateKeys()`. The
+  receiver opens the notice under its current receive key and rotates to the
+  payload epoch. Concurrent rotations by both peers converge (both derive the
+  same epoch-1 material from the shared chain).
+- **Late-notify recovery:** if the sender rotated before sealing, the notice
+  opens under the receiver's *derived next-epoch* key instead; the receiver
+  adopts that key material directly (the successful key opening proves the
+  sender sits on that epoch) and ignores the payload, which names the sender's
+  follow-up target. Lockstep is restored without a re-handshake.
+- **Gap detection (fatal):** a notice that opens under neither key means the
+  sender is ≥ 2 epochs ahead — the sequential `prk` chain makes that
+  unrecoverable, so it MUST throw `AeadSecurityException` and terminate the
+  session rather than guess.
+- **Channels built without a handshake** (loopback IPC, tests) set
+  `requireAuthConfirm = false` explicitly at construction; the counter-0
+  AUTH_CONFIRM guard stays fail-loud for every handshake-built channel.
 
 ---
 

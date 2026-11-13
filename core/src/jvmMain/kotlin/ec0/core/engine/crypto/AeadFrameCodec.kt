@@ -15,8 +15,19 @@
  *
  * Counter invariant:
  *   - counter == 0 is reserved exclusively for frameType == 0x01 (AUTH_CONFIRM).
- *   - counter >= 1 is reserved exclusively for frameType == 0x02 (ENVELOPE_JSON)
- *     and frameType == 0x03 (BULK_CHUNK).
+ *   - counter >= 1 is reserved exclusively for frameType == 0x02 (ENVELOPE_JSON),
+ *     frameType == 0x03 (BULK_CHUNK) and frameType == 0x04 (KEY_UPDATE).
+ *
+ * Re-key notice (FRAME_KEY_UPDATE payload, docs/engine/design.md §3.5):
+ *   payload = 8-byte big-endian TARGET epoch (`sender.rekeyEpoch + 1` at seal
+ *   time). Convention: seal the notice under the CURRENT (pre-rotation) key,
+ *   then rotate locally; the peer adopts on receipt. The receiver derives the
+ *   sender's state from which key opened the notice: current key -> the sender
+ *   will rotate to the payload epoch next (rotate to match); derived
+ *   next-epoch key -> the sender already rotated (adopt its keys, ignore the
+ *   payload). A notice that opens under neither key means a skipped rotation
+ *   — the re-key chain is sequential (`prk` chaining), so that is
+ *   unrecoverable and must fail loudly.
  */
 package ec0.core.engine.crypto
 
@@ -249,6 +260,14 @@ object AeadFrameCodec {
 class AeadSessionChannel(
     keys: SessionKeyMaterial,
     val isInitiator: Boolean,
+    /**
+     * Require the counter-0 AUTH_CONFIRM exchange before any application
+     * frame. Handshake-built channels (default `true`) keep the fail-loud
+     * guard; channels initialized directly from pre-derived
+     * [SessionKeyMaterial] (loopback IPC, tests) have no handshake transcript
+     * to confirm and opt out explicitly instead of silently skipping it.
+     */
+    private val requireAuthConfirm: Boolean = true,
 ) {
     private var currentKeys: SessionKeyMaterial = keys
     private var sendKey: ByteArray = if (isInitiator) keys.kInitToResp else keys.kRespToInit
@@ -269,18 +288,131 @@ class AeadSessionChannel(
 
     /**
      * Rotates the symmetric directional keys forward using [HkdfSha256.deriveRekeyedSessionKeys]
-     * without resetting the monotonic counters or `sessionId`.
+     * without resetting the monotonic counters or `sessionId`. The re-key
+     * chain derives from [SessionKeyMaterial.prk], so rotation is strictly
+     * sequential: both peers must apply every epoch or the chain diverges
+     * irrecoverably (detected by [openRekeyNotice], repaired only by a
+     * re-handshake).
      */
     fun rotateKeys(): Int = sendLock.withLock {
         recvLock.withLock {
-            val nextEpoch = rekeyEpoch + 1
-            val rotated = HkdfSha256.deriveRekeyedSessionKeys(currentKeys, nextEpoch)
-            currentKeys = rotated
-            sendKey = if (isInitiator) rotated.kInitToResp else rotated.kRespToInit
-            recvKey = if (isInitiator) rotated.kRespToInit else rotated.kInitToResp
-            rekeyEpoch = nextEpoch
-            nextEpoch
+            rotateKeysInternal()
         }
+    }
+
+    /**
+     * Seals the re-key notification under the CURRENT (pre-rotation) send key
+     * with payload = 8-byte big-endian target epoch (`rekeyEpoch + 1`).
+     *
+     * Convention: call BEFORE [rotateKeys] (notify-then-rotate) so the peer
+     * opens the notice under its current receive key and rotates to match.
+     * Calling after [rotateKeys] still works — the peer recovers by opening
+     * the notice under the derived next-epoch key — but prefer the ordered
+     * form. The peer side is [openRekeyNotice].
+     */
+    fun sealRekeyNotice(): ByteArray = sendLock.withLock {
+        sealApplicationFrame(
+            EngineConstants.FRAME_KEY_UPDATE,
+            encodeRekeyNotice(rekeyEpoch + 1),
+        )
+    }
+
+    /**
+     * Opens a re-key notification and brings this channel's keys in line with
+     * the sender's. Which key opens the frame tells the receiver what the
+     * sender did:
+     *  - opens under the CURRENT receive key (sender sealed pre-rotation):
+     *    payload epoch is the sender's next epoch — rotate to it (or accept
+     *    an idempotent "no rotation" notice for the current epoch);
+     *  - opens under the DERIVED next-epoch key (sender rotated before
+     *    sealing): adopt those keys, payload is the sender's follow-up target
+     *    and is not acted on here.
+     *
+     * Returns the acted-on payload epoch. Throws [AeadSecurityException] if
+     * the notice opens under neither key (skipped rotation / epoch gap) or
+     * the payload is inconsistent with the opening key.
+     */
+    fun openRekeyNotice(packet: ByteArray): Int = sendLock.withLock {
+        recvLock.withLock {
+            if (requireAuthConfirm && nextRecvCounter < 1L) {
+                throw AeadSecurityException("Cannot receive rekey notice before AUTH_CONFIRM (counter=0)")
+            }
+            val counter = nextRecvCounter
+            val direct = try {
+                AeadFrameCodec.openFrame(recvKey, sessionId, counter, packet)
+            } catch (_: AeadSecurityException) {
+                null
+            }
+            val frame: DecryptedAeadFrame
+            var actedEpoch: Int
+            if (direct != null) {
+                frame = direct
+                val epoch = decodeRekeyNotice(frame.plaintext)
+                when (epoch) {
+                    rekeyEpoch + 1 -> rotateKeysInternal()
+                    rekeyEpoch -> Unit // idempotent notice: keys already current
+                    else -> throw AeadSecurityException(
+                        "Rekey notice epoch $epoch inconsistent with channel epoch $rekeyEpoch",
+                    )
+                }
+                actedEpoch = epoch
+            } else {
+                // Recovery: the sender rotated before sealing — try the derived
+                // next-epoch key and adopt it on match.
+                val adoptEpoch = rekeyEpoch + 1
+                val candidate = HkdfSha256.deriveRekeyedSessionKeys(currentKeys, adoptEpoch)
+                val candidateRecv = if (isInitiator) candidate.kRespToInit else candidate.kInitToResp
+                frame = AeadFrameCodec.openFrame(candidateRecv, sessionId, counter, packet)
+                adoptKeys(candidate, adoptEpoch)
+                val epoch = decodeRekeyNotice(frame.plaintext)
+                // The opening key proves the sender sits on `adoptEpoch`; the
+                // payload may only name that epoch (idempotent) or its next.
+                if (epoch < adoptEpoch || epoch > adoptEpoch + 1) {
+                    throw AeadSecurityException(
+                        "Rekey notice epoch $epoch inconsistent with adopted epoch $adoptEpoch",
+                    )
+                }
+                actedEpoch = epoch
+            }
+            if (frame.frameType != EngineConstants.FRAME_KEY_UPDATE) {
+                throw AeadSecurityException(
+                    "openRekeyNotice: expected FRAME_KEY_UPDATE, got 0x${(frame.frameType.toInt() and 0xff).toString(16)}",
+                )
+            }
+            nextRecvCounter = counter + 1
+            actedEpoch
+        }
+    }
+
+    /** Derives `rekeyEpoch + 1` from the current chain and swaps it in. */
+    private fun rotateKeysInternal(): Int {
+        val nextEpoch = rekeyEpoch + 1
+        val rotated = HkdfSha256.deriveRekeyedSessionKeys(currentKeys, nextEpoch)
+        adoptKeys(rotated, nextEpoch)
+        return nextEpoch
+    }
+
+    private fun adoptKeys(keys: SessionKeyMaterial, epoch: Int) {
+        currentKeys = keys
+        sendKey = if (isInitiator) keys.kInitToResp else keys.kRespToInit
+        recvKey = if (isInitiator) keys.kRespToInit else keys.kInitToResp
+        rekeyEpoch = epoch
+    }
+
+    private fun encodeRekeyNotice(epoch: Int): ByteArray = ByteArray(8) { i ->
+        (epoch ushr (8 * (7 - i))).toByte()
+    }
+
+    private fun decodeRekeyNotice(payload: ByteArray): Int {
+        if (payload.size != 8) {
+            throw AeadSecurityException("Rekey notice payload must be 8 bytes, got ${payload.size}")
+        }
+        var epoch = 0
+        for (b in payload) epoch = (epoch shl 8) or (b.toInt() and 0xff)
+        if (epoch < 1) {
+            throw AeadSecurityException("Rekey notice epoch must be >= 1, got $epoch")
+        }
+        return epoch
     }
 
     fun sealAuthConfirm(plaintext: ByteArray): ByteArray = sendLock.withLock {
@@ -313,8 +445,8 @@ class AeadSessionChannel(
     }
 
     fun sealApplicationFrame(frameType: Byte, plaintext: ByteArray): ByteArray = sendLock.withLock {
-        if (nextSendCounter < 1L) {
-            nextSendCounter = 1L
+        if (requireAuthConfirm && nextSendCounter < 1L) {
+            throw AeadSecurityException("Cannot send application frame before AUTH_CONFIRM (counter=0)")
         }
         val counter = nextSendCounter
         val packet = AeadFrameCodec.sealFrame(
@@ -329,8 +461,8 @@ class AeadSessionChannel(
     }
 
     fun openApplicationFrame(packet: ByteArray): DecryptedAeadFrame = recvLock.withLock {
-        if (nextRecvCounter < 1L) {
-            nextRecvCounter = 1L
+        if (requireAuthConfirm && nextRecvCounter < 1L) {
+            throw AeadSecurityException("Cannot receive application frame before AUTH_CONFIRM (counter=0)")
         }
         val counter = nextRecvCounter
         val frame = AeadFrameCodec.openFrame(
