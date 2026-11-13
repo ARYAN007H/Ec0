@@ -75,6 +75,7 @@ class AndroidAppState(
         // HTTP-mode fingerprint semantics — random per process run, mirroring
         // the desktop client (cert SHA-256 comes with the HTTPS server).
         ownFingerprint = { OWN_FINGERPRINT },
+        debugLog = { msg -> android.util.Log.d("ec0", msg) },
     )
     private val http = LocalsendHttp()
 
