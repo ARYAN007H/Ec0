@@ -167,6 +167,10 @@ class Ec0EngineNode(
     },
     private val camDroidTransportFactory: () -> CamDroidControlTransport = { TcpCamDroidControlTransport() },
     private val onExecuteCameraCommand: ((CamDroidControlCommand) -> CameraStatusInfo?)? = null,
+    private val onRemoteCursorHandoff: (CursorHandoffCommand) -> Unit = {},
+    private val onRemoteHotspotCommand: (HotspotControlCommand) -> HotspotStatusInfo? = { null },
+    private val onRemoteCallAction: (CallActionCommand) -> Boolean = { false },
+    private val onRemoteMediaControl: (MediaControlCommand) -> MediaSessionInfo? = { null },
     private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) : Closeable {
 
@@ -221,14 +225,19 @@ class Ec0EngineNode(
         onExecuteCameraCommand = onExecuteCameraCommand,
     )
 
-    val universalControlService = UniversalControlService()
+    val universalControlService = UniversalControlService(
+        onRemoteCursorHandoff = onRemoteCursorHandoff,
+    )
 
     val hotspotAndTelephonyService = HotspotAndTelephonyService(
         launcher = processLauncher,
+        onRemoteHotspotCommand = onRemoteHotspotCommand,
+        onRemoteCallAction = onRemoteCallAction,
     )
 
     val mediaSessionBridgeService = MediaSessionBridgeService(
         launcher = processLauncher,
+        onRemoteMediaControl = onRemoteMediaControl,
     )
 
     val usbAdbTunnelCoordinator = UsbAdbTunnelCoordinator(

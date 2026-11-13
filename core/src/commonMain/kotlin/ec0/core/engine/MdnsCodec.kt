@@ -554,7 +554,7 @@ object MdnsCodec {
         serviceType: String = "_camdroid._tcp.local.",
         fallbackSenderIp: String? = null,
     ): List<DiscoveredCamDroidService> {
-        val normalizedService = normalizeDomain(serviceType).removeSuffix(".")
+        val normalizedService = normalizeDomain(serviceType)
         val allRecords = packet.answers + packet.additionals
 
         val ptrInstances = mutableMapOf<String, Long>()
@@ -565,8 +565,7 @@ object MdnsCodec {
         for (rr in allRecords) {
             when (rr) {
                 is MdnsResourceRecord.PtrRecord -> {
-                    val owner = normalizeDomain(rr.name).removeSuffix(".")
-                    if (owner.equals(normalizedService, ignoreCase = true)) {
+                    if (normalizeDomain(rr.name).equals(normalizedService, ignoreCase = true)) {
                         ptrInstances[normalizeDomain(rr.ptrDomainName)] = rr.ttlSeconds
                     }
                 }
@@ -589,7 +588,7 @@ object MdnsCodec {
             val srv = srvByName[instanceName]
             val txt = txtByName[instanceName]
             val attrs = txt?.attributes.orEmpty()
-            val rawInstancePrefix = instanceName.substringBefore(".$normalizedService")
+            val rawInstancePrefix = instanceName.removeSuffix(".$normalizedService")
             val deviceName = attrs["device"]?.takeIf { it.isNotBlank() }
                 ?: rawInstancePrefix.removePrefix("CamDroid-").ifBlank { "CamDroid" }
             val codecs = attrs["codecs"]
@@ -654,7 +653,7 @@ object MdnsCodec {
             ),
             MdnsResourceRecord.SrvRecord(
                 name = fullInstance,
-                rrClass = CLASS_IN or CLASS_FLUSH,
+                rrClass = CLASS_FLUSH,
                 ttlSeconds = ttlSeconds,
                 priority = 0,
                 weight = 0,
@@ -663,7 +662,7 @@ object MdnsCodec {
             ),
             MdnsResourceRecord.TxtRecord(
                 name = fullInstance,
-                rrClass = CLASS_IN or CLASS_FLUSH,
+                rrClass = CLASS_FLUSH,
                 ttlSeconds = ttlSeconds,
                 attributes = linkedMapOf(
                     "version" to "1.0",
@@ -678,7 +677,7 @@ object MdnsCodec {
                 records.add(
                     MdnsResourceRecord.ARecord(
                         name = hostTarget,
-                        rrClass = CLASS_IN or CLASS_FLUSH,
+                        rrClass = CLASS_FLUSH,
                         ttlSeconds = ttlSeconds,
                         ipv4Address = addr,
                     ),

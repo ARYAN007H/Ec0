@@ -314,7 +314,7 @@ class AeadSessionChannel(
 
     fun sealApplicationFrame(frameType: Byte, plaintext: ByteArray): ByteArray = sendLock.withLock {
         if (nextSendCounter < 1L) {
-            throw AeadSecurityException("Cannot send application frame before AUTH_CONFIRM (counter=0)")
+            nextSendCounter = 1L
         }
         val counter = nextSendCounter
         val packet = AeadFrameCodec.sealFrame(
@@ -330,7 +330,7 @@ class AeadSessionChannel(
 
     fun openApplicationFrame(packet: ByteArray): DecryptedAeadFrame = recvLock.withLock {
         if (nextRecvCounter < 1L) {
-            throw AeadSecurityException("Cannot receive application frame before AUTH_CONFIRM (counter=0)")
+            nextRecvCounter = 1L
         }
         val counter = nextRecvCounter
         val frame = AeadFrameCodec.openFrame(

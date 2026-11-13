@@ -288,14 +288,14 @@ class LinuxClipboardBridge(
             val line = rawLine.trim()
             if (line.isEmpty() || line.startsWith("#")) continue
             if (line.equals("copy", ignoreCase = true) || line.equals("cut", ignoreCase = true)) continue
-            if (line.startsWith("file://")) {
+            if (line.startsWith("file:", ignoreCase = true)) {
                 val file = runCatching { File(java.net.URI(line)) }.getOrNull()
                 if (file != null && file.exists()) {
                     result.add(file)
                 }
             }
         }
-        return result.distinctBy { it.absolutePath }
+        return result.distinctBy { it.canonicalPath }
     }
 
     /**

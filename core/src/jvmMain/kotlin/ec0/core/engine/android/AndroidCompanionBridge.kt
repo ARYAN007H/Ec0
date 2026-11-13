@@ -121,6 +121,18 @@ class AndroidCompanionRuntime(
         onExecuteCameraCommand = { cmd ->
             callbacks.onCameraControlCommand(cmd)
         },
+        onRemoteCursorHandoff = { cmd ->
+            callbacks.onCursorHandoff(cmd)
+        },
+        onRemoteHotspotCommand = { cmd ->
+            callbacks.onHotspotControlCommand(cmd)
+        },
+        onRemoteCallAction = { cmd ->
+            callbacks.onCallActionCommand(cmd)
+        },
+        onRemoteMediaControl = { cmd ->
+            callbacks.onMediaControlCommand(cmd)
+        },
         clockMs = clockMs,
     )
 
