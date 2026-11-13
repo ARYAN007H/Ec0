@@ -288,11 +288,11 @@ fun Ec0App(state: AndroidAppState) {
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
-                            Text(device.alias, style = MaterialTheme.titleMedium)
+                            Text(device.alias, style = MaterialTheme.typography.titleMedium)
                             Text(
                                 "${device.protocol} · ${device.hostAddress}:${device.port}" +
                                     (if (device.download) " · can receive" else ""),
-                                style = MaterialTheme.bodySmall,
+                                style = MaterialTheme.typography.bodySmall,
                             )
                         }
                     }
