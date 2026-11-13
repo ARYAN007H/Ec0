@@ -22,6 +22,7 @@ package ec0.core.engine
 
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.AndroidPlatformCallbacks
+import ec0.core.engine.crypto.Ed25519KeyPair
 import ec0.core.engine.crypto.AeadSecurityException
 import ec0.core.engine.crypto.AeadSessionChannel
 import ec0.core.engine.crypto.Ed25519Identity
@@ -488,26 +489,32 @@ class Slice9ImprovementsTest {
             var mediaCmdReceived: MediaControlCommand? = null
 
             val callbacks = object : AndroidPlatformCallbacks {
-                override fun onRemoteClipboardChanged(item: ClipboardItem) = Unit
-                override fun onNotificationReplyRequested(command: NotificationReplyCommand) = Unit
-                override fun onNotificationDismissRequested(notifId: String) = Unit
-                override fun onRemotePointerEvent(event: InputPointerEvent) = Unit
-                override fun onRemoteKeyEvent(event: InputKeyEvent) = Unit
-                override fun onCursorHandoff(command: CursorHandoffCommand) {
+                override fun onApplyRemoteClipboard(item: ClipboardItem): Boolean = true
+                override fun onExecuteInlineReply(reply: NotificationReplyCommand): Boolean = true
+                override fun onDismissSystemNotification(notifId: String): Boolean = true
+                override fun onInjectPointerEvent(event: InputPointerEvent): Boolean = true
+                override fun onInjectKeyEvent(event: InputKeyEvent): Boolean = true
+                override fun onCursorHandoff(command: CursorHandoffCommand): Boolean {
                     handoffReceived = command
+                    return true
                 }
-                override fun onHotspotControlCommand(command: HotspotControlCommand) {
+                override fun onHotspotControlCommand(command: HotspotControlCommand): HotspotStatusInfo? {
                     hotspotCmdReceived = command
+                    return null
                 }
-                override fun onCallActionCommand(command: CallActionCommand) {
+                override fun onCallActionCommand(command: CallActionCommand): Boolean {
                     callCmdReceived = command
+                    return true
                 }
-                override fun onMediaControlCommand(command: MediaControlCommand) {
+                override fun onMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? {
                     mediaCmdReceived = command
+                    return null
                 }
             }
 
             val runtime = AndroidCompanionRuntime(
+                phoneIdentity = Ed25519KeyPair.generate(),
+                phoneModelName = "A5x-Test",
                 downloadDir = tempDir,
                 callbacks = callbacks,
             )
@@ -711,13 +718,21 @@ class Slice9ImprovementsTest {
         // 1. Session Re-Keying (`FRAME_KEY_UPDATE = 0x04`)
         val sharedSecret = ByteArray(32) { (it + 1).toByte() }
         val transcript = ByteArray(32) { (it + 65).toByte() }
-        val initialKeys = HkdfSha256.deriveSessionKeys(sharedSecret, transcript)
+        val initialKeys = HkdfSha256.deriveSessionKeys(
+            sharedSecret,
+            transcript.copyOfRange(0, 16),
+            transcript.copyOfRange(16, 32),
+            ByteArray(32) { (it + 33).toByte() },
+            ByteArray(32) { (it + 65).toByte() },
+            ByteArray(32) { (it + 97).toByte() },
+            ByteArray(32) { (it + 129).toByte() },
+        )
 
         val initiator = AeadSessionChannel(isInitiator = true, keys = initialKeys)
         val responder = AeadSessionChannel(isInitiator = false, keys = initialKeys)
 
-        val keyUpdateFrame = initiator.seal(EngineConstants.FRAME_KEY_UPDATE, ByteArray(0))
-        val openedUpdate = responder.open(keyUpdateFrame)
+        val keyUpdateFrame = initiator.sealApplicationFrame(EngineConstants.FRAME_KEY_UPDATE, ByteArray(0))
+        val openedUpdate = responder.openApplicationFrame(keyUpdateFrame)
         assertEquals(EngineConstants.FRAME_KEY_UPDATE, openedUpdate.frameType)
 
         val epoch1Initiator = initiator.rotateKeys()
@@ -726,8 +741,8 @@ class Slice9ImprovementsTest {
         assertEquals(1, epoch1Responder)
 
         val postRekeyPayload = "encrypted-under-epoch-1".encodeToByteArray()
-        val sealedEpoch1 = initiator.seal(EngineConstants.FRAME_ENVELOPE_JSON, postRekeyPayload)
-        val openedEpoch1 = responder.open(sealedEpoch1)
+        val sealedEpoch1 = initiator.sealApplicationFrame(EngineConstants.FRAME_ENVELOPE_JSON, postRekeyPayload)
+        val openedEpoch1 = responder.openApplicationFrame(sealedEpoch1)
         assertContentEquals(postRekeyPayload, openedEpoch1.plaintext)
 
         // 2. Authenticated Loopback CLI IPC (`127.0.0.1`)

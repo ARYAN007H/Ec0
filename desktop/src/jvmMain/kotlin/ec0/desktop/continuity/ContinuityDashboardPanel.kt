@@ -869,7 +869,7 @@ private fun PresenceAndMirrorCard(
                         "peer=${peerId.take(12)}…",
                         "battery=${beacon.batteryPct}%" + if (beacon.isCharging) " (charging)" else "",
                         "screen=${if (beacon.screenOn) "ON" else "OFF"}",
-                        "wifi=${beacon.wifiSsid ?: "LAN"}",
+                        "wifi=${beacon.wifiSsidHash?.let { "hash:" + it.take(8) } ?: "LAN"}",
                     ),
                     monospace = true,
                 )

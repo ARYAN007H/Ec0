@@ -60,9 +60,15 @@ class QrAndExpansionModelsTest {
 
     @Test
     fun hkdfBulkLaneKeyIsCryptographicallyDistinctFromControlKeys() {
-        val prk = ByteArray(32) { (it + 1).toByte() }
-        val sessionKeys = HkdfSha256.deriveSessionKeys(prk)
-        val bulkKey = HkdfSha256.deriveBulkLaneKey(prk, sessionKeys.sessionId)
+        val sharedSecretZ = ByteArray(32) { (it + 1).toByte() }
+        val nonceI = ByteArray(16) { (it + 1).toByte() }
+        val nonceR = ByteArray(16) { (it + 17).toByte() }
+        val ikPubRaw = ByteArray(32) { (it + 33).toByte() }
+        val rkPubRaw = ByteArray(32) { (it + 65).toByte() }
+        val epkIRaw = ByteArray(32) { (it + 97).toByte() }
+        val epkRRaw = ByteArray(32) { (it + 129).toByte() }
+        val sessionKeys = HkdfSha256.deriveSessionKeys(sharedSecretZ, nonceI, nonceR, ikPubRaw, rkPubRaw, epkIRaw, epkRRaw)
+        val bulkKey = HkdfSha256.deriveBulkLaneKey(sharedSecretZ, sessionKeys.sessionId)
         assertEquals(32, bulkKey.size)
         assertNotEquals(sessionKeys.kInitToResp.toHex(), bulkKey.toHex())
         assertNotEquals(sessionKeys.kRespToInit.toHex(), bulkKey.toHex())
