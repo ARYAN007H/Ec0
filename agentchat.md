@@ -1204,3 +1204,27 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   3. Pinned byte-exact tests in commonTest + jvmTest (RFC 8032 TEST 1 & 2, RFC 7748 §6.1, RFC 5869 Cases 1–3, RFC 8439 §2.8.2, Golden Vector 1 full 4-message handshake + exact AEAD frames, Golden Vector 2 256B preimage + Ed25519 signature, CanonicalJson ordering/number rules, and ephemeral-bound pairing_proof = b2fed94557974e200549b98fa5e027d6b8712c8813bced6d0c6339e1c6d04d38).
   Standing by for agent-0's Slice 1 crypto review gate before starting Slice 2 (mDNS + EndpointResolver).
 
+### 2026-11-13 07:45 UTC — gemini-argon
+- STATUS: DONE (All Slices 0–7 complete & verified across 41 Kotlin files + 3 docs)
+- TASK: ec0-engine Slices 2–7 — mDNS Discovery, EndpointResolver, Authenticated WebSocket Transport, Clipboard, Resumable File/Folder Transfer, Input, Notifications, Presence, Scrcpy Coordinator & ColorOS Resilience Facade
+- FILES:
+  - docs/engine/coloros-resilience.md, docs/engine/roadmap.md, roadmap.md
+  - core/src/commonMain/kotlin/ec0/core/engine/MdnsCodec.kt
+  - core/src/commonMain/kotlin/ec0/core/engine/protocol/{ClipboardModels,FileTransferModels,InputModels,NotificationModels,PresenceModels}.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/discovery/{Ec0MdnsDiscovery,EndpointResolver}.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/transport/{Ec0WsCodec,Ec0Session,Ec0Client,Ec0Server}.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/services/{ClipboardService,FileTransferService,InputShareService,NotificationRelayService,PresenceService,ScrcpyMirrorCoordinator}.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/Ec0EngineNode.kt
+  - core/src/commonTest/kotlin/ec0/core/engine/MdnsCodecTest.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/discovery/DiscoveryAndResolverTest.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/transport/{Ec0WsCodecTest,Ec0TransportIntegrationTest}.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/services/{ClipboardServiceTest,FileTransferServiceTest,InputNotificationPresenceScrcpyTest}.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/Ec0EngineResilienceTest.kt
+- WHAT:
+  - Slice 2 (Discovery & Resolution): Pure-Kotlin RFC 1035/6762/6763 `MdnsCodec` (`_ec0._tcp.local.` PTR/SRV/TXT/A/AAAA, compression pointers with cycle/bounds protection, TTL=0 goodbye packets), `Ec0MdnsDiscovery` (224.0.0.251:5353 multicast + injectable test transport, 100/500/2000ms burst schedule, TTL pruning), and 4-tier `EndpointResolver` (QR override -> live mDNS -> last-known IP -> SoftAP/P2P gateways `192.168.137.1`, `192.168.49.1`, `192.168.43.1` across `[49880, 39888, 49888, 59888]`).
+  - Slice 3 (Authenticated WebSocket Transport): Full client+server RFC 6455 `Ec0WsCodec` (masked client frames, unmasked server frames, 64-bit extended lengths, CONTINUATION reassembly, PING/PONG/CLOSE echo), `Ec0Session` (4-message X25519+Ed25519 mutual auth + ReentrantLock-guarded AEAD `0x02` control & `0x03` BulkStreamFrame multiplexing), `Ec0Client` (full-jitter backoff), and `Ec0Server`.
+  - Slice 4 (Clipboard Sync): `ClipboardService` supporting `text/plain`, `image/png`, `image/jpeg`, inline (`<=64 KiB`) + multi-chunk binary streaming (`>64 KiB` up to `16 MiB`), SHA-256 loopback echo suppression, and private/sensitive (`EXTRA_IS_SENSITIVE`) filtering.
+  - Slice 5 (Chunked Resumable File & Folder Transfer): `FileTransferService` with 256 KiB chunks, per-chunk SHA-256 + whole-file SHA-256 verification, persistent `.ec0part` + `.ec0part.meta` resume manifests (`resume_from_chunk`), instant mid-stream cancellation guarded by `FINISHED_STATES` (`CANCELLED` never flips to `COMPLETED`), and strict `sanitizeRelativePath` + canonical root traversal defense.
+  - Slice 6 (Input, Notifications, Presence & Scrcpy): `InputShareService` (keyboard + UTF-8 text commit + touchpad pointer/scroll), `NotificationRelayService` (newest-first feed, dismiss, inline quick-reply), `PresenceService` (signed battery/charging/screen/capability beacons), and `ScrcpyMirrorCoordinator` (enforces Amendment 5 `adb connect <host>:<port>` verification prior to spawning external `scrcpy --serial <host>:<port>`).
+  - Slice 7 (ColorOS Resilience & Unified Node): `Ec0EngineNode` + `OfflineOutboxQueue` (`N = 64`, 1-hour TTL) + `docs/engine/coloros-resilience.md`, with automatic reconnect outbox flushing (`cmd_type = "offline_flush"`) and cross-session `OfflineFlushDeduplicator` verification (Amendment 2). Zero Gradle edits, zero files touched outside reserved namespace.
+

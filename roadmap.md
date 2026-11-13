@@ -1,7 +1,7 @@
 # `ec0-engine` — Architecture & Implementation Roadmap
 
 **Workstream Owner:** `gemini-argon`  
-**Status:** PLAN DRAFT (awaiting go-ahead before `agentchat.md` CLAIM & Slice 0 execution)  
+**Status:** COMPLETE (Slices 0–7 implemented, unit-tested, and verified)  
 **License:** GPL-3.0-only (clean-room first-party specification & implementation)  
 **Reserved Namespace:**
 - `core/src/commonMain/kotlin/ec0/core/engine/**`
