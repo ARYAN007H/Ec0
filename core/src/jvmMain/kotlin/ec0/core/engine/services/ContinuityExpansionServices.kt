@@ -164,6 +164,8 @@ class UniversalControlService(
 class HotspotAndTelephonyService(
     private val launcher: ExternalProcessLauncher = SystemProcessLauncher,
     private val autoPauseLinuxMediaOnCall: Boolean = true,
+    private val onRemoteHotspotCommand: (HotspotControlCommand) -> HotspotStatusInfo? = { null },
+    private val onRemoteCallAction: (CallActionCommand) -> Boolean = { false },
 ) {
     private val lock = ReentrantLock()
     private var mediaPausedForCallId: String? = null
@@ -256,12 +258,17 @@ class HotspotAndTelephonyService(
             }
             HotspotAndTelephonyProtocol.CMD_HOTSPOT_CONTROL -> {
                 val cmd = HotspotControlCommand.fromJsonObject(body)
-                val enabled = when (cmd.action) {
-                    HotspotControlCommand.ACTION_ENABLE -> true
-                    HotspotControlCommand.ACTION_DISABLE -> false
-                    else -> _hotspotStatus.value.enabled
+                val updated = onRemoteHotspotCommand(cmd)
+                if (updated != null) {
+                    _hotspotStatus.value = updated
+                } else {
+                    val enabled = when (cmd.action) {
+                        HotspotControlCommand.ACTION_ENABLE -> true
+                        HotspotControlCommand.ACTION_DISABLE -> false
+                        else -> _hotspotStatus.value.enabled
+                    }
+                    _hotspotStatus.value = _hotspotStatus.value.copy(enabled = enabled)
                 }
-                _hotspotStatus.value = _hotspotStatus.value.copy(enabled = enabled)
                 true
             }
             HotspotAndTelephonyProtocol.INFO_CALL_STATE -> {
@@ -279,6 +286,7 @@ class HotspotAndTelephonyService(
                         _activeCalls.value = _activeCalls.value.filterNot { it.callId == cmd.callId }
                     }
                 }
+                onRemoteCallAction(cmd)
                 true
             }
             else -> false
@@ -314,6 +322,7 @@ class HotspotAndTelephonyService(
 class MediaSessionBridgeService(
     private val launcher: ExternalProcessLauncher = SystemProcessLauncher,
     private val executeLocalPlayerctlOnIncomingCommand: Boolean = true,
+    private val onRemoteMediaControl: (MediaControlCommand) -> MediaSessionInfo? = { null },
 ) {
     private val _remoteMediaSession = MutableStateFlow<MediaSessionInfo?>(null)
     val remoteMediaSession: StateFlow<MediaSessionInfo?> = _remoteMediaSession.asStateFlow()
@@ -369,6 +378,10 @@ class MediaSessionBridgeService(
             }
             MediaControlProtocol.CMD_MEDIA_CONTROL -> {
                 val cmd = MediaControlCommand.fromJsonObject(body)
+                val updated = onRemoteMediaControl(cmd)
+                if (updated != null) {
+                    _remoteMediaSession.value = updated
+                }
                 if (executeLocalPlayerctlOnIncomingCommand) {
                     val argv = buildPlayerctlCommand(cmd)
                     if (argv != null) {
