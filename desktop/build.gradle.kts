@@ -15,6 +15,10 @@ kotlin {
             implementation(libs.kotlinx.coroutines.swing)
             implementation(libs.kotlinx.serialization.json) // desktop-side DTO codec (T13 discovery)
         }
+        jvmTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.core)
+        }
     }
 
     jvmToolchain(17)
