@@ -654,7 +654,7 @@ object MdnsCodec {
             ),
             MdnsResourceRecord.SrvRecord(
                 name = fullInstance,
-                rrClass = CLASS_IN or CLASS_CACHE_FLUSH,
+                rrClass = CLASS_IN or CLASS_FLUSH,
                 ttlSeconds = ttlSeconds,
                 priority = 0,
                 weight = 0,
@@ -663,7 +663,7 @@ object MdnsCodec {
             ),
             MdnsResourceRecord.TxtRecord(
                 name = fullInstance,
-                rrClass = CLASS_IN or CLASS_CACHE_FLUSH,
+                rrClass = CLASS_IN or CLASS_FLUSH,
                 ttlSeconds = ttlSeconds,
                 attributes = linkedMapOf(
                     "version" to "1.0",
@@ -678,7 +678,7 @@ object MdnsCodec {
                 records.add(
                     MdnsResourceRecord.ARecord(
                         name = hostTarget,
-                        rrClass = CLASS_IN or CLASS_CACHE_FLUSH,
+                        rrClass = CLASS_IN or CLASS_FLUSH,
                         ttlSeconds = ttlSeconds,
                         ipv4Address = addr,
                     ),
