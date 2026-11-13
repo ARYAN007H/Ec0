@@ -3,8 +3,8 @@ package ec0.core.localsend.client
 import ec0.core.localsend.LocalsendV2
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.dto.MulticastMessageV2
-import ec0.core.uimodels.SettingsState
-import ec0.core.uimodels.UiDevice
+import ec0.ui.models.SettingsState
+import ec0.ui.models.UiDevice
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
@@ -113,7 +113,7 @@ class LocalsendUdpDiscovery(
                         alias = msg.alias,
                         deviceModel = msg.deviceModel,
                         deviceType = msg.deviceType,
-                        protocol = ec0.core.uimodels.ProtocolFamily.LOCALSEND,
+                        protocol = ec0.ui.models.ProtocolFamily.LOCALSEND,
                         port = msg.port,
                         fingerprint = msg.fingerprint,
                         hostAddress = packet.address.hostAddress ?: "",

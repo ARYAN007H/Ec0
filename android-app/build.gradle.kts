@@ -51,12 +51,9 @@ kotlin {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":ui")) // shared full-suite UI (Compose Multiplatform)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.compose.ui)
-    implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.ui.tooling.preview)
 }

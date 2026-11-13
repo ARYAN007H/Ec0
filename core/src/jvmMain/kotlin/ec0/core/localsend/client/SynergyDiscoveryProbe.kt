@@ -48,7 +48,7 @@ class SynergyDiscoveryProbe(
         }
     }
 
-    suspend fun discover(): List<ec0.core.uimodels.UiDevice> = withContext(Dispatchers.IO) {
+    suspend fun discover(): List<ec0.ui.models.UiDevice> = withContext(Dispatchers.IO) {
         if (!enabled()) {
             return@withContext emptyList()
         }

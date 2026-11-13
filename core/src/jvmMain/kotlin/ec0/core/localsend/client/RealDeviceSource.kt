@@ -1,8 +1,8 @@
 package ec0.core.localsend.client
 
-import ec0.core.uimodels.DeviceSource
-import ec0.core.uimodels.SettingsState
-import ec0.core.uimodels.UiDevice
+import ec0.ui.models.DeviceSource
+import ec0.ui.models.SettingsState
+import ec0.ui.models.UiDevice
 import java.util.UUID
 
 /**

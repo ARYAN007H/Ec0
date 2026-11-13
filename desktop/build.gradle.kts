@@ -10,6 +10,7 @@ kotlin {
     sourceSets {
         jvmMain.dependencies {
             implementation(project(":core"))
+            implementation(project(":ui"))
             implementation(compose.desktop.currentOs)
             implementation(compose.material)
             implementation(libs.kotlinx.coroutines.swing)

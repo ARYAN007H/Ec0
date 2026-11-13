@@ -5,7 +5,7 @@ import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.PrepareUploadResponseDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
-import ec0.core.uimodels.UiDevice
+import ec0.ui.models.UiDevice
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection

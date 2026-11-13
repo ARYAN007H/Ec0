@@ -3,7 +3,7 @@
  *
  * Unified Multi-Protocol DeviceSource & System Tray / Background Daemon Controller
  * (`ec0.desktop.continuity`, Improvement #10):
- *   1. Ec0UnifiedDeviceSource — implements `ec0.core.uimodels.DeviceSource` without
+ *   1. Ec0UnifiedDeviceSource — implements `ec0.ui.models.DeviceSource` without
  *      touching any files owned by PR #9 or PR #10, merging:
  *        - Live `ec0-engine` mDNS peers (`_ec0._tcp.local.`)
  *        - Persistently pinned `ec0-engine` peers (`PersistentPinStore`)
@@ -17,9 +17,9 @@ package ec0.desktop.continuity
 
 import ec0.core.engine.EngineConstants
 import ec0.core.localsend.DeviceType
-import ec0.core.uimodels.DeviceSource
-import ec0.core.uimodels.ProtocolFamily
-import ec0.core.uimodels.UiDevice
+import ec0.ui.models.DeviceSource
+import ec0.ui.models.ProtocolFamily
+import ec0.ui.models.UiDevice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

@@ -9,6 +9,8 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            // Shared UI-model enums (DeviceType/ProtocolType) moved to :ui
+            api(project(":ui"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             // HTTP + sockets for the LocalSend (T5) and KDE Connect (T6) ports

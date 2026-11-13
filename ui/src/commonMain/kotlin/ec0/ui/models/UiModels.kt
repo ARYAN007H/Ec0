@@ -5,7 +5,7 @@
  * ec0.desktop.state so the phone app reuses the exact same device model,
  * transfer queue and settings shape).
  */
-package ec0.core.uimodels
+package ec0.ui.models
 
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
@@ -55,11 +55,13 @@ data class SettingsState(
     val deviceType: DeviceType = DeviceType.DESKTOP,
     val port: Int = 53317,
     val protocol: ProtocolType = ProtocolType.HTTPS,
-    val downloadDir: String = System.getProperty("user.home") + "/Downloads",
+    val downloadDir: String = "",
     val requirePin: Boolean = false,
     val pin: String = "",
     /** T4-gated Synergy probe — off until discovery constants land. */
     val synergyProbeEnabled: Boolean = false,
+    /** null = follow system. */
+    val darkTheme: Boolean? = null,
 )
 
 /**
