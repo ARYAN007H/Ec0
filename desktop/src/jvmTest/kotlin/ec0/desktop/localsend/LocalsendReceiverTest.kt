@@ -96,7 +96,7 @@ class LocalsendReceiverTest {
         download = true,
     )
 
-    private fun prepareBody(vararg files: FileDto): String = LocalsendV2.json.encodeToString(
+    private fun prepareBody(files: List<FileDto>): String = LocalsendV2.json.encodeToString(
         PrepareUploadRequestDtoV2.serializer(),
         PrepareUploadRequestDtoV2(info = senderInfo(), files = files.associateBy { it.id }),
     )
@@ -125,7 +125,7 @@ class LocalsendReceiverTest {
     fun prepareUploadAutoAcceptIssuesTokens() {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
-        val res = post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()))
+        val res = post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()))
         assertEquals(200, res.statusCode())
         val json = LocalsendV2.json.parseToJsonElement(res.body()).jsonObject
         val sessionId = json["sessionId"]!!.jsonPrimitive.content
@@ -140,7 +140,7 @@ class LocalsendReceiverTest {
     fun prepareUploadDeclineIs403AndEmptyAcceptIs204() {
         val decline = receiver(acceptPolicy = AcceptPolicy.AUTO_DECLINE_ALL)
         val port = start(decline)
-        assertEquals(403, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
+        assertEquals(403, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).statusCode())
         decline.stop()
 
         val acceptNothing = receiver(
@@ -148,7 +148,7 @@ class LocalsendReceiverTest {
             decide = { _, _ -> LocalsendReceiverServer.Acceptance.ACCEPT(emptySet()) },
         )
         val port2 = start(acceptNothing)
-        assertEquals(204, post(port2, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
+        assertEquals(204, post(port2, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).statusCode())
         acceptNothing.stop()
     }
 
@@ -156,7 +156,7 @@ class LocalsendReceiverTest {
     fun prepareUploadEmptyFilesIs400() {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
-        assertEquals(400, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody()).statusCode())
+        assertEquals(400, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(emptyList())).statusCode())
         receiver.stop()
     }
 
@@ -164,8 +164,8 @@ class LocalsendReceiverTest {
     fun prepareUploadConflictWhileSessionActive() {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
-        assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
-        assertEquals(409, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).statusCode())
+        assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).statusCode())
+        assertEquals(409, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).statusCode())
         receiver.stop()
     }
 
@@ -173,13 +173,13 @@ class LocalsendReceiverTest {
     fun pinModelWrong401RateLimit429CorrectClears() {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL, requiredPin = "4321")
         val port = start(receiver)
-        val wrong = post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=0000")
+        val wrong = post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=0000")
         assertEquals(401, wrong.statusCode())
-        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=0000").statusCode())
-        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=1111").statusCode())
+        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=0000").statusCode())
+        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=1111").statusCode())
         // 3 failures recorded → next blocked with 429 even with the CORRECT pin? Reference:
         // 429 fires before evaluation once the limit is reached.
-        assertEquals(429, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=4321").statusCode())
+        assertEquals(429, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=4321").statusCode())
         receiver.stop()
     }
 
@@ -187,10 +187,10 @@ class LocalsendReceiverTest {
     fun pinCorrectAttemptSucceedsAndClearsCounter() {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL, requiredPin = "4321")
         val port = start(receiver)
-        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=0000").statusCode())
-        assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=4321").statusCode())
+        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=0000").statusCode())
+        assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=4321").statusCode())
         // counter cleared — another wrong attempt is 401 again, not 429
-        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles()), query = "pin=9999").statusCode())
+        assertEquals(401, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles()), query = "pin=9999").statusCode())
         receiver.stop()
     }
 
@@ -199,7 +199,7 @@ class LocalsendReceiverTest {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val prepared = LocalsendV2.json.parseToJsonElement(
-            post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).body(),
+            post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).body(),
         ).jsonObject
         val sessionId = prepared["sessionId"]!!.jsonPrimitive.content
         val token = prepared["files"]!!.jsonObject["f1"]!!.jsonPrimitive.content
@@ -236,7 +236,7 @@ class LocalsendReceiverTest {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val prepared = LocalsendV2.json.parseToJsonElement(
-            post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*files)).body(),
+            post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(files)).body(),
         ).jsonObject
         val token = prepared["files"]!!.jsonObject["f1"]!!.jsonPrimitive.content
         val res = http.send(
@@ -264,7 +264,7 @@ class LocalsendReceiverTest {
         val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
         val port = start(receiver)
         val prepared = LocalsendV2.json.parseToJsonElement(
-            post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(*sampleFiles())).body(),
+            post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).body(),
         ).jsonObject
         val sessionId = prepared["sessionId"]!!.jsonPrimitive.content
         val token = prepared["files"]!!.jsonObject["f1"]!!.jsonPrimitive.content
