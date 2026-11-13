@@ -16,6 +16,20 @@ android {
         versionName = "0.1.0"
     }
 
+    // Stable debug keystore committed to the repo: every CI runner signs
+    // identically, so `adb install -r` updates work across runs (a fresh
+    // runner-generated debug key would break every update with
+    // INSTALL_FAILED_UPDATE_INCOMPATIBLE). Debug-only — release signing
+    // stays separate and is NOT in the repo.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("android-app/debug.keystore")
+            storePassword = "ec0debugpass"
+            keyAlias = "ec0debug"
+            keyPassword = "ec0debugpass"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
