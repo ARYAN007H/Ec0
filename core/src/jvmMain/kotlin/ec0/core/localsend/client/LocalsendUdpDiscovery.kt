@@ -104,8 +104,8 @@ class LocalsendUdpDiscovery(
                         LocalsendV2.json.decodeFromString(MulticastMessageV2.serializer(), text)
                     }.getOrElse {
                         debugLog("parse-fail: ${it.message}")
-                        continue
-                    }
+                        null
+                    } ?: continue
                     if (msg.fingerprint == ownFingerprint()) continue // our own echo
                     val key = "${packet.address.hostAddress}:${msg.port}:${msg.fingerprint}"
                     found[key] = UiDevice(
