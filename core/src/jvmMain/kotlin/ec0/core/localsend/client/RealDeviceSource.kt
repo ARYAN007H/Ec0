@@ -1,8 +1,8 @@
-package ec0.desktop.discovery
+package ec0.core.localsend.client
 
-import ec0.desktop.state.DeviceSource
-import ec0.desktop.state.SettingsState
-import ec0.desktop.state.UiDevice
+import ec0.core.uimodels.DeviceSource
+import ec0.core.uimodels.SettingsState
+import ec0.core.uimodels.UiDevice
 import java.util.UUID
 
 /**

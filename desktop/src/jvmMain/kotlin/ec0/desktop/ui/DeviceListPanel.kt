@@ -23,8 +23,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import ec0.desktop.state.ProtocolFamily
-import ec0.desktop.state.UiDevice
+import ec0.core.uimodels.ProtocolFamily
+import ec0.core.uimodels.UiDevice
 
 /** Device list panel: discovered peers with protocol badges + rescan. */
 @Composable

@@ -1,4 +1,11 @@
-package ec0.desktop.state
+/*
+ * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
+ *
+ * UI-facing models shared by desktop and Android clients (moved from
+ * ec0.desktop.state so the phone app reuses the exact same device model,
+ * transfer queue and settings shape).
+ */
+package ec0.core.uimodels
 
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
@@ -54,3 +61,51 @@ data class SettingsState(
     /** T4-gated Synergy probe — off until discovery constants land. */
     val synergyProbeEnabled: Boolean = false,
 )
+
+/**
+ * Seam between the UI and the protocol stacks. [RealDeviceSource] (in
+ * `ec0.core.localsend.client`) is the production source (LocalSend UDP :53317
+ * works today; the Synergy probe is T4-gated). [DemoDeviceSource] remains
+ * available for UI-only development.
+ */
+interface DeviceSource {
+    /** One discovery sweep over the configured transports. */
+    suspend fun discover(): List<UiDevice>
+}
+
+/**
+ * Deterministic sample devices for UI development. Explicitly a demo seam —
+ * NOT real discovery.
+ */
+class DemoDeviceSource : DeviceSource {
+    override suspend fun discover(): List<UiDevice> = listOf(
+        UiDevice(
+            id = "demo-phone",
+            alias = "A5x",
+            deviceModel = "OPPO A5x 5G",
+            deviceType = DeviceType.MOBILE,
+            protocol = ProtocolFamily.LOCALSEND,
+            port = 53317,
+            fingerprint = "demo-fingerprint-phone",
+            download = true,
+        ),
+        UiDevice(
+            id = "demo-laptop",
+            alias = "arch-box",
+            deviceModel = "Linux",
+            deviceType = DeviceType.DESKTOP,
+            protocol = ProtocolFamily.SYNERGY,
+            port = 39888,
+            fingerprint = "demo-fingerprint-laptop",
+        ),
+        UiDevice(
+            id = "demo-tablet",
+            alias = "Pad 2",
+            deviceModel = "Lenovo",
+            deviceType = DeviceType.HEADLESS,
+            protocol = ProtocolFamily.KDECONNECT,
+            port = 1716,
+            fingerprint = "demo-fingerprint-tablet",
+        ),
+    )
+}

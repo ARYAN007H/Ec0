@@ -22,9 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import ec0.desktop.state.TransferDirection
-import ec0.desktop.state.TransferItem
-import ec0.desktop.state.TransferState
+import ec0.core.uimodels.TransferDirection
+import ec0.core.uimodels.TransferItem
+import ec0.core.uimodels.TransferState
 import ec0.desktop.state.AppState
 
 /** Transfer queue panel: direction, progress, per-item cancel, clear-finished. */

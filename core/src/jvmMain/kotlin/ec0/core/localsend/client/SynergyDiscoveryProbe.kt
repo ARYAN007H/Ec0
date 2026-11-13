@@ -1,4 +1,4 @@
-package ec0.desktop.discovery
+package ec0.core.localsend.client
 
 import ec0.core.synergy.SynergyWsClient
 import ec0.core.synergy.SynergyWsClient.Profile
@@ -48,7 +48,7 @@ class SynergyDiscoveryProbe(
         }
     }
 
-    suspend fun discover(): List<ec0.desktop.state.UiDevice> = withContext(Dispatchers.IO) {
+    suspend fun discover(): List<ec0.core.uimodels.UiDevice> = withContext(Dispatchers.IO) {
         if (!enabled()) {
             return@withContext emptyList()
         }

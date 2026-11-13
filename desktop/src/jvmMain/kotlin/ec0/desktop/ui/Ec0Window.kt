@@ -21,7 +21,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import ec0.desktop.state.AppState
-import ec0.desktop.state.TransferState
+import ec0.core.uimodels.TransferState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,7 +48,7 @@ fun runApp() {
 }
 
 /** AWT file chooser → real outgoing transfer via the LocalSend route contract. */
-private fun pickFileAndSend(appState: AppState, device: ec0.desktop.state.UiDevice) {
+private fun pickFileAndSend(appState: AppState, device: ec0.core.uimodels.UiDevice) {
     val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Send to ${device.alias}", java.awt.FileDialog.LOAD)
     dialog.isVisible = true
     val file = dialog.files.firstOrNull()

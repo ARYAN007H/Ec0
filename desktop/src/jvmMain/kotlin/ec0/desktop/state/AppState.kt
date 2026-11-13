@@ -4,14 +4,21 @@ import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.RegisterDtoV2
-import ec0.desktop.discovery.RealDeviceSource
-import ec0.desktop.discovery.SynergyDiscoveryProbe
-import ec0.desktop.localsend.LocalsendHttp
-import ec0.desktop.localsend.NothingAcceptedException
-import ec0.desktop.localsend.PinRequiredException
-import ec0.desktop.localsend.RecipientDeclinedException
-import ec0.desktop.localsend.TooManyAttemptsException
-import ec0.desktop.localsend.UploadCancelledException
+import ec0.core.localsend.client.RealDeviceSource
+import ec0.core.localsend.client.SynergyDiscoveryProbe
+import ec0.core.localsend.client.LocalsendHttp
+import ec0.core.localsend.client.NothingAcceptedException
+import ec0.core.localsend.client.PinRequiredException
+import ec0.core.localsend.client.RecipientDeclinedException
+import ec0.core.localsend.client.TooManyAttemptsException
+import ec0.core.localsend.client.UploadCancelledException
+import ec0.core.uimodels.DeviceSource
+import ec0.core.uimodels.DemoDeviceSource
+import ec0.core.uimodels.SettingsState
+import ec0.core.uimodels.TransferDirection
+import ec0.core.uimodels.TransferItem
+import ec0.core.uimodels.TransferState
+import ec0.core.uimodels.UiDevice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,53 +31,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
-
-/**
- * Seam between the UI and the protocol stacks. [RealDeviceSource] is the
- * production source (LocalSend UDP :53317 works today; the Synergy probe is
- * T4-gated). [DemoDeviceSource] remains available for UI-only development.
- */
-interface DeviceSource {
-    /** One discovery sweep over the configured transports. */
-    suspend fun discover(): List<UiDevice>
-}
-
-/**
- * Deterministic sample devices for UI development. Explicitly a demo seam —
- * NOT real discovery.
- */
-class DemoDeviceSource : DeviceSource {
-    override suspend fun discover(): List<UiDevice> = listOf(
-        UiDevice(
-            id = "demo-phone",
-            alias = "A5x",
-            deviceModel = "OPPO A5x 5G",
-            deviceType = DeviceType.MOBILE,
-            protocol = ProtocolFamily.LOCALSEND,
-            port = 53317,
-            fingerprint = "demo-fingerprint-phone",
-            download = true,
-        ),
-        UiDevice(
-            id = "demo-laptop",
-            alias = "arch-box",
-            deviceModel = "Linux",
-            deviceType = DeviceType.DESKTOP,
-            protocol = ProtocolFamily.SYNERGY,
-            port = 39888,
-            fingerprint = "demo-fingerprint-laptop",
-        ),
-        UiDevice(
-            id = "demo-tablet",
-            alias = "Pad 2",
-            deviceModel = "Lenovo",
-            deviceType = DeviceType.HEADLESS,
-            protocol = ProtocolFamily.KDECONNECT,
-            port = 1716,
-            fingerprint = "demo-fingerprint-tablet",
-        ),
-    )
-}
 
 /** Root observable state for the whole window. */
 class AppState(

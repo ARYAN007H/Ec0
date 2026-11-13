@@ -27,7 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
-import ec0.desktop.state.SettingsState
+import ec0.core.uimodels.SettingsState
 
 /** Settings panel: identity, transport, storage, PIN. */
 @Composable

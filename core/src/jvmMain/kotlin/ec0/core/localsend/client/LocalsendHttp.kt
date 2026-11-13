@@ -1,11 +1,11 @@
-package ec0.desktop.localsend
+package ec0.core.localsend.client
 
 import ec0.core.localsend.LocalsendV2
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.PrepareUploadResponseDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
-import ec0.desktop.state.UiDevice
+import ec0.core.uimodels.UiDevice
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
