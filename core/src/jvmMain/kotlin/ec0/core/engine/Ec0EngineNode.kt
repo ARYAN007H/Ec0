@@ -23,6 +23,8 @@ import ec0.core.engine.discovery.Ec0MdnsDiscovery
 import ec0.core.engine.discovery.EndpointResolver
 import ec0.core.engine.discovery.MdnsDatagramTransport
 import ec0.core.engine.discovery.MulticastMdnsTransport
+import ec0.core.engine.protocol.CamDroidControlCommand
+import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.engine.protocol.ClipboardSyncPayload
 import ec0.core.engine.protocol.FileOfferCommand
@@ -33,8 +35,10 @@ import ec0.core.engine.protocol.NotificationProtocol
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
+import ec0.core.engine.services.CamDroidControlTransport
 import ec0.core.engine.services.ClipboardPushOutcome
 import ec0.core.engine.services.ClipboardService
+import ec0.core.engine.services.ContinuityCameraCoordinator
 import ec0.core.engine.services.ExternalProcessLauncher
 import ec0.core.engine.services.FileTransferService
 import ec0.core.engine.services.InputEventSink
@@ -43,6 +47,7 @@ import ec0.core.engine.services.NotificationRelayService
 import ec0.core.engine.services.PresenceService
 import ec0.core.engine.services.ScrcpyMirrorCoordinator
 import ec0.core.engine.services.SystemProcessLauncher
+import ec0.core.engine.services.TcpCamDroidControlTransport
 import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.transport.BulkStreamFrame
 import ec0.core.engine.transport.Ec0Client
@@ -149,6 +154,8 @@ class Ec0EngineNode(
         override fun onKeyEvent(event: InputKeyEvent) = Unit
         override fun onPointerEvent(event: InputPointerEvent) = Unit
     },
+    private val camDroidTransportFactory: () -> CamDroidControlTransport = { TcpCamDroidControlTransport() },
+    private val onExecuteCameraCommand: ((CamDroidControlCommand) -> CameraStatusInfo?)? = null,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) : Closeable {
 
@@ -197,6 +204,12 @@ class Ec0EngineNode(
         launcher = processLauncher,
     )
 
+    val cameraCoordinator = ContinuityCameraCoordinator(
+        launcher = processLauncher,
+        camDroidTransportFactory = camDroidTransportFactory,
+        onExecuteCameraCommand = onExecuteCameraCommand,
+    )
+
     private val client = Ec0Client(
         localIdentity = localIdentity,
         localAlias = displayName,
@@ -236,6 +249,7 @@ class Ec0EngineNode(
     val transfers: StateFlow<Map<String, TransferProgressSnapshot>> get() = fileTransferService.transfers
     val notifications: StateFlow<List<NotificationPostInfo>> get() = notificationRelayService.notifications
     val peerPresence: StateFlow<Map<String, PresenceBeaconInfo>> get() = presenceService.peerPresence
+    val cameraStatus: StateFlow<CameraStatusInfo> get() = cameraCoordinator.status
 
     val boundServerPort: Int
         get() = server.boundPort
@@ -497,6 +511,7 @@ class Ec0EngineNode(
         if (notificationRelayService.handleControlEnvelope(envelope)) return
         if (presenceService.handleControlEnvelope(peerDeviceId, envelope)) return
         if (scrcpyCoordinator.handleControlEnvelope(envelope)) return
+        if (cameraCoordinator.handleControlEnvelope(envelope)) return
     }
 
     private fun sessionFileTransport(session: Ec0Session): FileTransferService.OutboundTransport =
@@ -545,6 +560,7 @@ class Ec0EngineNode(
         runCatching { server.close() }
         runCatching { mdnsDiscovery.close() }
         runCatching { scrcpyCoordinator.close() }
+        runCatching { cameraCoordinator.close() }
         sessionExecutor.shutdownNow()
     }
 

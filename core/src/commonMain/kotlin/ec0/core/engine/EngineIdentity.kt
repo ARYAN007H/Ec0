@@ -19,12 +19,14 @@ enum class EngineCapability(val wireName: String) {
     INPUT("input"),
     NOTIFICATION("notif"),
     BATTERY("battery"),
-    MIRROR("mirror");
+    MIRROR("mirror"),
+    CAMERA("cam");
 
     companion object {
         val NOTIF: EngineCapability = NOTIFICATION
         val PRESENCE: EngineCapability = BATTERY
         val SCRCPY: EngineCapability = MIRROR
+        val CAMDROID: EngineCapability = CAMERA
 
         fun fromWireName(name: String): EngineCapability? = when (val token = name.trim().lowercase()) {
             "clip", "clipboard" -> CLIPBOARD
@@ -33,6 +35,7 @@ enum class EngineCapability(val wireName: String) {
             "notif", "notification" -> NOTIFICATION
             "battery", "presence" -> BATTERY
             "mirror", "scrcpy" -> MIRROR
+            "cam", "camera", "camdroid" -> CAMERA
             else -> entries.firstOrNull { it.wireName == token }
         }
 

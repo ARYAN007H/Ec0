@@ -97,13 +97,13 @@ object EngineEncoding {
         this['/'.code] = 63
     }
 
-    fun toHex(bytes: ByteArray): String = bytes.toHex()
+    fun encodeHex(bytes: ByteArray): String = bytes.toHex()
 
     fun fromHex(hex: String): ByteArray = hex.decodeHex()
 
-    fun toBase64UrlUnpadded(bytes: ByteArray): String = bytes.toBase64UrlUnpadded()
+    fun encodeBase64Url(bytes: ByteArray): String = bytes.toBase64UrlUnpadded()
 
-    fun decodeBase64Url(encoded: String): ByteArray = encoded.decodeBase64Url()
+    fun fromBase64Url(encoded: String): ByteArray = encoded.decodeBase64Url()
 
     fun ByteArray.toHex(): String {
         val out = CharArray(size * 2)

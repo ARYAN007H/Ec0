@@ -145,7 +145,7 @@ class DiscoveryAndResolverTest {
         val qrOverride = PairingQrPayload(
             version = 1,
             deviceId = phoneId,
-            publicKeyRaw = ec0.core.engine.EngineEncoding.decodeBase64Url("3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"),
+            publicKeyRaw = ec0.core.engine.EngineEncoding.fromBase64Url("3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"),
             alias = "OnePlus 12",
             nonce = ec0.core.engine.EngineEncoding.fromHex("aabbccddeeff00112233445566778899"),
             port = 59888,

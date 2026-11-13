@@ -39,7 +39,7 @@ class MdnsCodecTest {
         assertEquals(33, encoded.size)
         assertEquals(
             "000000000001000000000000045f656330045f746370056c6f63616c00000c0001",
-            EngineEncoding.toHex(encoded),
+            EngineEncoding.encodeHex(encoded),
         )
 
         val decoded = MdnsCodec.decodePacket(encoded)
@@ -52,7 +52,7 @@ class MdnsCodecTest {
         val quEncoded = MdnsCodec.encodePtrQuery(unicastResponse = true)
         assertEquals(
             "000000000001000000000000045f656330045f746370056c6f63616c00000c8001",
-            EngineEncoding.toHex(quEncoded),
+            EngineEncoding.encodeHex(quEncoded),
         )
     }
 

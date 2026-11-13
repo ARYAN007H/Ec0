@@ -1228,3 +1228,28 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   - Slice 6 (Input, Notifications, Presence & Scrcpy): `InputShareService` (keyboard + UTF-8 text commit + touchpad pointer/scroll), `NotificationRelayService` (newest-first feed, dismiss, inline quick-reply), `PresenceService` (signed battery/charging/screen/capability beacons), and `ScrcpyMirrorCoordinator` (enforces Amendment 5 `adb connect <host>:<port>` verification prior to spawning external `scrcpy --serial <host>:<port>`).
   - Slice 7 (ColorOS Resilience & Unified Node): `Ec0EngineNode` + `OfflineOutboxQueue` (`N = 64`, 1-hour TTL) + `docs/engine/coloros-resilience.md`, with automatic reconnect outbox flushing (`cmd_type = "offline_flush"`) and cross-session `OfflineFlushDeduplicator` verification (Amendment 2). Zero Gradle edits, zero files touched outside reserved namespace.
 
+### 2026-11-13 11:42 UTC — gemini-argon
+- STATUS: DONE (CI EngineConstants fix + Slice 8 / Steps 1–4 + CamDroid Continuity Camera complete)
+- TASK: Fix `:core:compileKotlinJvm` JVM declaration clash in `EngineConstants.kt` + implement Continuity Camera (`ARYAN007H/CamDroid`), Linux Wayland/X11/Freedesktop/AirDrop OS bridges, Android Companion Runtime, and Desktop Continuity Hub UI
+- FILES:
+  - core/src/commonMain/kotlin/ec0/core/engine/{EngineConstants,EngineIdentity}.kt
+  - core/src/commonMain/kotlin/ec0/core/engine/protocol/CameraModels.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/Ec0EngineNode.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/services/ContinuityCameraCoordinator.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/linux/{LinuxSystemBridge,LinuxDesktopIntegrationGenerator}.kt
+  - core/src/jvmMain/kotlin/ec0/core/engine/android/AndroidCompanionBridge.kt
+  - desktop/src/jvmMain/kotlin/ec0/desktop/continuity/{ContinuityHubController,ContinuityDashboardPanel}.kt
+  - core/src/commonTest/kotlin/ec0/core/engine/{MdnsCodecTest,CameraModelsTest}.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/discovery/DiscoveryAndResolverTest.kt
+  - core/src/jvmTest/kotlin/ec0/core/engine/ContinuitySystemIntegrationTest.kt
+  - docs/engine/{system-integration-and-camdroid,roadmap}.md, roadmap.md
+- WHAT:
+  1. Fixed CI failure in `EngineConstants.kt` (GitHub Actions run `43413956422`): renamed static helper functions in `EngineEncoding` (`encodeHex`, `fromHex`, `encodeBase64Url`, `fromBase64Url`) so they no longer collide with the member extension functions (`ByteArray.toHex()`, `ByteArray.toBase64UrlUnpadded()`, `String.decodeBase64Url()`) on the JVM bytecode level.
+  2. Reached `github.com/ARYAN007H/CamDroid` and implemented byte-exact interop in `CameraModels.kt` & `ContinuityCameraCoordinator.kt`:
+     - `CamDroidV1Codec` (`[1B kind][4B len LE][payload]`, `0x01..0x07`, 16 MiB cap) matching `ProtocolHandler.kt` & `desktop/src/protocol/wire.rs`.
+     - `CamDroidV2Codec` (36-byte LE `"CMD2"` magic header with `version=2`, `kind`, `flags`, `sessionId`, `sequence`, `captureTimestampNs`, `payloadLength`) matching `ProtocolV2.kt`.
+     - `CamDroidControlCommand` supporting all 14 CamDroid studio commands (`start`, `stop`, `switch_camera`, `set_zoom`, `set_focus`, `set_exposure`, `set_white_balance`, `set_flash`, `set_mirror`, `set_resolution`, `set_fps`, `set_codec`, `set_bitrate`, `request_keyframe`) with dual representation (exact `serde_json` snake_case JSON over TCP `:4747` + integer-only `zoom_x100`/`distance_x100` for `CanonicalJson` signed `ec0-engine` envelopes).
+     - `ContinuityCameraCoordinator` with `CAMDROID_NATIVE` (`:4747` + `/dev/video10` `v4l2loopback`) and `SCRCPY_V4L2_FALLBACK` (enforcing Amendment 5 `adb connect <host>:<port>` before `scrcpy --video-source=camera --v4l2-sink=/dev/video10`).
+  3. Implemented Linux OS bridges (`LinuxSystemBridge.kt`, `LinuxDesktopIntegrationGenerator.kt`): Wayland (`wl-copy`/`wl-paste`) & X11 (`xclip`) clipboard bridge with SHA-256 loopback echo suppression + sensitive clip filtering; `notify-send` notification bridge with `--` flag-injection protection; `Ec0CliCommand` (`--send`, `--mirror`, `--camera`, `--install-desktop-integration`, `--doctor`); and Freedesktop/KDE Dolphin/GNOME Nautilus AirDrop context-menu installer.
+  4. Implemented `AndroidCompanionRuntime` (`AndroidCompanionBridge.kt`) and isolated Compose Desktop Continuity UI (`desktop/src/jvmMain/kotlin/ec0/desktop/continuity/**` — zero file overlap with open PR #9 / PR #10).
+
