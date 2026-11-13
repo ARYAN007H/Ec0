@@ -125,7 +125,9 @@ class IncomingSessionStore {
 
     @Synchronized
     fun removeSession(sessionId: String) {
-        _sessions.update { current -> current?.takeIf { it.sessionId == sessionId } }
+        // Keep sessions whose id does NOT match (takeIf) — an inverted == here
+        // makes cancel-with-correct-id a silent no-op.
+        _sessions.update { current -> current?.takeIf { it.sessionId != sessionId } }
         publishQueue(current = _sessions.value)
     }
 
