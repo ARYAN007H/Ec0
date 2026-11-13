@@ -41,6 +41,7 @@ import ec0.core.engine.linux.LinuxInputInjectionBridge
 import ec0.core.engine.linux.LinuxNotificationBridge
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.CallStateInfo
+import ec0.core.engine.protocol.MediaSessionInfo
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.engine.protocol.ContinuitySketchOverlay
 import ec0.core.engine.protocol.ContinuitySketchPoint
@@ -513,7 +514,7 @@ class Slice9ImprovementsTest {
             }
 
             val runtime = AndroidCompanionRuntime(
-                phoneIdentity = Ed25519KeyPair.generate(),
+                phoneIdentity = Ed25519Identity.generate(),
                 phoneModelName = "A5x-Test",
                 downloadDir = tempDir,
                 callbacks = callbacks,

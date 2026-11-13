@@ -75,7 +75,7 @@ class QrAndExpansionModelsTest {
         assertNotEquals(sessionKeys.sessionId.toHex(), bulkKey.toHex())
 
         // Deterministic across invocations
-        val bulkKey2 = HkdfSha256.deriveBulkLaneKey(prk, sessionKeys.sessionId)
+        val bulkKey2 = HkdfSha256.deriveBulkLaneKey(sharedSecretZ, sessionKeys.sessionId)
         assertContentEquals(bulkKey, bulkKey2)
     }
 
