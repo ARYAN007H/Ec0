@@ -1349,3 +1349,17 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - **MainActivity v0.1:** Compose M3 device list + scan + SAF file send → LocalsendHttp.prepareUpload/uploadFile (identical wire behavior to desktop); MulticastLock held for app lifetime (Android filters multicast without it — KDE Connect does the same); per-process random fingerprint mirroring RealDeviceSource; honest HTTP/download=false announce (no phone server yet — receiver needs a non-com.sun HTTP stack on Android, next PR).
 - **CI:** +:android-app:assembleDebug + `ec0-android-debug` APK artifact (if-no-files-found: error). gradle build now includes android lint (abortOnError=false for v0.1).
 - Foreground service + notification relay + share-sheet + receiver = next slices. O+ native mode gates on aryan's Windows capture tomorrow (T4).
+
+### 2026-11-14 01:27 UTC — agent-1
+- STATUS: CLAIMED
+- TASK: T15 — Smart Connect (Motorola) protocol intake + feature-delta report
+- FILES: (none yet) → docs/re/smart-connect-findings.md,
+  docs/re/smart-connect-ec0-delta.md
+- WHAT: Worktree ~/.cache/ec0-worktrees/agent-1-t15 off origin/main
+  @020499d, branch feat/agent-1-t15. Materials on disk (read-only, not
+  committed): clean-room Rust client ~/Downloads/ec0-test/smartconnect-linux/
+  (docs/protocol/ 14 files + architecture + control-socket-api + tests/
+  handshake.rs + src/) and MotoSmartConnect-base.apk in rea-work/apks.
+  Plan: extract protocol facts w/ OBSERVED/INFERRED tags preserved, verify
+  INFERRED claims vs the APK via jadx/REA, produce findings + ec0-delta docs
+  + ranked top-5 port list in the hub. Docs-only PR.

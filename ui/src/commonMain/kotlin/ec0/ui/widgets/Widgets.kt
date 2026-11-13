@@ -123,7 +123,6 @@ fun Ec0Progress(value: Float, accent: Color, modifier: Modifier = Modifier) {
         trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
         strokeCap = StrokeCap.Round,
         gapSize = 0.dp,
-        drawStopIndicator = null,
     )
 }
 

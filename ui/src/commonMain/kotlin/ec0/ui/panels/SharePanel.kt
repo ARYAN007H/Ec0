@@ -29,7 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Shapes
-import ec0.ui.widgets.DeviceCard
 import ec0.ui.widgets.EmptyState
 import ec0.ui.widgets.SectionHeader
 

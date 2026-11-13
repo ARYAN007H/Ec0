@@ -114,7 +114,7 @@ fun SettingsPanel(bridge: UiBridge) {
                 }
                 Switch(
                     checked = settings.requirePin,
-                    onCheckedChange = { bridge.updateSettings { it.copy(requirePin = it) } },
+                    onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(requirePin = checked) } },
                 )
             }
             if (settings.requirePin) {
@@ -141,7 +141,7 @@ fun SettingsPanel(bridge: UiBridge) {
                 }
                 Switch(
                     checked = settings.synergyProbeEnabled,
-                    onCheckedChange = { bridge.updateSettings { it.copy(synergyProbeEnabled = it) } },
+                    onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(synergyProbeEnabled = checked) } },
                 )
             }
         }
