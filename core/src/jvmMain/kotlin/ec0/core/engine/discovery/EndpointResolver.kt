@@ -19,6 +19,7 @@ data class EndpointCandidate(
     val tier: Tier,
 ) {
     enum class Tier {
+        USB_ADB_TUNNEL,
         QR_OVERRIDE,
         MDNS_LIVE,
         LAST_KNOWN_IP,
@@ -61,6 +62,7 @@ class EndpointResolver(
         qrOverride: PairingQrPayload? = null,
         explicitHostOverride: String? = null,
         explicitPortOverride: Int? = null,
+        usbForwardedPort: Int? = null,
         includeGatewayFallback: Boolean = true,
         nowMs: Long = clockMs(),
     ): List<EndpointCandidate> {
@@ -84,7 +86,12 @@ class EndpointResolver(
             }
         }
 
-        // Tier 0 / Explicit QR or manual override
+        // Tier 0a: USB-C adb forward deterministic tunnel (`127.0.0.1:<usbForwardedPort>`)
+        if (usbForwardedPort != null && usbForwardedPort in 1..65535) {
+            addCandidate("127.0.0.1", usbForwardedPort, EndpointCandidate.Tier.USB_ADB_TUNNEL)
+        }
+
+        // Tier 0b: Explicit QR or manual override
         if (qrOverride != null) {
             for (ip in qrOverride.ips) {
                 if (ip.isNotBlank()) {

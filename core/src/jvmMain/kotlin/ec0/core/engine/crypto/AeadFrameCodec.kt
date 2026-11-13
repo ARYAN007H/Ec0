@@ -21,6 +21,7 @@
 package ec0.core.engine.crypto
 
 import ec0.core.engine.EngineConstants
+import ec0.core.engine.HkdfSha256
 import ec0.core.engine.SessionKeyMaterial
 import java.security.GeneralSecurityException
 import java.util.concurrent.locks.ReentrantLock
@@ -210,7 +211,10 @@ object AeadFrameCodec {
                     )
                 }
             }
-            EngineConstants.FRAME_ENVELOPE_JSON, EngineConstants.FRAME_BULK_CHUNK -> {
+            EngineConstants.FRAME_ENVELOPE_JSON,
+            EngineConstants.FRAME_BULK_CHUNK,
+            EngineConstants.FRAME_KEY_UPDATE,
+            -> {
                 if (counter == 0L) {
                     throw AeadSecurityException(
                         "Application frameType 0x0${frameType.toInt()} prohibited at counter=0",
@@ -239,24 +243,45 @@ object AeadFrameCodec {
 /**
  * Stateful bidirectional AEAD channel bound to a derived [SessionKeyMaterial].
  * Automatically tracks `sendCounter` and `recvCounter` (`0` for auth confirmation,
- * `1, 2, 3...` for application frames).
+ * `1, 2, 3...` for application frames) and supports forward-secret session key
+ * rotation (`FRAME_KEY_UPDATE = 0x04`).
  */
 class AeadSessionChannel(
-    private val keys: SessionKeyMaterial,
+    keys: SessionKeyMaterial,
     val isInitiator: Boolean,
 ) {
-    private val sendKey: ByteArray = if (isInitiator) keys.kInitToResp else keys.kRespToInit
-    private val recvKey: ByteArray = if (isInitiator) keys.kRespToInit else keys.kInitToResp
+    private var currentKeys: SessionKeyMaterial = keys
+    private var sendKey: ByteArray = if (isInitiator) keys.kInitToResp else keys.kRespToInit
+    private var recvKey: ByteArray = if (isInitiator) keys.kRespToInit else keys.kInitToResp
     private val sessionId: ByteArray = keys.sessionId
 
     private val sendLock = ReentrantLock()
     private val recvLock = ReentrantLock()
+
+    var rekeyEpoch: Int = 0
+        private set
 
     var nextSendCounter: Long = 0L
         private set
 
     var nextRecvCounter: Long = 0L
         private set
+
+    /**
+     * Rotates the symmetric directional keys forward using [HkdfSha256.deriveRekeyedSessionKeys]
+     * without resetting the monotonic counters or `sessionId`.
+     */
+    fun rotateKeys(): Int = sendLock.withLock {
+        recvLock.withLock {
+            val nextEpoch = rekeyEpoch + 1
+            val rotated = HkdfSha256.deriveRekeyedSessionKeys(currentKeys, nextEpoch)
+            currentKeys = rotated
+            sendKey = if (isInitiator) rotated.kInitToResp else rotated.kRespToInit
+            recvKey = if (isInitiator) rotated.kRespToInit else rotated.kInitToResp
+            rekeyEpoch = nextEpoch
+            nextEpoch
+        }
+    }
 
     fun sealAuthConfirm(plaintext: ByteArray): ByteArray = sendLock.withLock {
         if (nextSendCounter != 0L) {

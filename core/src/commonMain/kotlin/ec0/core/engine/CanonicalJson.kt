@@ -40,6 +40,10 @@ object CanonicalJson {
         return sb.toString()
     }
 
+    fun canonicalize(element: JsonElement?): String = encode(element)
+
+    fun canonicalizeToString(element: JsonElement?): String = encode(element)
+
     private fun appendElement(sb: StringBuilder, element: JsonElement) {
         when (element) {
             is JsonNull -> sb.append("null")

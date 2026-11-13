@@ -105,6 +105,10 @@ object HkdfSha256 {
         return expand(prk, info, outLen)
     }
 
+    /** Alias for [deriveKey] with `length` parameter name. */
+    fun extractAndExpand(salt: ByteArray, ikm: ByteArray, info: ByteArray, length: Int): ByteArray =
+        deriveKey(salt = salt, ikm = ikm, info = info, outLen = length)
+
     /**
      * Normative `ec0-engine` session key derivation (`docs/engine/design.md` §3.4).
      */
@@ -146,6 +150,58 @@ object HkdfSha256 {
             kRespToInit = okm.copyOfRange(32, 64),
             sessionId = okm.copyOfRange(64, 96),
             prk = prk,
+        )
+    }
+
+    const val BULK_LANE_INFO_TAG: String = "ec0-v1-bulk-lane"
+
+    /**
+     * Derives a dedicated 32-byte ChaCha20-Poly1305 subkey for a parallel bulk
+     * transfer lane bound to an authenticated session's [prk] and [sessionId]:
+     *   `K_bulk = HKDF-Expand(PRK, "ec0-v1-bulk-lane" || sessionId_32B, 32)`
+     */
+    fun deriveBulkLaneKey(prk: ByteArray, sessionId: ByteArray): ByteArray {
+        require(prk.size == HASH_LEN) { "PRK must be $HASH_LEN bytes (got ${prk.size})" }
+        require(sessionId.size == EngineConstants.SESSION_ID_BYTES) {
+            "sessionId must be ${EngineConstants.SESSION_ID_BYTES} bytes (got ${sessionId.size})"
+        }
+        val tagBytes = BULK_LANE_INFO_TAG.encodeToByteArray()
+        val info = ByteArray(tagBytes.size + sessionId.size)
+        tagBytes.copyInto(info, 0)
+        sessionId.copyInto(info, tagBytes.size)
+        return expand(prk, info, EngineConstants.SESSION_KEY_BYTES)
+    }
+
+    /**
+     * Rotates session keys forward (`KEY_UPDATE` frame `0x04`) for long-lived background
+     * daemon sessions (`epoch >= 1`):
+     *   `PRK_{n+1} = HKDF-Extract(salt = sessionId, IKM = PRK_n)`
+     *   `OKM       = HKDF-Expand(PRK_{n+1}, "ec0-v1-rekey" || sessionId || epoch_be4, 64)`
+     * Preserves the immutable 32-byte `sessionId` while replacing `kInitToResp`,
+     * `kRespToInit`, and `prk` so old keys can be zeroized.
+     */
+    fun deriveRekeyedSessionKeys(
+        current: SessionKeyMaterial,
+        epoch: Int,
+    ): SessionKeyMaterial {
+        require(epoch >= 1) { "Re-key epoch must be >= 1 (got $epoch)" }
+        val nextPrk = extract(salt = current.sessionId, ikm = current.prk)
+        val tagBytes = EngineConstants.REKEY_INFO_TAG.encodeToByteArray()
+        val info = ByteArray(tagBytes.size + current.sessionId.size + 4)
+        tagBytes.copyInto(info, 0)
+        current.sessionId.copyInto(info, tagBytes.size)
+        val epochOffset = tagBytes.size + current.sessionId.size
+        info[epochOffset] = (epoch ushr 24).toByte()
+        info[epochOffset + 1] = (epoch ushr 16).toByte()
+        info[epochOffset + 2] = (epoch ushr 8).toByte()
+        info[epochOffset + 3] = epoch.toByte()
+
+        val okm = expand(nextPrk, info, 64)
+        return SessionKeyMaterial(
+            kInitToResp = okm.copyOfRange(0, 32),
+            kRespToInit = okm.copyOfRange(32, 64),
+            sessionId = current.sessionId.copyOf(),
+            prk = nextPrk,
         )
     }
 }

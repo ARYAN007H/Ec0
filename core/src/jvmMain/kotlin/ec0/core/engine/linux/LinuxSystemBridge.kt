@@ -265,6 +265,84 @@ class LinuxClipboardBridge(
             LinuxDisplayServer.HEADLESS -> null
         }
 
+    /**
+     * Builds the event-driven Wayland clipboard watcher argv (`wl-paste --type <mime> --watch ...`)
+     * for zero-CPU-idle clipboard change notification.
+     */
+    fun buildWaylandWatchCommand(
+        mimeType: String = ClipboardMime.TEXT_PLAIN,
+        onChangeCommand: List<String> = listOf("true"),
+    ): List<String> {
+        require(onChangeCommand.isNotEmpty()) { "onChangeCommand must not be empty" }
+        return listOf("wl-paste", "--type", mimeType, "--watch") + onChangeCommand
+    }
+
+    /**
+     * Parses an RFC 2483 `text/uri-list` or GNOME/GTK `x-special/gnome-copied-files`
+     * clipboard payload (produced when a user presses `Ctrl+C` on files in KDE Dolphin,
+     * GNOME Files/Nautilus, or Thunar) into existing local [File]s.
+     */
+    fun extractCopiedFilesFromUriList(rawPayload: String): List<File> {
+        val result = mutableListOf<File>()
+        for (rawLine in rawPayload.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            if (line.equals("copy", ignoreCase = true) || line.equals("cut", ignoreCase = true)) continue
+            if (line.startsWith("file://")) {
+                val file = runCatching { File(java.net.URI(line)) }.getOrNull()
+                if (file != null && file.exists()) {
+                    result.add(file)
+                }
+            }
+        }
+        return result.distinctBy { it.absolutePath }
+    }
+
+    /**
+     * Polls the Linux clipboard for copied file URIs (`text/uri-list` or
+     * `x-special/gnome-copied-files`).
+     */
+    fun pollCopiedFilesFromClipboard(): List<File> = synchronized(lock) {
+        val display = displayServerProvider()
+        if (display == LinuxDisplayServer.HEADLESS) return emptyList()
+        val uriClip = readSystemClipboard(display, ClipboardMime.URI_LIST)
+            ?: readSystemClipboard(display, "x-special/gnome-copied-files")
+            ?: return emptyList()
+        return extractCopiedFilesFromUriList(uriClip.bytes.decodeToString())
+    }
+
+    /**
+     * Builds the discrete argv command to clear a sensitive clipboard entry (`wl-copy --clear`
+     * on Wayland or `xclip -selection clipboard -i /dev/null` on X11).
+     */
+    fun buildClearClipboardCommand(display: LinuxDisplayServer = displayServerProvider()): List<String>? =
+        when (display) {
+            LinuxDisplayServer.WAYLAND -> listOf("wl-copy", "--clear")
+            LinuxDisplayServer.X11 -> listOf("xclip", "-selection", "clipboard", "-i", "/dev/null")
+            LinuxDisplayServer.HEADLESS -> null
+        }
+
+    /**
+     * Scrubs the system clipboard if and only if its current `text/plain` content still
+     * hashes to [expectedSha256Hex], preventing accidental erasure if the user has
+     * copied something new in the meantime.
+     */
+    fun scrubIfUnchanged(expectedSha256Hex: String): Boolean = synchronized(lock) {
+        val display = displayServerProvider()
+        if (display == LinuxDisplayServer.HEADLESS) return false
+        val current = readSystemClipboard(display, ClipboardMime.TEXT_PLAIN) ?: return false
+        if (!current.sha256Hex.equals(expectedSha256Hex, ignoreCase = true)) {
+            return false
+        }
+        val clearCmd = buildClearClipboardCommand(display) ?: return false
+        return try {
+            val res = executor.execute(clearCmd)
+            res.exitCode == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun readSystemClipboard(display: LinuxDisplayServer, mimeType: String): ClipboardItem? {
         val cmd = buildReadCommand(display, mimeType) ?: return null
         return try {
@@ -285,11 +363,13 @@ class LinuxClipboardBridge(
 
 /**
  * Dispatches incoming Android notifications ([NotificationPostInfo]) to the
- * Linux Freedesktop notification daemon via `notify-send`.
+ * Linux Freedesktop notification daemon via `notify-send` or `gdbus`
+ * (`org.freedesktop.Notifications.Notify` with interactive action buttons).
  */
 class LinuxNotificationBridge(
     private val executor: BinaryCommandExecutor = SystemBinaryCommandExecutor,
     private val notifySendBinary: String = "notify-send",
+    private val gdbusBinary: String = "gdbus",
     private val defaultExpireMs: Int = 8_000,
 ) {
     /**
@@ -316,6 +396,65 @@ class LinuxNotificationBridge(
         )
     }
 
+    /**
+     * Builds a `gdbus call --session` argv list invoking `org.freedesktop.Notifications.Notify`
+     * with interactive action buttons (e.g. `["dismiss", "Dismiss", "reply", "Reply"]`).
+     */
+    fun buildGdbusNotifyCommand(
+        notif: NotificationPostInfo,
+        replacesId: Int = 0,
+    ): List<String> {
+        val safeAppName = sanitizeGVariantText(notif.appName.ifBlank { notif.packageName }.take(64))
+        val safeTitle = sanitizeGVariantText(notif.title.ifBlank { safeAppName }.take(200))
+        val safeBody = sanitizeGVariantText(notif.body.take(1_000))
+        val actionPairs = mutableListOf<String>()
+        actionPairs.add("'dismiss'")
+        actionPairs.add("'Dismiss'")
+        if (notif.canReply) {
+            actionPairs.add("'reply'")
+            actionPairs.add("'Reply'")
+        }
+        for (act in notif.actions) {
+            val clean = sanitizeGVariantText(act.take(32))
+            if (clean.isNotBlank() && clean != "dismiss" && clean != "reply") {
+                actionPairs.add("'$clean'")
+                actionPairs.add("'$clean'")
+            }
+        }
+        val actionsVariant = "[${actionPairs.joinToString(", ")}]"
+        return listOf(
+            gdbusBinary,
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.Notifications",
+            "--object-path",
+            "/org/freedesktop/Notifications",
+            "--method",
+            "org.freedesktop.Notifications.Notify",
+            "ec0 ($safeAppName)",
+            replacesId.coerceAtLeast(0).toString(),
+            "phone",
+            safeTitle,
+            safeBody,
+            actionsVariant,
+            "{}",
+            defaultExpireMs.toString(),
+        )
+    }
+
+    /**
+     * Parses a `gdbus monitor` line for `org.freedesktop.Notifications.ActionInvoked (uint32 id, string action_key)`.
+     */
+    fun parseDbusActionInvokedSignal(line: String): Pair<Int, String>? {
+        if (!line.contains("ActionInvoked")) return null
+        val regex = Regex("""\(uint32\s+(\d+),\s*'([^']+)'\)""")
+        val match = regex.find(line) ?: return null
+        val id = match.groupValues[1].toIntOrNull() ?: return null
+        val actionKey = match.groupValues[2]
+        return id to actionKey
+    }
+
     fun showDesktopNotification(
         notif: NotificationPostInfo,
         urgency: String = "normal",
@@ -328,4 +467,7 @@ class LinuxNotificationBridge(
             false
         }
     }
+
+    private fun sanitizeGVariantText(input: String): String =
+        input.replace("\\", " ").replace("'", " ").replace("\n", " ").trim()
 }

@@ -23,13 +23,17 @@ import ec0.core.engine.discovery.Ec0MdnsDiscovery
 import ec0.core.engine.discovery.EndpointResolver
 import ec0.core.engine.discovery.MdnsDatagramTransport
 import ec0.core.engine.discovery.MulticastMdnsTransport
+import ec0.core.engine.protocol.CallStateInfo
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.engine.protocol.ClipboardSyncPayload
 import ec0.core.engine.protocol.FileOfferCommand
+import ec0.core.engine.protocol.HandoffActivityInfo
+import ec0.core.engine.protocol.HotspotStatusInfo
 import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
+import ec0.core.engine.protocol.MediaSessionInfo
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationProtocol
 import ec0.core.engine.protocol.NotificationReplyCommand
@@ -39,16 +43,23 @@ import ec0.core.engine.services.CamDroidControlTransport
 import ec0.core.engine.services.ClipboardPushOutcome
 import ec0.core.engine.services.ClipboardService
 import ec0.core.engine.services.ContinuityCameraCoordinator
+import ec0.core.engine.services.ContinuityVirtualMicBridge
 import ec0.core.engine.services.ExternalProcessLauncher
 import ec0.core.engine.services.FileTransferService
+import ec0.core.engine.services.HandoffAndProximityService
+import ec0.core.engine.services.HotspotAndTelephonyService
 import ec0.core.engine.services.InputEventSink
 import ec0.core.engine.services.InputShareService
+import ec0.core.engine.services.MediaSessionBridgeService
 import ec0.core.engine.services.NotificationRelayService
 import ec0.core.engine.services.PresenceService
 import ec0.core.engine.services.ScrcpyMirrorCoordinator
 import ec0.core.engine.services.SystemProcessLauncher
 import ec0.core.engine.services.TcpCamDroidControlTransport
 import ec0.core.engine.services.TransferProgressSnapshot
+import ec0.core.engine.services.UniversalControlService
+import ec0.core.engine.services.UsbAdbTunnelCoordinator
+import ec0.core.engine.services.UsbTunnelStatus
 import ec0.core.engine.transport.BulkStreamFrame
 import ec0.core.engine.transport.Ec0Client
 import ec0.core.engine.transport.Ec0Server
@@ -210,6 +221,28 @@ class Ec0EngineNode(
         onExecuteCameraCommand = onExecuteCameraCommand,
     )
 
+    val universalControlService = UniversalControlService()
+
+    val hotspotAndTelephonyService = HotspotAndTelephonyService(
+        launcher = processLauncher,
+    )
+
+    val mediaSessionBridgeService = MediaSessionBridgeService(
+        launcher = processLauncher,
+    )
+
+    val usbAdbTunnelCoordinator = UsbAdbTunnelCoordinator(
+        launcher = processLauncher,
+    )
+
+    val virtualMicBridge = ContinuityVirtualMicBridge(
+        launcher = processLauncher,
+    )
+
+    val handoffAndProximityService = HandoffAndProximityService(
+        launcher = processLauncher,
+    )
+
     private val client = Ec0Client(
         localIdentity = localIdentity,
         localAlias = displayName,
@@ -246,10 +279,16 @@ class Ec0EngineNode(
     val pinnedPeers: StateFlow<List<PinnedPeer>> = _pinnedPeers.asStateFlow()
 
     val discoveredPeers: StateFlow<List<PeerInfo>> get() = mdnsDiscovery.peers
+    val discoveredCamDroidServices: StateFlow<List<DiscoveredCamDroidService>> get() = mdnsDiscovery.camDroidServices
     val transfers: StateFlow<Map<String, TransferProgressSnapshot>> get() = fileTransferService.transfers
     val notifications: StateFlow<List<NotificationPostInfo>> get() = notificationRelayService.notifications
     val peerPresence: StateFlow<Map<String, PresenceBeaconInfo>> get() = presenceService.peerPresence
     val cameraStatus: StateFlow<CameraStatusInfo> get() = cameraCoordinator.status
+    val hotspotStatus: StateFlow<HotspotStatusInfo> get() = hotspotAndTelephonyService.hotspotStatus
+    val activeCalls: StateFlow<List<CallStateInfo>> get() = hotspotAndTelephonyService.activeCalls
+    val remoteMediaSession: StateFlow<MediaSessionInfo?> get() = mediaSessionBridgeService.remoteMediaSession
+    val usbTunnelStatus: StateFlow<UsbTunnelStatus?> get() = usbAdbTunnelCoordinator.activeTunnel
+    val remoteHandoffActivity: StateFlow<HandoffActivityInfo?> get() = handoffAndProximityService.remoteHandoffActivity
 
     val boundServerPort: Int
         get() = server.boundPort
@@ -319,6 +358,13 @@ class Ec0EngineNode(
         val removed = sessionsByPeer.remove(peerDeviceId.lowercase())
         removed?.close()
         setConnectionState(peerDeviceId, EngineConnectionState.DISCONNECTED)
+    }
+
+    fun unpairPeer(peerDeviceId: String): Boolean {
+        disconnectPeer(peerDeviceId)
+        val removed = pinStore.unpair(peerDeviceId.lowercase())
+        refreshPinnedPeers()
+        return removed
     }
 
     /**
@@ -512,6 +558,10 @@ class Ec0EngineNode(
         if (presenceService.handleControlEnvelope(peerDeviceId, envelope)) return
         if (scrcpyCoordinator.handleControlEnvelope(envelope)) return
         if (cameraCoordinator.handleControlEnvelope(envelope)) return
+        if (universalControlService.handleControlEnvelope(envelope)) return
+        if (hotspotAndTelephonyService.handleControlEnvelope(envelope)) return
+        if (mediaSessionBridgeService.handleControlEnvelope(envelope)) return
+        if (handoffAndProximityService.handleControlEnvelope(envelope)) return
     }
 
     private fun sessionFileTransport(session: Ec0Session): FileTransferService.OutboundTransport =

@@ -22,8 +22,9 @@ object ClipboardMime {
     const val TEXT_PLAIN: String = "text/plain"
     const val IMAGE_PNG: String = "image/png"
     const val IMAGE_JPEG: String = "image/jpeg"
+    const val URI_LIST: String = "text/uri-list"
 
-    val SUPPORTED: Set<String> = setOf(TEXT_PLAIN, IMAGE_PNG, IMAGE_JPEG)
+    val SUPPORTED: Set<String> = setOf(TEXT_PLAIN, IMAGE_PNG, IMAGE_JPEG, URI_LIST)
 }
 
 data class ClipboardItem(

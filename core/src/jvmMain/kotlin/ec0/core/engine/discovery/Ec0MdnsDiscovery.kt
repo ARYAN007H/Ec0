@@ -7,10 +7,12 @@
  */
 package ec0.core.engine.discovery
 
+import ec0.core.engine.DiscoveredCamDroidService
 import ec0.core.engine.DiscoveredPeerRecord
 import ec0.core.engine.EngineConstants
 import ec0.core.engine.MdnsCodec
 import ec0.core.engine.PeerInfo
+import ec0.core.engine.protocol.CamDroidConstants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -142,6 +144,10 @@ class Ec0MdnsDiscovery(
     private val _peers = MutableStateFlow<List<PeerInfo>>(emptyList())
     val peers: StateFlow<List<PeerInfo>> = _peers.asStateFlow()
 
+    private val camDroidCache = ConcurrentHashMap<String, DiscoveredCamDroidService>()
+    private val _camDroidServices = MutableStateFlow<List<DiscoveredCamDroidService>>(emptyList())
+    val camDroidServices: StateFlow<List<DiscoveredCamDroidService>> = _camDroidServices.asStateFlow()
+
     private val listeners = CopyOnWriteArrayList<(PeerInfo) -> Unit>()
     private val running = AtomicBoolean(false)
     private var transport: MdnsDatagramTransport? = null
@@ -207,6 +213,8 @@ class Ec0MdnsDiscovery(
         val t = transport ?: return
         val queryBytes = MdnsCodec.encodePtrQuery(EngineConstants.MDNS_SERVICE_TYPE)
         t.send(queryBytes)
+        val camQueryBytes = MdnsCodec.encodePtrQuery(CamDroidConstants.MDNS_SERVICE_TYPE)
+        t.send(camQueryBytes)
     }
 
     fun announceNow() {
@@ -223,7 +231,8 @@ class Ec0MdnsDiscovery(
 
     /**
      * Processes a raw DNS/mDNS UDP payload. Ignores malformed packets cleanly.
-     * Replies to incoming `_ec0._tcp.local.` PTR queries and updates the peer cache.
+     * Replies to incoming `_ec0._tcp.local.` PTR queries and updates the peer cache
+     * as well as the `_camdroid._tcp.local.` camera service cache.
      */
     fun ingestDatagram(
         payload: ByteArray,
@@ -243,6 +252,26 @@ class Ec0MdnsDiscovery(
         }
         if (hasServiceQuery) {
             runCatching { announceNow() }
+        }
+
+        val camServices = MdnsCodec.extractCamDroidServices(
+            packet = packet,
+            nowMs = nowMs,
+            fallbackSenderIp = senderIp,
+            serviceType = CamDroidConstants.MDNS_SERVICE_TYPE,
+        )
+        if (camServices.isNotEmpty()) {
+            for (svc in camServices) {
+                val key = svc.instanceName.lowercase()
+                if (svc.isGoodbye) {
+                    camDroidCache.remove(key)
+                } else {
+                    camDroidCache[key] = svc
+                }
+            }
+            _camDroidServices.value = camDroidCache.values
+                .filter { !it.isExpired(nowMs) }
+                .sortedBy { it.deviceName }
         }
 
         val extracted = MdnsCodec.extractPeers(

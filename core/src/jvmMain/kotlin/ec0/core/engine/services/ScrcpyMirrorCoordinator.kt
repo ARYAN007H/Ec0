@@ -29,6 +29,8 @@ data class CommandExecResult(
     val stderr: String = "",
 )
 
+typealias CommandExecutionResult = CommandExecResult
+
 interface RunningProcessHandle : Closeable {
     val isAlive: Boolean
     fun stop()

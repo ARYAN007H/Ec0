@@ -110,6 +110,21 @@ data class DiscoveredPeerRecord(
     }
 }
 
+data class DiscoveredCamDroidService(
+    val instanceName: String,
+    val deviceName: String,
+    val port: Int,
+    val addresses: List<String>,
+    val codecs: List<String> = listOf("h264", "h265", "mjpeg"),
+    val resolution: String = "1080p",
+    val version: String = "1.0",
+    val ttlSeconds: Long,
+    val receivedAtMs: Long,
+) {
+    val isGoodbye: Boolean get() = ttlSeconds == 0L
+    fun isExpired(nowMs: Long): Boolean = isGoodbye || (nowMs - receivedAtMs) >= (ttlSeconds * 1000L)
+}
+
 object MdnsCodec {
     const val TYPE_A: Int = 1
     const val TYPE_PTR: Int = 12
@@ -526,6 +541,162 @@ object MdnsCodec {
             )
         }
         return result
+    }
+
+    /**
+     * Extracts discovered `ARYAN007H/CamDroid` (`_camdroid._tcp.local.`) streaming
+     * endpoints from an incoming [MdnsPacket] (registered by `NsdHelper.kt` with TXT
+     * attributes `version`, `codecs`, `resolution`, `device`).
+     */
+    fun extractCamDroidServices(
+        packet: MdnsPacket,
+        nowMs: Long,
+        serviceType: String = "_camdroid._tcp.local.",
+        fallbackSenderIp: String? = null,
+    ): List<DiscoveredCamDroidService> {
+        val normalizedService = normalizeDomain(serviceType).removeSuffix(".")
+        val allRecords = packet.answers + packet.additionals
+
+        val ptrInstances = mutableMapOf<String, Long>()
+        val srvByName = mutableMapOf<String, MdnsResourceRecord.SrvRecord>()
+        val txtByName = mutableMapOf<String, MdnsResourceRecord.TxtRecord>()
+        val addrsByHost = mutableMapOf<String, MutableList<String>>()
+
+        for (rr in allRecords) {
+            when (rr) {
+                is MdnsResourceRecord.PtrRecord -> {
+                    val owner = normalizeDomain(rr.name).removeSuffix(".")
+                    if (owner.equals(normalizedService, ignoreCase = true)) {
+                        ptrInstances[normalizeDomain(rr.ptrDomainName)] = rr.ttlSeconds
+                    }
+                }
+                is MdnsResourceRecord.SrvRecord -> srvByName[normalizeDomain(rr.name)] = rr
+                is MdnsResourceRecord.TxtRecord -> txtByName[normalizeDomain(rr.name)] = rr
+                is MdnsResourceRecord.ARecord ->
+                    addrsByHost.getOrPut(normalizeDomain(rr.name)) { mutableListOf() }.add(rr.ipv4Address)
+                is MdnsResourceRecord.AaaaRecord ->
+                    addrsByHost.getOrPut(normalizeDomain(rr.name)) { mutableListOf() }.add(rr.ipv6Address)
+                is MdnsResourceRecord.RawRecord -> Unit
+            }
+        }
+
+        val candidateNames = (ptrInstances.keys + srvByName.keys + txtByName.keys)
+            .filter { it.endsWith(".$normalizedService", ignoreCase = true) }
+            .toSet()
+
+        val result = mutableListOf<DiscoveredCamDroidService>()
+        for (instanceName in candidateNames) {
+            val srv = srvByName[instanceName]
+            val txt = txtByName[instanceName]
+            val attrs = txt?.attributes.orEmpty()
+            val rawInstancePrefix = instanceName.substringBefore(".$normalizedService")
+            val deviceName = attrs["device"]?.takeIf { it.isNotBlank() }
+                ?: rawInstancePrefix.removePrefix("CamDroid-").ifBlank { "CamDroid" }
+            val codecs = attrs["codecs"]
+                ?.split(',')
+                ?.map { it.trim().lowercase() }
+                ?.filter { it.isNotEmpty() }
+                ?.ifEmpty { listOf("h264", "h265", "mjpeg") }
+                ?: listOf("h264", "h265", "mjpeg")
+            val resolution = attrs["resolution"]?.takeIf { it.isNotBlank() } ?: "1080p"
+            val version = attrs["version"]?.takeIf { it.isNotBlank() } ?: "1.0"
+            val port = srv?.port?.takeIf { it in 1..65535 } ?: 4747
+
+            val hostAddrs = srv?.let { addrsByHost[normalizeDomain(it.targetHost)] }?.toList().orEmpty()
+            val resolvedAddrs = when {
+                hostAddrs.isNotEmpty() -> hostAddrs
+                fallbackSenderIp != null -> listOf(fallbackSenderIp)
+                else -> emptyList()
+            }
+
+            val ttlCandidates = listOfNotNull(ptrInstances[instanceName], srv?.ttlSeconds, txt?.ttlSeconds)
+            val effectiveTtl = if (ttlCandidates.any { it == 0L }) 0L else (ttlCandidates.minOrNull() ?: 120L)
+
+            result.add(
+                DiscoveredCamDroidService(
+                    instanceName = rawInstancePrefix,
+                    deviceName = deviceName,
+                    port = port,
+                    addresses = resolvedAddrs,
+                    codecs = codecs,
+                    resolution = resolution,
+                    version = version,
+                    ttlSeconds = effectiveTtl,
+                    receivedAtMs = nowMs,
+                ),
+            )
+        }
+        return result
+    }
+
+    /**
+     * Encodes an mDNS response announcing a `CamDroid` `_camdroid._tcp.local.`
+     * endpoint (for testing and phone-side announcement).
+     */
+    fun encodeCamDroidAnnouncement(
+        deviceName: String,
+        port: Int = 4747,
+        addresses: List<String>,
+        codecs: List<String> = listOf("h264", "h265", "mjpeg"),
+        resolution: String = "1080p",
+        ttlSeconds: Long = 120L,
+    ): ByteArray {
+        val safeInstance = "CamDroid-${deviceName.replace('.', '-').replace(' ', '-')}"
+        val serviceDomain = "_camdroid._tcp.local."
+        val fullInstance = "$safeInstance.$serviceDomain"
+        val hostTarget = "$safeInstance.local."
+        val records = mutableListOf<MdnsResourceRecord>(
+            MdnsResourceRecord.PtrRecord(
+                name = serviceDomain,
+                rrClass = CLASS_IN,
+                ttlSeconds = ttlSeconds,
+                ptrDomainName = fullInstance,
+            ),
+            MdnsResourceRecord.SrvRecord(
+                name = fullInstance,
+                rrClass = CLASS_IN or CLASS_CACHE_FLUSH,
+                ttlSeconds = ttlSeconds,
+                priority = 0,
+                weight = 0,
+                port = port,
+                targetHost = hostTarget,
+            ),
+            MdnsResourceRecord.TxtRecord(
+                name = fullInstance,
+                rrClass = CLASS_IN or CLASS_CACHE_FLUSH,
+                ttlSeconds = ttlSeconds,
+                attributes = linkedMapOf(
+                    "version" to "1.0",
+                    "codecs" to codecs.joinToString(","),
+                    "resolution" to resolution,
+                    "device" to deviceName,
+                ),
+            ),
+        )
+        for (addr in addresses) {
+            if (isValidIpv4(addr)) {
+                records.add(
+                    MdnsResourceRecord.ARecord(
+                        name = hostTarget,
+                        rrClass = CLASS_IN or CLASS_CACHE_FLUSH,
+                        ttlSeconds = ttlSeconds,
+                        ipv4Address = addr,
+                    ),
+                )
+            }
+        }
+        return encodePacket(
+            MdnsPacket(
+                header = MdnsHeader(
+                    id = 0,
+                    flags = FLAGS_RESPONSE_AA,
+                    qdCount = 0,
+                    anCount = records.size,
+                ),
+                questions = emptyList(),
+                answers = records,
+            ),
+        )
     }
 
     fun normalizeDomain(domain: String): String {

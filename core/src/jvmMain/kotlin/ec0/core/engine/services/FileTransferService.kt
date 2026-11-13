@@ -56,7 +56,23 @@ class FileTransferService(
     private val downloadDir: File,
     val defaultChunkSize: Int = EngineConstants.DEFAULT_FILE_CHUNK_BYTES,
     private val autoAcceptIncomingOffers: Boolean = true,
+    private val beforeChunkHook: () -> Unit = {},
 ) {
+    companion object {
+        const val FAST_LAN_CHUNK_BYTES: Int = 1024 * 1024 // 1 MiB for low-RTT 5GHz Wi-Fi
+        const val SOFTAP_CHUNK_BYTES: Int = 64 * 1024 // 64 KiB for SoftAP / high-jitter links
+
+        /**
+         * Selects an optimal file transfer chunk size (`64 KiB`, `256 KiB`, or `1 MiB`)
+         * based on measured link RTT (`rttMs`) and whether the connection traverses a
+         * mobile hotspot (`isSoftApLink`).
+         */
+        fun recommendChunkSize(rttMs: Long, isSoftApLink: Boolean = false): Int = when {
+            isSoftApLink || rttMs > 40L -> SOFTAP_CHUNK_BYTES
+            rttMs in 1L..4L -> FAST_LAN_CHUNK_BYTES
+            else -> EngineConstants.DEFAULT_FILE_CHUNK_BYTES
+        }
+    }
     interface OutboundTransport {
         fun sendCmd(cmdType: String, cmdBody: JsonObject)
         fun sendInfo(infoType: String, infoBody: JsonObject)
@@ -419,6 +435,7 @@ class FileTransferService(
 
                     val isFinal = chunkIdx == totalChunks - 1
                     val flags = if (isFinal) BulkStreamFrame.FLAG_FINAL_CHUNK else BulkStreamFrame.FLAG_DATA
+                    beforeChunkHook()
                     transport.sendChunk(
                         BulkStreamFrame(
                             streamId = manifest.streamId,

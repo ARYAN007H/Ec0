@@ -70,6 +70,9 @@ object Ed25519Identity {
         return Ed25519KeyPair(seed, pub, kp.private, kp.public)
     }
 
+    /** Alias for [generate] used by transport and service test suites. */
+    fun generateKeyPair(): Ed25519KeyPair = generate()
+
     /**
      * Reconstructs an [Ed25519KeyPair] from a 32-byte RFC 8032 secret seed,
      * deriving the 32-byte public key deterministically per RFC 8032 §5.1.5.

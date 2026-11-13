@@ -4,11 +4,13 @@
  * Android Companion Bridge (`ec0.core.engine.android`):
  *   - Platform-agnostic runtime controller for the `:android-app` companion
  *     service (`Ec0ForegroundService`, `Ec0NotificationListenerService`,
- *     `ShareTargetActivity`, and `CamDroid` `StreamingController` bridge).
+ *     `ShareTargetActivity`, `CamDroid` `StreamingController`, `WifiManager`
+ *     Instant Hotspot, `TelecomManager` Call Relay, and `MediaSessionManager`).
  *   - Lives in `:core` so its entire state machine, ColorOS wake recovery,
- *     Android Share Sheet fan-out, RemoteInput inline reply execution, and
- *     CamDroid camera command dispatch are verified by CI unit tests without
- *     requiring the Android SDK on the CI runner.
+ *     Android Share Sheet fan-out, RemoteInput inline reply execution,
+ *     CamDroid camera command dispatch, Instant Hotspot, Call Relay, and
+ *     MediaSession sync are verified by CI unit tests without requiring the
+ *     Android SDK on the CI runner.
  */
 package ec0.core.engine.android
 
@@ -20,11 +22,19 @@ import ec0.core.engine.crypto.Ed25519KeyPair
 import ec0.core.engine.crypto.InMemoryPinStore
 import ec0.core.engine.crypto.PinStore
 import ec0.core.engine.discovery.MdnsDatagramTransport
+import ec0.core.engine.protocol.CallActionCommand
+import ec0.core.engine.protocol.CallStateInfo
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.ClipboardItem
+import ec0.core.engine.protocol.CursorHandoffCommand
+import ec0.core.engine.protocol.HotspotAndTelephonyProtocol
+import ec0.core.engine.protocol.HotspotControlCommand
+import ec0.core.engine.protocol.HotspotStatusInfo
 import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
+import ec0.core.engine.protocol.MediaControlCommand
+import ec0.core.engine.protocol.MediaSessionInfo
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
@@ -37,8 +47,11 @@ import java.io.File
  * Callbacks implemented by Android OS services in `:android-app`:
  * - `Ec0NotificationListenerService` (for [onExecuteInlineReply] and [onDismissSystemNotification])
  * - `ClipboardManager` wrapper (for [onApplyRemoteClipboard])
- * - `AccessibilityService` / `InputMethodService` (for [onInjectKeyEvent] and [onInjectPointerEvent])
+ * - `AccessibilityService` / `InputMethodService` (for [onInjectKeyEvent], [onInjectPointerEvent], [onCursorHandoff])
  * - `CamDroid` `StreamingController` / `CameraStreamingService` (for [onCameraControlCommand])
+ * - `WifiManager` Tethering / LocalOnlyHotspot (for [onHotspotControlCommand])
+ * - `TelecomManager` / `SmsManager` (for [onCallActionCommand])
+ * - `MediaSessionManager` (for [onMediaControlCommand])
  * - `BatteryManager` + `PowerManager` (for [queryPhonePresence])
  */
 interface AndroidPlatformCallbacks {
@@ -47,7 +60,11 @@ interface AndroidPlatformCallbacks {
     fun onDismissSystemNotification(notifId: String): Boolean = true
     fun onInjectKeyEvent(event: InputKeyEvent): Boolean = true
     fun onInjectPointerEvent(event: InputPointerEvent): Boolean = true
+    fun onCursorHandoff(command: CursorHandoffCommand): Boolean = true
     fun onCameraControlCommand(command: CamDroidControlCommand): CameraStatusInfo? = null
+    fun onHotspotControlCommand(command: HotspotControlCommand): HotspotStatusInfo? = null
+    fun onCallActionCommand(command: CallActionCommand): Boolean = true
+    fun onMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? = null
     fun queryPhonePresence(): PresenceBeaconInfo = PresenceBeaconInfo(
         batteryPct = 100,
         isCharging = false,
@@ -60,7 +77,8 @@ interface AndroidPlatformCallbacks {
  * Runtime coordinator for the Android phone side of `ec0-engine`.
  *
  * Bridges Android system events (notifications posted, clipboard copied,
- * Share Sheet files selected, screen wake / network validated after ColorOS
+ * Share Sheet files selected, incoming phone calls, media session updates,
+ * Instant Hotspot status, and screen wake / network validation after ColorOS
  * Hans freeze) into [Ec0EngineNode].
  */
 class AndroidCompanionRuntime(
@@ -141,6 +159,65 @@ class AndroidCompanionRuntime(
             outcomes[peerId] = node.sendOrQueueClipboard(peerId, item, clockMs())
         }
         return outcomes
+    }
+
+    /**
+     * Broadcasts an Android telephony call state change (`RINGING`, `ACTIVE`, `ENDED`)
+     * to all connected Linux desktops so the desktop can display the incoming call banner
+     * and automatically pause local media playback.
+     */
+    fun publishPhoneCallState(info: CallStateInfo): Int {
+        var sent = 0
+        for (peerId in defaultTargetDesktopIds()) {
+            val session = node.activeSessionFor(peerId)
+            if (session != null) {
+                session.sendInfo(
+                    infoType = HotspotAndTelephonyProtocol.INFO_CALL_STATE,
+                    infoBody = info.toJsonObject(),
+                    category = HotspotAndTelephonyProtocol.CATEGORY_TELEPHONY,
+                    timestampMs = clockMs(),
+                )
+                sent++
+            }
+        }
+        return sent
+    }
+
+    /**
+     * Broadcasts the phone's Wi-Fi Hotspot status (`SSID`, passphrase, band MHz)
+     * to all connected Linux desktops so the desktop can join via `nmcli`.
+     */
+    fun publishHotspotStatus(status: HotspotStatusInfo): Int {
+        var sent = 0
+        for (peerId in defaultTargetDesktopIds()) {
+            val session = node.activeSessionFor(peerId)
+            if (session != null) {
+                session.sendInfo(
+                    infoType = HotspotAndTelephonyProtocol.INFO_HOTSPOT_STATUS,
+                    infoBody = status.toJsonObject(),
+                    category = HotspotAndTelephonyProtocol.CATEGORY_NET,
+                    timestampMs = clockMs(),
+                )
+                sent++
+            }
+        }
+        return sent
+    }
+
+    /**
+     * Broadcasts the phone's active `MediaSession` metadata (`Spotify`, `YouTube Music`, etc.)
+     * to all connected Linux desktops.
+     */
+    fun publishMediaSession(info: MediaSessionInfo): Int {
+        var sent = 0
+        for (peerId in defaultTargetDesktopIds()) {
+            val session = node.activeSessionFor(peerId)
+            if (session != null) {
+                node.mediaSessionBridgeService.broadcastMediaSession(info, session, clockMs())
+                sent++
+            }
+        }
+        return sent
     }
 
     /**

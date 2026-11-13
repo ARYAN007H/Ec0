@@ -51,6 +51,7 @@ object EngineConstants {
     const val SESSION_INFO_TAG: String = "ec0-v1-session"
     const val PAIR_PROOF_TAG: String = "ec0-pair-v1"
     const val ENVELOPE_SIG_TAG: String = "ec0-sig-v1"
+    const val REKEY_INFO_TAG: String = "ec0-v1-rekey"
 
     // Key & nonce byte sizes
     const val ED25519_KEY_BYTES: Int = 32
@@ -68,6 +69,7 @@ object EngineConstants {
     const val FRAME_AUTH_CONFIRM: Byte = 0x01
     const val FRAME_ENVELOPE_JSON: Byte = 0x02
     const val FRAME_BULK_CHUNK: Byte = 0x03
+    const val FRAME_KEY_UPDATE: Byte = 0x04
 
     // Frame & chunk size limits (DoS protection, docs/engine/design.md §7)
     const val MAX_ENVELOPE_JSON_BYTES: Int = 128 * 1024
