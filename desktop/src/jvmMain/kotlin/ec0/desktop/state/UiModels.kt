@@ -15,6 +15,10 @@ data class UiDevice(
     val protocol: ProtocolFamily,
     val port: Int,
     val fingerprint: String,
+    /** LAN address the announcement came from (empty for demo devices). */
+    val hostAddress: String = "",
+    /** Wire scheme of the peer's server: "http" or "https" (from its announce). */
+    val wireProtocol: String = "http",
     val download: Boolean = false,
     val online: Boolean = true,
 )
@@ -47,4 +51,6 @@ data class SettingsState(
     val downloadDir: String = System.getProperty("user.home") + "/Downloads",
     val requirePin: Boolean = false,
     val pin: String = "",
+    /** T4-gated Synergy probe — off until discovery constants land. */
+    val synergyProbeEnabled: Boolean = false,
 )
