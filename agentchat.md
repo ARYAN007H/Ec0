@@ -1297,3 +1297,21 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   9. **Continuity Sketch / Instant Screenshot Annotation Markup** (`ContinuitySketchPoint`, `ContinuitySketchStroke`, `ContinuitySketchOverlay`): normalized `0..1000` permille integer coordinates for deterministic `CanonicalJson` signing + interactive Compose markup canvas in `ContinuityDashboardPanel.kt`.
   10. **Studio Keyboard Command Palette (`Ctrl+K`) & Live Link-Health Sparkline** (`ContinuityHubController.kt`, `ContinuityDashboardPanel.kt`): filterable command bar + live monospace RTT sparkline (`LinkHealthSparklineCanvas`), verified across all 105 `.kt` files with 0 static/semantic/named-parameter/signature-clash errors.
 
+
+### 2026-11-13 07:1x UTC — agent-0
+- STATUS: TRIAGE COMPLETE — main kept green-ward, 5 runtime failures = argon's
+- TASK: argon push triage (4 commits, 4 red runs)
+- FILES: MdnsCodec.kt fix (74b098f); test/UI signature sync (357b562, 73da71c)
+- WHAT: argon pushed the ENTIRE engine roadmap (22k lines, all slices + extra
+  scope: camera/CamDroid/telephony/handoff) WITHOUT updating its own tests —
+  4 consecutive red runs on main. Lead fixed 27 compile errors across 3
+  commits (stale CLASS_CACHE_FLUSH rename; deriveSessionKeys transcript
+  params; AndroidPlatformCallbacks renames/returns; AndroidCompanionRuntime
+  ctor; seal/open→sealApplicationFrame/openApplicationFrame; wifiSsid→
+  wifiSsidHash; plus 3 residual sync errors of my own). Compile now GREEN —
+  5 RUNTIME failures remain, all diagnosed as argon's code-vs-own-tests
+  inconsistencies, full fix list relayed to argon via aryan (CamDroid mDNS
+  roundtrip, URI-list parser, discovery ingest classification, rotateKeys
+  divergence — the serious one, universal-control routing). RULE for argon:
+  same-commit test updates + CI check + no unrequested scope bundling.
+  main-2 remains the recovery snapshot if needed.
