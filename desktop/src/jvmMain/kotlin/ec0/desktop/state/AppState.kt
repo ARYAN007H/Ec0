@@ -3,6 +3,7 @@ package ec0.desktop.state
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.dto.FileDto
+import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.core.localsend.client.RealDeviceSource
 import ec0.core.localsend.client.SynergyDiscoveryProbe
