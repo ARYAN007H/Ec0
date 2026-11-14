@@ -15,7 +15,7 @@ class QrCodeMatrix(
     private val modules: BooleanArray,
 ) {
     init {
-        require(version in 1..10) { "QR version must be in 1..10 (got $version)" }
+        require(version in 1..15) { "QR version must be in 1..15 (got $version)" }
         require(size == version * 4 + 17) { "Invalid QR dimension $size for version $version" }
         require(modules.size == size * size) { "Modules array length mismatch" }
     }
@@ -69,11 +69,16 @@ class QrCodeMatrix(
             VersionSpec(8, 194, 24, 2, 97, alignmentCenters = intArrayOf(6, 24, 42)),
             VersionSpec(9, 232, 30, 2, 116, alignmentCenters = intArrayOf(6, 26, 46)),
             VersionSpec(10, 274, 18, 2, 68, 2, 69, alignmentCenters = intArrayOf(6, 28, 50)),
+            VersionSpec(11, 324, 20, 4, 81, alignmentCenters = intArrayOf(6, 30, 54)),
+            VersionSpec(12, 370, 24, 2, 92, 2, 93, alignmentCenters = intArrayOf(6, 32, 58)),
+            VersionSpec(13, 428, 26, 4, 107, alignmentCenters = intArrayOf(6, 34, 62)),
+            VersionSpec(14, 461, 30, 3, 115, 1, 116, alignmentCenters = intArrayOf(6, 26, 46, 66)),
+            VersionSpec(15, 523, 22, 5, 87, 1, 88, alignmentCenters = intArrayOf(6, 26, 48, 70)),
         )
 
         /**
          * Encodes [text] (UTF-8) into the smallest fitting ISO/IEC 18004 QR Code
-         * matrix (Versions 1..10, Error Correction Level L, Byte Mode).
+         * matrix (Versions 1..15, Error Correction Level L, Byte Mode).
          */
         fun encodeText(text: String): QrCodeMatrix = encodeBytes(text.encodeToByteArray())
 
@@ -93,7 +98,7 @@ class QrCodeMatrix(
                 if (neededBits <= maxBits) return spec
             }
             throw IllegalArgumentException(
-                "QR payload length ($byteLen bytes) exceeds Version 10-L capacity (271 bytes)",
+                "QR payload length ($byteLen bytes) exceeds Version 15-L capacity (520 bytes)",
             )
         }
 

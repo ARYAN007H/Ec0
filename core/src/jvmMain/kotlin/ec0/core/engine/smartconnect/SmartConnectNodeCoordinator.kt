@@ -212,11 +212,11 @@ class SmartConnectNodeCoordinator(
     }
 
     /**
-     * Encodes the current `motorolardpconnection{...}` QR payload into a [QrCodeMatrix.Matrix].
+     * Encodes the current `motorolardpconnection{...}` QR payload into a [QrCodeMatrix].
      */
-    fun buildPairingQrMatrix(nowMs: Long = System.currentTimeMillis()): QrCodeMatrix.Matrix {
+    fun buildPairingQrMatrix(nowMs: Long = System.currentTimeMillis()): QrCodeMatrix {
         val payload = buildPairingQrPayload(nowMs)
-        return QrCodeMatrix.encode(payload, QrCodeMatrix.EccLevel.L)
+        return QrCodeMatrix.encodeText(payload)
     }
 
     /**
@@ -648,8 +648,9 @@ class SmartConnectNodeCoordinator(
             lastSeenMs = nowMs,
             pairedAtMs = existing?.pairedAtMs ?: nowMs
         )
-        if (existing == null && trustConfirmationCallback != null) {
-            val trusted = runCatching { trustConfirmationCallback.invoke(candidateRecord) }.getOrDefault(false)
+        val cb = trustConfirmationCallback
+        if (existing == null && cb != null) {
+            val trusted = runCatching { cb.invoke(candidateRecord) }.getOrDefault(false)
             if (!trusted) {
                 ctx.session.close()
                 return

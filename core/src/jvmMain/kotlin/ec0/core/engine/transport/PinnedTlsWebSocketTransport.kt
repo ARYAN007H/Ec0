@@ -5,6 +5,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
 import java.io.EOFException
 import java.io.File
 import java.math.BigInteger
@@ -427,7 +428,7 @@ class PinnedTlsWebSocketSession(
 
     private val writeLock = ReentrantLock()
     private val closed = AtomicBoolean(false)
-    private val input = BufferedInputStream(socket.inputStream, 64 * 1024)
+    private val input = DataInputStream(BufferedInputStream(socket.inputStream, 64 * 1024))
     private val output = BufferedOutputStream(socket.outputStream, 64 * 1024)
     private val random = SecureRandom()
 
@@ -439,34 +440,34 @@ class PinnedTlsWebSocketSession(
         get() = !closed.get() && !socket.isClosed
 
     fun sendText(text: String) {
-        sendRawFrame(Ec0WsCodec.OPCODE_TEXT, text.toByteArray(StandardCharsets.UTF_8))
+        sendRawFrame(Ec0WsOpcode.TEXT, text.toByteArray(StandardCharsets.UTF_8))
     }
 
     fun sendBinary(payload: ByteArray) {
-        sendRawFrame(Ec0WsCodec.OPCODE_BINARY, payload)
+        sendRawFrame(Ec0WsOpcode.BINARY, payload)
     }
 
     fun sendPing(payload: ByteArray = byteArrayOf()) {
         val clipped = if (payload.size > 125) payload.copyOf(125) else payload
-        sendRawFrame(Ec0WsCodec.OPCODE_PING, clipped)
+        sendRawFrame(Ec0WsOpcode.PING, clipped)
     }
 
     fun sendPong(payload: ByteArray = byteArrayOf()) {
         val clipped = if (payload.size > 125) payload.copyOf(125) else payload
-        sendRawFrame(Ec0WsCodec.OPCODE_PONG, clipped)
+        sendRawFrame(Ec0WsOpcode.PONG, clipped)
     }
 
     fun sendClose(
-        statusCode: Int = Ec0WsCodec.CLOSE_NORMAL,
+        statusCode: Int = CLOSE_NORMAL,
         reason: String = ""
     ) {
         if (closed.get()) return
-        val frame = Ec0WsCodec.encodeCloseFrame(
-            statusCode = statusCode,
-            reason = reason,
-            masked = isClientSide,
-            maskKey = nextMaskKeyIfClient()
-        )
+        val reasonBytes = reason.toByteArray(StandardCharsets.UTF_8)
+        val payload = ByteArray(2 + reasonBytes.size)
+        payload[0] = ((statusCode ushr 8) and 0xff).toByte()
+        payload[1] = (statusCode and 0xff).toByte()
+        reasonBytes.copyInto(payload, destinationOffset = 2)
+        val frame = encodeWsFrame(Ec0WsOpcode.CLOSE, payload)
         writeLock.withLock {
             runCatching {
                 output.write(frame)
@@ -477,22 +478,29 @@ class PinnedTlsWebSocketSession(
 
     private fun sendRawFrame(opcode: Int, payload: ByteArray) {
         check(!closed.get()) { "PinnedTlsWebSocketSession($sessionId) is closed" }
-        val encoded = Ec0WsCodec.encodeFrame(
-            opcode = opcode,
-            payload = payload,
-            fin = true,
-            masked = isClientSide,
-            maskKey = nextMaskKeyIfClient()
-        )
+        val encoded = encodeWsFrame(opcode, payload)
         writeLock.withLock {
             output.write(encoded)
             output.flush()
         }
     }
 
-    private fun nextMaskKeyIfClient(): ByteArray? {
-        if (!isClientSide) return null
-        return ByteArray(4).also { random.nextBytes(it) }
+    private fun encodeWsFrame(opcode: Int, payload: ByteArray): ByteArray {
+        return if (isClientSide) {
+            val mask = ByteArray(4).also { random.nextBytes(it) }
+            Ec0WsCodec.encodeClientFrame(
+                opcode = opcode,
+                payload = payload,
+                fin = true,
+                explicitMaskKey = mask
+            )
+        } else {
+            Ec0WsCodec.encodeServerFrame(
+                opcode = opcode,
+                payload = payload,
+                fin = true
+            )
+        }
     }
 
     internal fun readLoop(listener: PinnedTlsWebSocketListener) {
@@ -500,22 +508,22 @@ class PinnedTlsWebSocketSession(
         val fragBuffer = ByteArrayOutputStream()
         try {
             while (!closed.get() && !socket.isClosed) {
-                val frame = Ec0WsCodec.readFrame(input, maxFrameBytes) ?: break
+                val frame = Ec0WsCodec.readFrame(input, maxFrameBytes)
                 lastActivityAtMs = System.currentTimeMillis()
                 when (frame.opcode) {
-                    Ec0WsCodec.OPCODE_PING -> {
+                    Ec0WsOpcode.PING -> {
                         runCatching { sendPong(frame.payload) }
                     }
-                    Ec0WsCodec.OPCODE_PONG -> {
+                    Ec0WsOpcode.PONG -> {
                         listener.onPong(this, frame.payload)
                     }
-                    Ec0WsCodec.OPCODE_CLOSE -> {
+                    Ec0WsOpcode.CLOSE -> {
                         val (code, reason) = parseClosePayload(frame.payload)
                         runCatching { sendClose(code, reason) }
                         listener.onClosed(this, code, reason)
                         break
                     }
-                    Ec0WsCodec.OPCODE_TEXT, Ec0WsCodec.OPCODE_BINARY -> {
+                    Ec0WsOpcode.TEXT, Ec0WsOpcode.BINARY -> {
                         if (frame.fin) {
                             dispatchMessage(listener, frame.opcode, frame.payload)
                         } else {
@@ -524,7 +532,7 @@ class PinnedTlsWebSocketSession(
                             fragBuffer.write(frame.payload)
                         }
                     }
-                    Ec0WsCodec.OPCODE_CONTINUATION -> {
+                    Ec0WsOpcode.CONTINUATION -> {
                         if (fragOpcode != -1) {
                             if (fragBuffer.size() + frame.payload.size > maxFrameBytes) {
                                 throw IllegalArgumentException(
@@ -544,7 +552,7 @@ class PinnedTlsWebSocketSession(
                 }
             }
         } catch (_: EOFException) {
-            listener.onClosed(this, Ec0WsCodec.CLOSE_NORMAL, "EOF")
+            listener.onClosed(this, CLOSE_NORMAL, "EOF")
         } catch (t: Throwable) {
             if (!closed.get()) {
                 listener.onError(this, t)
@@ -559,28 +567,32 @@ class PinnedTlsWebSocketSession(
         opcode: Int,
         payload: ByteArray
     ) {
-        if (opcode == Ec0WsCodec.OPCODE_TEXT) {
+        if (opcode == Ec0WsOpcode.TEXT) {
             listener.onTextMessage(this, payload.toString(StandardCharsets.UTF_8))
-        } else if (opcode == Ec0WsCodec.OPCODE_BINARY) {
+        } else if (opcode == Ec0WsOpcode.BINARY) {
             listener.onBinaryMessage(this, payload)
         }
     }
 
     private fun parseClosePayload(payload: ByteArray): Pair<Int, String> {
-        if (payload.size < 2) return Ec0WsCodec.CLOSE_NORMAL to ""
+        if (payload.size < 2) return Pair(CLOSE_NORMAL, "")
         val code = ((payload[0].toInt() and 0xff) shl 8) or (payload[1].toInt() and 0xff)
         val reason = if (payload.size > 2) {
             payload.copyOfRange(2, payload.size).toString(StandardCharsets.UTF_8)
         } else {
             ""
         }
-        return code to reason
+        return Pair(code, reason)
     }
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             runCatching { socket.close() }
         }
+    }
+
+    companion object {
+        const val CLOSE_NORMAL: Int = 1000
     }
 }
 
@@ -736,7 +748,7 @@ class PinnedTlsWebSocketTransport(
             ?.groupValues
             ?.get(1)
             ?.trim()
-        val expectedAccept = Ec0WsCodec.computeAcceptKey(wsKey)
+        val expectedAccept = Ec0WsCodec.acceptKey(wsKey)
         require(acceptMatch == expectedAccept) {
             "Invalid Sec-WebSocket-Accept from $host:$port (expected $expectedAccept, got $acceptMatch)"
         }
@@ -825,7 +837,7 @@ class PinnedTlsWebSocketTransport(
                 return
             }
 
-            val acceptKey = Ec0WsCodec.computeAcceptKey(wsKey)
+            val acceptKey = Ec0WsCodec.acceptKey(wsKey)
             val upgradeResponse = buildString {
                 append("HTTP/1.1 101 Switching Protocols\r\n")
                 append("Upgrade: websocket\r\n")

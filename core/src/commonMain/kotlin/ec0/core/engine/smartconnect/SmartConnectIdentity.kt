@@ -77,7 +77,7 @@ object SmartConnectIdentity {
         val input = ByteArray(24)
         realDeviceIdRaw16.copyInto(input, destinationOffset = 0, startIndex = 0, endIndex = 16)
         actualSalt.copyInto(input, destinationOffset = 16, startIndex = 0, endIndex = 8)
-        val digest = Sha256.hash(input)
+        val digest = Sha256.digest(input)
         val nonceId = ByteArray(16)
         actualSalt.copyInto(nonceId, destinationOffset = 0, startIndex = 0, endIndex = 8)
         digest.copyInto(nonceId, destinationOffset = 8, startIndex = 0, endIndex = 8)
@@ -276,7 +276,7 @@ object SmartConnectIdentity {
         certFingerprintHex: String,
         invitation: String,
         timestampMs: Long
-    ): QrCodeMatrix.Matrix {
+    ): QrCodeMatrix {
         val payload = buildQrPayloadString(
             ips = ips,
             wsPort = wsPort,
@@ -286,7 +286,7 @@ object SmartConnectIdentity {
             invitation = invitation,
             timestampMs = timestampMs
         )
-        return QrCodeMatrix.encode(payload, QrCodeMatrix.EccLevel.L)
+        return QrCodeMatrix.encodeText(payload)
     }
 
     internal fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
