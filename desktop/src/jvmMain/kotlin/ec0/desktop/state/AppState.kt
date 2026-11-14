@@ -27,10 +27,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.nio.file.Path
 
 /** Root observable state for the whole window. */
 class AppState(
@@ -41,7 +45,6 @@ class AppState(
     val devices: StateFlow<List<UiDevice>> = _devices.asStateFlow()
 
     private val _transfers = MutableStateFlow<List<TransferItem>>(emptyList())
-    val transfers: StateFlow<List<TransferItem>> = _transfers.asStateFlow()
 
     private val _settings = MutableStateFlow(SettingsState())
     val settings: StateFlow<SettingsState> = _settings.asStateFlow()
@@ -55,10 +58,44 @@ class AppState(
     private val deviceSource: DeviceSource = deviceSource ?: RealDeviceSource(
         settingsProvider = { settings.value },
         synergyProbe = SynergyDiscoveryProbe(enabled = { settings.value.synergyProbeEnabled }),
+        announceDownload = true,
     )
+
+    /**
+     * T14 receiver: accepts incoming LocalSend v2 pushes while the app runs.
+     * Same fingerprint as the discovery announce (RealDeviceSource's
+     * per-process id) so peers see one consistent identity. Alias/PIN changes
+     * apply on app restart — the receiver config is built once.
+     */
+    private val receiver: LocalsendReceiverServer = LocalsendReceiverServer(
+        config = LocalsendReceiverConfig(
+            alias = _settings.value.alias,
+            deviceModel = _settings.value.deviceModel,
+            deviceType = _settings.value.deviceType,
+            requiredPin = _settings.value.pin.takeIf { _settings.value.requirePin },
+            destination = Path.of(
+                _settings.value.downloadDir.ifBlank {
+                    System.getProperty("user.home") + "/Downloads"
+                },
+            ),
+            acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL,
+            fingerprint = RealDeviceSource.OWN_FINGERPRINT,
+        ),
+    )
+
+    /** Combined queue: outgoing sends + incoming receiver transfers. */
+    val transfers: StateFlow<List<TransferItem>> =
+        combine(_transfers, receiver.transferQueue) { outgoing, incoming -> outgoing + incoming }
+            .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     private var scanJob: Job? = null
     private var tickerJob: Job? = null
+
+    init {
+        runCatching { receiver.start() }.onFailure {
+            System.err.println("ec0: LocalSend receiver failed to start: ${it.message}")
+        }
+    }
 
     /** Run one discovery sweep; devices are replaced on success. */
     fun startScan() {

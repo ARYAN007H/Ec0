@@ -32,6 +32,8 @@ class LocalsendUdpDiscovery(
     private val ownFingerprint: () -> String,
     /** Optional diagnostic sink (Android app passes Log.d; desktop may no-op). */
     private val debugLog: (String) -> Unit = {},
+    /// Whether THIS client hosts the HTTP receiver (announced honestly).
+    private val downloadProvider: () -> Boolean = { false },
 ) {
     fun buildAnnounce(): MulticastMessageV2 {
         val s = settingsProvider()
@@ -45,7 +47,7 @@ class LocalsendUdpDiscovery(
             // We do not host the HTTP server yet (server PR lands later) —
             // announce HTTP and download=false honestly.
             protocol = ProtocolType.HTTP,
-            download = false,
+            download = downloadProvider(),
         )
     }
 

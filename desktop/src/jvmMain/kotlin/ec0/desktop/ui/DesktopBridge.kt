@@ -22,7 +22,7 @@ class DesktopBridge(private val appState: AppState) : UiBridge {
     // Honest capability flags: the continuity service attaches via the tray
     // path; receiver + sync slices land in later PRs.
     override val capabilities: Capabilities = Capabilities(
-        canReceive = false,
+        canReceive = true,
         clipboardSync = false,
         notifications = false,
         photoSync = false,
