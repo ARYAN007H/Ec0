@@ -12,6 +12,9 @@ import ec0.core.localsend.client.PinRequiredException
 import ec0.core.localsend.client.RecipientDeclinedException
 import ec0.core.localsend.client.TooManyAttemptsException
 import ec0.core.localsend.client.UploadCancelledException
+import ec0.desktop.localsend.AcceptPolicy
+import ec0.desktop.localsend.LocalsendReceiverConfig
+import ec0.desktop.localsend.LocalsendReceiverServer
 import ec0.ui.models.DeviceSource
 import ec0.ui.models.DemoDeviceSource
 import ec0.ui.models.SettingsState
