@@ -95,36 +95,6 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
     private var scanJob: Job? = null
     private val cancelled = mutableSetOf<String>()
 
-    /**
-     * Android receiver (T14 contract over Ktor CIO). Destination: the app's
-     * external files dir (MediaStore public-Downloads integration is a later
-     * slice). Fingerprint matches the discovery announce.
-     */
-    private val receiver = LocalsendReceiverKtor(
-        config = LocalsendReceiverConfig(
-            alias = _settings.value.alias,
-            deviceModel = _settings.value.deviceModel,
-            deviceType = _settings.value.deviceType,
-            requiredPin = _settings.value.pin.takeIf { _settings.value.requirePin },
-            destination = java.nio.file.Path.of(
-                (context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
-                    ?: context.filesDir).absolutePath,
-            ),
-            acceptPolicy = ec0.core.localsend.server.AcceptPolicy.ASK,
-            decide = decideCallback,
-            fingerprint = OWN_FINGERPRINT,
-        ),
-    )
-
-    /** Combined queue: outgoing sends + incoming receiver transfers. */
-    override val transfers: StateFlow<List<TransferItem>> =
-        combine(_transfers, receiver.transferQueue) { outgoing, incoming -> outgoing + incoming }
-            .stateIn(scope, SharingStarted.Eagerly, emptyList())
-
-    /** Incoming transfer awaiting the user's decision (shared-UI dialog). */
-    private val _incomingRequest = MutableStateFlow<ec0.ui.models.IncomingRequest?>(null)
-    override val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = _incomingRequest.asStateFlow()
-
     private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, kotlinx.coroutines.CompletableDeferred<ReceiverAcceptance>>? = null
 
     private val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
@@ -160,6 +130,38 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
     override fun declineIncoming() {
         pendingRequestRef?.second?.complete(ReceiverAcceptance.DECLINE)
     }
+
+    /**
+     * Android receiver (T14 contract over Ktor CIO). Destination: the app's
+     * external files dir (MediaStore public-Downloads integration is a later
+     * slice). Fingerprint matches the discovery announce.
+     */
+    private val receiver = LocalsendReceiverKtor(
+        config = LocalsendReceiverConfig(
+            alias = _settings.value.alias,
+            deviceModel = _settings.value.deviceModel,
+            deviceType = _settings.value.deviceType,
+            requiredPin = _settings.value.pin.takeIf { _settings.value.requirePin },
+            destination = java.nio.file.Path.of(
+                (context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir).absolutePath,
+            ),
+            acceptPolicy = ec0.core.localsend.server.AcceptPolicy.ASK,
+            fingerprint = OWN_FINGERPRINT,
+        ),
+        decide = decideCallback,
+    )
+
+    /** Combined queue: outgoing sends + incoming receiver transfers. */
+    override val transfers: StateFlow<List<TransferItem>> =
+        combine(_transfers, receiver.transferQueue) { outgoing, incoming -> outgoing + incoming }
+            .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Incoming transfer awaiting the user's decision (shared-UI dialog). */
+    private val _incomingRequest = MutableStateFlow<ec0.ui.models.IncomingRequest?>(null)
+    override val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = _incomingRequest.asStateFlow()
+
+
 
     /**
      * Android filters multicast at the Wi-Fi driver — a held MulticastLock is
