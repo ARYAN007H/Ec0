@@ -106,10 +106,13 @@ class IncomingSessionStore {
     private val _queue = MutableStateFlow<List<TransferItem>>(emptyList())
     val transferQueue: StateFlow<List<TransferItem>> = _queue.asStateFlow()
 
-    /** PIN failure counter per source IP (reference: LruCache<IpAddr, u32>, cap 200). */
-    private val pinFailures = object : LinkedHashMap<String, Int>(0, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>): Boolean = size > 200
-    }
+    /**
+     * PIN failure counter per source IP (reference: LruCache<IpAddr, u32>, cap 200).
+     * NOTE: no anonymous LinkedHashMap subclass here — K2 2.1.10's backend
+     * IR-crashes on `object : LinkedHashMap { override removeEldestEntry }`
+     * under enhanced-nullability (core consumes :ui). Manual eviction instead.
+     */
+    private val pinFailures = LinkedHashMap<String, Int>()
 
     /** Accepted download sessions: sessionId → (clientIp, fileIds). Created only by PIN-gated prepare-download. */
     private val downloadSessions = mutableMapOf<String, Pair<String, Set<String>>>()
@@ -119,6 +122,9 @@ class IncomingSessionStore {
 
     @Synchronized
     fun recordPinFailure(ip: String) {
+        if (pinFailures.size >= 200 && ip !in pinFailures) {
+            pinFailures.remove(pinFailures.keys.first())
+        }
         pinFailures[ip] = (pinFailures[ip] ?: 0) + 1
     }
 
