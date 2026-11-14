@@ -96,8 +96,13 @@ class AppState(
 
     init {
         runCatching { receiver.start() }.onFailure {
-            System.err.println("ec0: LocalSend receiver failed to start: ${it.message}")
+            // TEMP diagnostic: the deb launcher swallows stderr, so write the
+            // failure where a user/dev can actually see it.
+            java.io.File("/tmp/ec0-receiver-error.txt").writeText(it.stackTraceToString())
         }
+        java.io.File("/tmp/ec0-receiver-status.txt").writeText(
+            "started=${receiver.boundPort != null} boundPort=${receiver.boundPort} at=${System.currentTimeMillis()}",
+        )
     }
 
     /** Run one discovery sweep; devices are replaced on success. */
