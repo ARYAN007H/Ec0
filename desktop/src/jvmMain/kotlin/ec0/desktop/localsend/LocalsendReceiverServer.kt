@@ -270,10 +270,17 @@ class LocalsendReceiverServer(
             var written = 0L
             var overflowed = false
             exchange.requestBody.use { input ->
-                java.security.DigestOutputStream(
-                    Files.newOutputStream(target, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE),
-                    digest,
-                ).use { output ->
+                val raw = Files.newOutputStream(
+                    target,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE,
+                )
+                // Hash incrementally while receiving — never read the file back
+                // whole into memory (upstream save.rs:178-198). Plain stream
+                // when there is nothing to verify.
+                val output = if (digest != null) java.security.DigestOutputStream(raw, digest) else raw
+                output.use {
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         val read = input.read(buffer)
