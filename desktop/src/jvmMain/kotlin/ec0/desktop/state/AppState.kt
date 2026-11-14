@@ -5,6 +5,7 @@ import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
+import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.client.RealDeviceSource
 import ec0.core.localsend.client.SynergyDiscoveryProbe
 import ec0.core.localsend.client.LocalsendHttp
@@ -81,15 +82,15 @@ class AppState(
     val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = _incomingRequest.asStateFlow()
 
     /** The raw request + decision handle behind the currently-shown dialog. */
-    private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, CompletableDeferred<LocalsendReceiverServer.Acceptance>>? = null
+    private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, CompletableDeferred<ReceiverAcceptance>>? = null
 
-    private val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> LocalsendReceiverServer.Acceptance =
+    private val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
         { request, _ ->
             val fingerprint = request.info.fingerprint
             if (fingerprint in _settings.value.trustedFingerprints) {
-                LocalsendReceiverServer.Acceptance.ACCEPT(request.files.keys)
+                ReceiverAcceptance.ACCEPT(request.files.keys)
             } else {
-                val decision = CompletableDeferred<LocalsendReceiverServer.Acceptance>()
+                val decision = CompletableDeferred<ReceiverAcceptance>()
                 pendingRequestRef = request to decision
                 _incomingRequest.value = ec0.ui.models.IncomingRequest(
                     senderAlias = request.info.alias,
@@ -116,13 +117,13 @@ class AppState(
                     s.copy(trustedFingerprints = s.trustedFingerprints + request.info.fingerprint)
                 }
             }
-            decision.complete(LocalsendReceiverServer.Acceptance.ACCEPT(request.files.keys))
+            decision.complete(ReceiverAcceptance.ACCEPT(request.files.keys))
         }
     }
 
     /** Decline the pending incoming transfer (sender gets 403). */
     fun declineIncoming() {
-        pendingRequestRef?.second?.complete(LocalsendReceiverServer.Acceptance.DECLINE)
+        pendingRequestRef?.second?.complete(ReceiverAcceptance.DECLINE)
     }
 
     private val receiver: LocalsendReceiverServer = LocalsendReceiverServer(

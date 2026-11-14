@@ -26,6 +26,19 @@ enum class AcceptPolicy {
     ASK,
 }
 
+/**
+ * The three prepare-upload outcomes (reference server/v2.rs):
+ * DECLINE → 403, ACCEPT(empty) → 204 no-content, ACCEPT(non-empty) → 200.
+ * Shared by the desktop (com.sun.net.httpserver) and Android (Ktor) receivers.
+ */
+sealed interface ReceiverAcceptance {
+    /** Explicit decline by the recipient → 403. */
+    data object DECLINE : ReceiverAcceptance
+
+    /** Acceptance decision — an empty set means "accept nothing" → 204. */
+    data class ACCEPT(val fileIds: Set<String>) : ReceiverAcceptance
+}
+
 data class LocalsendReceiverConfig(
     val port: Int = LocalsendV2.DEFAULT_SERVER_PORT,
     val alias: String = "ec0",

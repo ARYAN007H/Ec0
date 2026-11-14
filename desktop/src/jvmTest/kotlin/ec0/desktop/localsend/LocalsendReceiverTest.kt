@@ -16,6 +16,7 @@ import ec0.core.localsend.api.LocalsendV2Route
 import ec0.core.localsend.dto.MulticastMessageV2
 import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
+import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.DeviceType
@@ -38,7 +39,7 @@ class LocalsendReceiverTest {
     private fun receiver(
         acceptPolicy: AcceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL,
         requiredPin: String? = null,
-        decide: (suspend (PrepareUploadRequestDtoV2, String) -> LocalsendReceiverServer.Acceptance)? = null,
+        decide: (suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance)? = null,
         offeredFiles: Map<String, java.nio.file.Path> = emptyMap(),
         onShow: () -> Unit = {},
     ): LocalsendReceiverServer {
@@ -57,7 +58,7 @@ class LocalsendReceiverTest {
         return LocalsendReceiverServer(
             config = config,
             store = store,
-            decide = decide ?: { _, _ -> LocalsendReceiverServer.Acceptance.DECLINE },
+            decide = decide ?: { _, _ -> ReceiverAcceptance.DECLINE },
             onShow = onShow,
         )
     }
@@ -145,7 +146,7 @@ class LocalsendReceiverTest {
 
         val acceptNothing = receiver(
             acceptPolicy = AcceptPolicy.ASK,
-            decide = { _, _ -> LocalsendReceiverServer.Acceptance.ACCEPT(emptySet()) },
+            decide = { _, _ -> ReceiverAcceptance.ACCEPT(emptySet()) },
         )
         val port2 = start(acceptNothing)
         assertEquals(204, post(port2, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).statusCode())

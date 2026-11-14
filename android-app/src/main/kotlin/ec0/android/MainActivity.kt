@@ -24,7 +24,11 @@ import ec0.core.localsend.LocalsendV2
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.client.LocalsendHttp
 import ec0.core.localsend.client.LocalsendUdpDiscovery
+import ec0.core.localsend.server.LocalsendReceiverConfig
+import ec0.core.localsend.server.LocalsendReceiverKtor
+import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.dto.FileDto
+import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.ui.Ec0App
 import ec0.ui.models.Capabilities
@@ -44,6 +48,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -73,14 +80,12 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
     override val devices: StateFlow<List<UiDevice>> = _devices.asStateFlow()
 
     private val _transfers = MutableStateFlow<List<TransferItem>>(emptyList())
-    override val transfers: StateFlow<List<TransferItem>> = _transfers.asStateFlow()
 
     private val _scanning = MutableStateFlow(false)
     override val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
-    // Honest capabilities: no receiver/service on the phone yet.
     override val capabilities: Capabilities = Capabilities(
-        canReceive = false,
+        canReceive = true, // Ktor receiver below
         clipboardSync = false,
         notifications = false,
         photoSync = false,
@@ -89,6 +94,72 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
 
     private var scanJob: Job? = null
     private val cancelled = mutableSetOf<String>()
+
+    /**
+     * Android receiver (T14 contract over Ktor CIO). Destination: the app's
+     * external files dir (MediaStore public-Downloads integration is a later
+     * slice). Fingerprint matches the discovery announce.
+     */
+    private val receiver = LocalsendReceiverKtor(
+        config = LocalsendReceiverConfig(
+            alias = _settings.value.alias,
+            deviceModel = _settings.value.deviceModel,
+            deviceType = _settings.value.deviceType,
+            requiredPin = _settings.value.pin.takeIf { _settings.value.requirePin },
+            destination = java.nio.file.Path.of(
+                (context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir).absolutePath,
+            ),
+            acceptPolicy = ec0.core.localsend.server.AcceptPolicy.ASK,
+            decide = decideCallback,
+            fingerprint = OWN_FINGERPRINT,
+        ),
+    )
+
+    /** Combined queue: outgoing sends + incoming receiver transfers. */
+    override val transfers: StateFlow<List<TransferItem>> =
+        combine(_transfers, receiver.transferQueue) { outgoing, incoming -> outgoing + incoming }
+            .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Incoming transfer awaiting the user's decision (shared-UI dialog). */
+    private val _incomingRequest = MutableStateFlow<ec0.ui.models.IncomingRequest?>(null)
+    override val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = _incomingRequest.asStateFlow()
+
+    private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, kotlinx.coroutines.CompletableDeferred<ReceiverAcceptance>>? = null
+
+    private val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
+        { request, _ ->
+            val fingerprint = request.info.fingerprint
+            if (fingerprint in _settings.value.trustedFingerprints) {
+                ReceiverAcceptance.ACCEPT(request.files.keys)
+            } else {
+                val decision = kotlinx.coroutines.CompletableDeferred<ReceiverAcceptance>()
+                pendingRequestRef = request to decision
+                _incomingRequest.value = ec0.ui.models.IncomingRequest(
+                    senderAlias = request.info.alias,
+                    senderFingerprint = fingerprint,
+                    senderIp = "",
+                    files = request.files.values.map { ec0.ui.models.IncomingFileInfo(it.fileName, it.size) },
+                )
+                try {
+                    decision.await()
+                } finally {
+                    _incomingRequest.value = null
+                    pendingRequestRef = null
+                }
+            }
+        }
+
+    override fun acceptIncoming(trust: Boolean) {
+        pendingRequestRef?.let { (request, decision) ->
+            if (trust) updateSettings { s -> s.copy(trustedFingerprints = s.trustedFingerprints + request.info.fingerprint) }
+            decision.complete(ReceiverAcceptance.ACCEPT(request.files.keys))
+        }
+    }
+
+    override fun declineIncoming() {
+        pendingRequestRef?.second?.complete(ReceiverAcceptance.DECLINE)
+    }
 
     /**
      * Android filters multicast at the Wi-Fi driver — a held MulticastLock is
@@ -111,6 +182,9 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
                 runCatching { _devices.value = discovery.discoverSweep() }
                 kotlinx.coroutines.delay(discoveryPeriodMs)
             }
+        }
+        runCatching { receiver.start() }.onFailure {
+            android.util.Log.d("ec0", "receiver failed to start: ${it.message}")
         }
     }
 

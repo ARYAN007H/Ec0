@@ -32,6 +32,9 @@
  */
 package ec0.desktop.localsend
 
+/** Compat alias — the acceptance contract now lives in core (shared with Android). */
+typealias Acceptance = ReceiverAcceptance
+
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import ec0.core.localsend.LocalsendV2
@@ -47,6 +50,7 @@ import ec0.core.localsend.security.LocalsendSecurity
 import ec0.core.localsend.server.AcceptPolicy
 import ec0.core.localsend.server.IncomingFileStatus
 import ec0.core.localsend.server.IncomingSessionStatus
+import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.server.IncomingSessionStore
 import ec0.core.localsend.security.PinDecision
 import kotlinx.coroutines.flow.StateFlow
@@ -75,18 +79,6 @@ class LocalsendReceiverServer(
     private val onShow: () -> Unit = {},
     private val logger: Logger = Logger.getLogger("LocalsendReceiver"),
 ) {
-    /**
-     * Upstream distinguishes three prepare-upload outcomes (server/v2.rs):
-     * DECLINE → 403, ACCEPT(empty) → 204 no-content, ACCEPT(non-empty) → 200.
-     */
-    sealed interface Acceptance {
-        /** Explicit decline by the recipient → 403. */
-        data object DECLINE : Acceptance
-
-        /** Acceptance decision — an empty set means "accept nothing" → 204. */
-        data class ACCEPT(val fileIds: Set<String>) : Acceptance
-    }
-
     /** Transfer queue for the UI (shared TransferItem model). */
     val transferQueue: StateFlow<List<ec0.ui.models.TransferItem>> get() = store.transferQueue
 
