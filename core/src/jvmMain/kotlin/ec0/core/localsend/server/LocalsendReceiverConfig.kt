@@ -6,7 +6,7 @@
  * 7-route HTTP contract, and optionally pull offered files via the
  * prepare-download/download API.
  */
-package ec0.desktop.localsend
+package ec0.core.localsend.server
 
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.LocalsendV2

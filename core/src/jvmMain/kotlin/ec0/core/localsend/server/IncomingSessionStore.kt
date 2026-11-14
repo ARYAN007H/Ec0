@@ -15,7 +15,7 @@
  * normalize, cap 255 bytes, replace Windows-illegal chars and reserved
  * stems — an attacker-controlled name must never escape [destination].
  */
-package ec0.desktop.localsend
+package ec0.core.localsend.server
 
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.RegisterDtoV2
