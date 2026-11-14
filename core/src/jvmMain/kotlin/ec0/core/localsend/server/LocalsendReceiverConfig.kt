@@ -33,7 +33,7 @@ enum class AcceptPolicy {
  */
 sealed interface ReceiverAcceptance {
     /** Explicit decline by the recipient → 403. */
-    data object DECLINE : ReceiverAcceptance
+    object DECLINE : ReceiverAcceptance
 
     /** Acceptance decision — an empty set means "accept nothing" → 204. */
     data class ACCEPT(val fileIds: Set<String>) : ReceiverAcceptance
