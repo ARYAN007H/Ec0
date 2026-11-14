@@ -113,8 +113,8 @@ class LocalsendReceiverTest {
         val res = post(port, LocalsendV2Route.REGISTER.wirePath, LocalsendV2.json.encodeToString(RegisterDtoV2.serializer(), senderInfo()))
         assertEquals(200, res.statusCode())
         val json = LocalsendV2.json.parseToJsonElement(res.body()).jsonObject
-        assertEquals("ec0-desktop", json["alias"]!!.jsonPrimitive.content)
-        assertEquals("testfingerprint1234567890abcdef", json["fingerprint"]!!.jsonPrimitive.content)
+        assertEquals("A5x", json["alias"]!!.jsonPrimitive.content) // register echoes the REQUEST info
+        assertEquals("sender-fingerprint", json["fingerprint"]!!.jsonPrimitive.content)
         assertTrue(json.containsKey("download"))
         assertFalse(json.containsKey("port")) // RegisterResponseDtoV2 echoes no port/protocol
         assertFalse(json.containsKey("protocol"))
@@ -327,7 +327,9 @@ class LocalsendReceiverTest {
         var shown = false
         val receiver = receiver(onShow = { shown = true })
         val port = start(receiver)
-        assertEquals(200, post(port, "${LocalsendV2.API_PATH_V2}/show", "").statusCode())
+        assertEquals(403, post(port, "${LocalsendV2.API_PATH_V2}/show", "").statusCode()) // missing token
+        assertEquals(403, post(port, "${LocalsendV2.API_PATH_V2}/show", "", query = "token=wrong").statusCode())
+        assertEquals(200, post(port, "${LocalsendV2.API_PATH_V2}/show", "", query = "token=${receiver.showToken}").statusCode())
         assertTrue(shown)
         assertEquals(405, get(port, LocalsendV2Route.REGISTER.wirePath).statusCode()) // GET on POST route
         receiver.stop()
@@ -340,5 +342,91 @@ class LocalsendReceiverTest {
         assertTrue(message.download) // download=true once the server is up
         assertEquals("testfingerprint1234567890abcdef", message.fingerprint)
         assertEquals(ProtocolType.HTTP, message.protocol)
+    }
+
+    @Test
+    fun uploadFileNameTraversalIsSanitizedIntoDestination() {
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
+        val port = start(receiver)
+        try {
+            val evil = listOf(
+                FileDto(id = "e1", fileName = "../pwned.txt", size = 4, fileType = "text/plain"),
+                FileDto(id = "e2", fileName = "/tmp/pwned-abs.txt", size = 4, fileType = "text/plain"),
+            )
+            val prepared = LocalsendV2.json.parseToJsonElement(
+                post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(evil)).body(),
+            ).jsonObject
+            val sessionId = prepared["sessionId"]!!.jsonPrimitive.content
+            for ((fileId, name) in listOf("e1" to "pwned.txt", "e2" to "pwned-abs.txt")) {
+                val token = prepared["files"]!!.jsonObject[fileId]!!.jsonPrimitive.content
+                val res = http.send(
+                    HttpRequest.newBuilder()
+                        .uri(URI.create("http://localhost:$port${LocalsendV2Route.UPLOAD.wirePath}?sessionId=$sessionId&fileId=$fileId&token=$token"))
+                        .POST(HttpRequest.BodyPublishers.ofString("pwn!"))
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString(),
+                )
+                assertEquals(200, res.statusCode())
+                val target = receiver.config.destination.resolve(name)
+                assertEquals("pwn!", Files.readString(target), "$name must land INSIDE the destination, sanitized")
+            }
+            assertFalse(Files.exists(receiver.config.destination.resolve("..").resolve("pwned.txt")))
+            assertFalse(Files.exists(java.nio.file.Path.of("/tmp/pwned-abs.txt")))
+        } finally {
+            receiver.stop()
+        }
+    }
+
+    @Test
+    fun uploadOverflowingDeclaredSizeIsRejected() {
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
+        val port = start(receiver)
+        try {
+            val files = listOf(FileDto(id = "big", fileName = "big.bin", size = 4, fileType = "application/octet-stream"))
+            val prepared = LocalsendV2.json.parseToJsonElement(
+                post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(files)).body(),
+            ).jsonObject
+            val sessionId = prepared["sessionId"]!!.jsonPrimitive.content
+            val token = prepared["files"]!!.jsonObject["big"]!!.jsonPrimitive.content
+            val res = http.send(
+                HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:$port${LocalsendV2Route.UPLOAD.wirePath}?sessionId=$sessionId&fileId=big&token=$token"))
+                    .POST(HttpRequest.BodyPublishers.ofString("0123456789")) // 10 bytes > declared 4
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(400, res.statusCode())
+            assertFalse(Files.exists(receiver.config.destination.resolve("big.bin")))
+        } finally {
+            receiver.stop()
+        }
+    }
+
+    @Test
+    fun sessionSlotFreesAfterFailedFileSoOthersCanSend() {
+        val receiver = receiver(acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL)
+        val port = start(receiver)
+        try {
+            val files = listOf(FileDto(id = "f1", fileName = "notes.txt", size = 5, fileType = "text/plain", sha256 = "deadbeef"))
+            val prepared = LocalsendV2.json.parseToJsonElement(
+                post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(files)).body(),
+            ).jsonObject
+            val sessionId = prepared["sessionId"]!!.jsonPrimitive.content
+            val token = prepared["files"]!!.jsonObject["f1"]!!.jsonPrimitive.content
+            // 3 checksum failures exhaust the retry window (upstream MAX_UPLOAD_ATTEMPTS = 3)
+            repeat(3) {
+                assertEquals(422, http.send(
+                    HttpRequest.newBuilder()
+                        .uri(URI.create("http://localhost:$port${LocalsendV2Route.UPLOAD.wirePath}?sessionId=$sessionId&fileId=f1&token=$token"))
+                        .POST(HttpRequest.BodyPublishers.ofString("hello"))
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString(),
+                ).statusCode())
+            }
+            // slot freed despite the FAILED file — a new sender is NOT 409'd
+            assertEquals(200, post(port, LocalsendV2Route.PREPARE_UPLOAD.wirePath, prepareBody(sampleFiles())).statusCode())
+        } finally {
+            receiver.stop()
+        }
     }
 }
