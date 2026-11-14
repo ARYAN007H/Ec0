@@ -20,7 +20,6 @@ import ec0.core.localsend.server.AcceptPolicy
 import ec0.core.localsend.server.IncomingSessionStore
 import ec0.core.localsend.server.LocalsendReceiverConfig
 import ec0.core.localsend.server.ReceiverAcceptance
-import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.DeviceType
