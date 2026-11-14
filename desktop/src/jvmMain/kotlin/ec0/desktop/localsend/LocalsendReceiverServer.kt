@@ -64,8 +64,6 @@ import java.util.concurrent.Executors
 import java.util.logging.Level
 import java.util.logging.Logger
 
-/** Compat alias — the acceptance contract now lives in core (shared with Android). */
-typealias Acceptance = ReceiverAcceptance
 
 class LocalsendReceiverServer(
     val config: LocalsendReceiverConfig,
@@ -75,8 +73,8 @@ class LocalsendReceiverServer(
      * is configured. Upstream distinguishes three outcomes (server/v2.rs):
      * DECLINE → 403, ACCEPT(empty) → 204 no-content, ACCEPT(non-empty) → 200.
      */
-    private val decide: suspend (request: PrepareUploadRequestDtoV2, senderIp: String) -> Acceptance =
-        { _, _ -> Acceptance.DECLINE },
+    private val decide: suspend (request: PrepareUploadRequestDtoV2, senderIp: String) -> ReceiverAcceptance =
+        { _, _ -> ReceiverAcceptance.DECLINE },
     private val onShow: () -> Unit = {},
     private val logger: Logger = Logger.getLogger("LocalsendReceiver"),
 ) {
@@ -212,11 +210,11 @@ class LocalsendReceiverServer(
 
         val acceptance = kotlinx.coroutines.runBlocking { decideAccepted(request, senderIp) }
         val accepted: Set<String> = when (acceptance) {
-            Acceptance.DECLINE -> {
+            ReceiverAcceptance.DECLINE -> {
                 store.removeSession(sessionId)
                 return respond(exchange, 403, "Declined".toByteArray()) // distinct from wrong-PIN 401
             }
-            is Acceptance.ACCEPT -> acceptance.fileIds
+            is ReceiverAcceptance.ACCEPT -> acceptance.fileIds
         }
         if (accepted.isEmpty()) {
             // Accepted nothing → no transfer needed → 204 no-content (v2.rs:138)
@@ -229,9 +227,9 @@ class LocalsendReceiverServer(
         respondJson(exchange, 200, PrepareUploadResponseDtoV2.serializer(), PrepareUploadResponseDtoV2(sessionId = sessionId, files = files.mapValues { it.value.token }))
     }
 
-    private suspend fun decideAccepted(request: PrepareUploadRequestDtoV2, senderIp: String): Acceptance =
+    private suspend fun decideAccepted(request: PrepareUploadRequestDtoV2, senderIp: String): ReceiverAcceptance =
         when (config.acceptPolicy) {
-            AcceptPolicy.AUTO_ACCEPT_ALL -> Acceptance.ACCEPT(request.files.keys)
+            AcceptPolicy.AUTO_ACCEPT_ALL -> ReceiverAcceptance.ACCEPT(request.files.keys)
             AcceptPolicy.AUTO_DECLINE_ALL -> Acceptance.DECLINE
             AcceptPolicy.ASK -> decide(request, senderIp)
         }
