@@ -31,14 +31,14 @@ While `ec0.core.synergy` speaks O+ Connect (`com.oplus.linker`) to interoperate 
 
 | Dimension | O+ Synergy (`ec0.core.synergy`) | Motorola Smart Connect (`ec0.core.engine.smartconnect`) | Native `ec0-engine` (`ec0.core.engine`) |
 |---|---|---|---|
-| **Transport Trait** | Pinned-cert TLS (`server.cer`) + RFC 6455 WS over `[8080, 39888, 49888, 59888]` | Pinned-cert TLS (`fp` SHA-256 from QR) + RFC 6455 WS `wss://<ip>:<wsPort>/readyfor/` | Shared **`PinnedTlsWebSocketTransport`** hosting Smart Connect, O+ Synergy, and `Ec0Session` |
-| **Identity & Pairing** | Static OEM cert in APK | Self-signed RSA-2048 X.509 cert (`CN=SmartConnect`), QR `fp` SHA-256 pin + `svc 0` `initConnect` deriving 32-byte `secretKey` (`HKDF-SHA256`, `info="readyfor-tls-export-v1"`) | Per-device **Ed25519** identity keypair + ephemeral **X25519 ECDH** → **HKDF-SHA256** session keys + **TOFU** peer key store |
-| **Discovery & Wake** | Proprietary `pantaconnect` UDP probes | `_readyformdns._tcp.local.` mDNS + UDP `:53320` **AES-256-GCM sealed frames** (`aad = ver\|\|msgType\|\|deviceId15`) + BLE GATT wake (`0x5246` → `0x0722`) | `_ec0._tcp.local.` + `_readyformdns._tcp.local.` + `SealedDiscoveryFrameCodec` + SoftAP/P2P/USB-ADB Tier-0 fallback |
-| **Control Envelope** | `signature = 0x0FFFFFFF`, `noncestr = Random(timestamp)` | `{id, type, service, data}` (`data` = stringified JSON inner payload, `type` in `0..3`) | **`Ec0Envelope`** (`ec0-sig-v1` Ed25519 signature + `±300s` / 64-seq `ReplayWindow`) + **`SmartConnectEnvelopeCodec`** |
-| **Feature Gating** | `pc_connect_support=1` system prop | Peer **Capability Map (`svc 25`)** is the **sole gate** (`appstream: "1"` unlocked via `WIN_UNLOCKED` profile `clientType=1, osType="windows"`) | Wire-true `Capabilities` flags driven directly by peer `svc 25` / `Ec0Envelope` capabilities |
-| **File Exchange** | gRPC `FileService` | **FileStation (`svc 168`)** embedded **NFSv3-over-mTLS** (`MOUNT` + `NFS` v3 over single TLS stream) + **`fex` (`svc 2/17`)** HTTPS `:9886` | **Chunked + Resumable** `.ec0part` transfer (`256 KiB` chunks, per-chunk SHA-256) + Smart Connect `NfsV3TlsServer` & `FexHttpServer` |
-| **Media & Input** | Proprietary Mirage stream | **WebRTC (`svc 17`)** DTLS-SRTP H.264/Opus (`mirror` `1/15/16`, `webcam` `3`, `appstream` `15/17` + VDM, `extend` `202`) + **Cross Control (`svc 26`)** TCP protobuf | Daemon + supervised-helper architecture (`MirrorSessionCoordinator`, `WebcamSessionCoordinator`, `AppStreamCoordinator`, `CrossControlService`) |
-| **OEM Survival** | `/product/priv-app` exemption | Stock APK foreground service | `ColorOsResilience` state machine, bounded offline outbox (`N=64`), `MulticastLock`, SoftAP/USB-C fallback |
+| **Transport Trait** | Pinned-cert TLS (`server.cer`) + RFC 6455 WS over `[8080, 39888, 49888, 59888]` | Pinned-cert TLS (`fp` leaf DER SHA-256 from QR/invite) + RFC 6455 WS `wss://<ip>:<wsPort>/readyfor/` (`>= 16 MiB` frames) | Shared **`PinnedTlsWebSocketTransport`** hosting Smart Connect, O+ Synergy, and `Ec0Session` |
+| **Identity & Pairing** | Static OEM cert in APK | Self-signed RSA-2048 cert (`cert.der`), persistent `realDeviceId` (16B) + salted-hash `nonceId` (`salt8 \|\| SHA256(realId\|\|salt8)[0..8)`), non-empty UUID `sn`, 32B `perPairKey` exchanged in `svc 0 cmd 0/1` | Per-device **Ed25519** identity keypair + ephemeral **X25519 ECDH** → **HKDF-SHA256** session keys + **TOFU** peer key store |
+| **Discovery & Wake** | Proprietary `pantaconnect` UDP probes | `_readyformdns._tcp.local.` mDNS + `/readyfor/mdns` **AES-256-GCM sealed binary WS frames** (`[16B nonceId][1B type=1][12B IV][ct\|\|16B tag]`, 17B AAD, `key=perPairKey`) + **BLE GATT wake (`0x5246` → `0x0722`)** | `_ec0._tcp.local.` + `_readyformdns._tcp.local.` + `SealedDiscoveryFrameCodec` + BLE `0x5246` + SoftAP/USB-ADB Tier-0 fallback |
+| **Control Envelope** | `signature = 0x0FFFFFFF`, `noncestr = Random(timestamp)` | `{deviceId, srcServiceId, serviceId, msgId, data, ver:"3.0.0"}` (`TEXT` frames) | **`Ec0Envelope`** (`ec0-sig-v1` Ed25519 signature + `±300s` / 64-seq `ReplayWindow`) + **`SmartConnectEnvelope`** |
+| **Feature Gating** | `pc_connect_support=1` system prop | Peer **Capability Map (`svc 0 serviceVersions` + `svc 25 cmd 1 cap`)** with `os=6, type=4, scType=2, verCode=903013000` is the **sole gate** (`BoardUtils.isMotoDevice()` gates only LenovoID/NearbyDisplays) | Wire-true `Capabilities` flags driven directly by peer `svc 25` / `Ec0Envelope` capabilities |
+| **File Exchange** | gRPC `FileService` | **File Station (`svc 168 cmd 1001`)** tunnelled **NFSv3 over Mutual TLS (`dt2type=2` `SOCKET_SSL`, 64B file handles)** + **`fex` (`svc 2/17`)** TLS-pinned `/websocket` & `/download` | **Chunked + Resumable** `.ec0part` transfer (`256 KiB` chunks, per-chunk SHA-256) + `SmartConnectFileStationNfs` & `SmartConnectFexService` |
+| **Media & Input** | Proprietary Mirage stream | **WebRTC (Phone Offerer / PC Answerer)**: Mirror (`svc 1/15/16`), Webcam (`svc 3`), App Stream (`svc 15/17` + Android VDM API 34+), Cross Control (`svc 26 + svc 16`), Phone-as-Display (`svc 202` + binary LE SCTP input) | Daemon + supervised-helper architecture (`SmartConnectHelperSupervisor` over `LocalDaemonIpcServer` `watch`/`send`) |
+| **OEM Survival** | `/product/priv-app` exemption | Stock APK foreground service + BLE `0x5246` background wake | `ColorOsResilience` state machine, bounded offline outbox (`N=64`), `MulticastLock`, BLE `0x5246` GATT wake |
 
 ---
 
@@ -46,107 +46,100 @@ While `ec0.core.synergy` speaks O+ Connect (`com.oplus.linker`) to interoperate 
 
 Per `agentchat.md` rules, root `build.gradle.kts` and `gradle/libs.versions.toml` are owned by `agent-0` (all plugin declarations live strictly in root `build.gradle.kts`).
 - **Slices `S-A`, `S-B`, `S-C`, and `S-E` require ZERO new Gradle dependencies:**
-  - `TLSv1.2`/`TLSv1.3` with custom `X509ExtendedTrustManager` SHA-256 SPKI/cert pinning and hostname bypass (`SSLParameters.endpointIdentificationAlgorithm = ""`) is native in JDK 17 / Android API 34+ (`javax.net.ssl`).
-  - `AES/GCM/NoPadding` (`256-bit` key, `96-bit` IV, `128-bit` tag, `17-byte` AAD), `Ed25519`, `X25519`, `ChaCha20-Poly1305`, `HmacSHA256`, and `SHA-256` ship natively in `java.security` / `javax.crypto`.
-  - XDR (RFC 4506), ONC RPC v2 record marking (RFC 5531), MOUNT v3, and NFS v3 (RFC 1813) for FileStation (`svc 168`) are deterministic big-endian binary codecs implemented in pure Kotlin in `commonMain`/`jvmMain`.
-  - Protobuf wire format for Cross Control (`svc 26`) uses `:core`'s existing `protobuf-java` runtime (already on classpath via `:synergy-proto`).
-- **Slice `S-D` (WebRTC Media Plane):** Signaling (`svc 17` SDP/ICE JSON), `svc 1/15/16/3/202` orchestration, and `svc 26` Cross Control TCP protobuf require zero new Gradle dependencies; actual DTLS-SRTP H.264/Opus RTP media transport uses supervised external helpers (`gstreamer1.0` / `ffmpeg` / `v4l2loopback` on Linux desktop, or a lead-approved WebRTC KMP dependency requested via `agentchat.md` before `S-D` code).
+  - `TLSv1.2`/`TLSv1.3` with custom `LeafDerPinningTrustManager` (`SHA-256(chain[0].encoded)`, accepting minimal X.509 v1 phone certificates and bypassing PKIX/SAN checks) is native in JDK 17 / Android API 34+ (`javax.net.ssl`).
+  - `AES/GCM/NoPadding` (`256-bit` `perPairKey`, `96-bit` IV, `128-bit` tag, `17-byte` AAD), `RSA-2048`, `Ed25519`, `X25519`, `ChaCha20-Poly1305`, `HmacSHA256`, and `SHA-256` ship natively in `java.security` / `javax.crypto`.
+  - XDR (RFC 4506), ONC RPC v2 record marking (RFC 5531), MOUNT v3, and NFS v3 (RFC 1813) with 64-byte file handles and Lenovo procedures `22`/`23`/`27` for File Station (`svc 168`) are deterministic big-endian binary codecs implemented in pure Kotlin in `commonMain`/`jvmMain`.
+- **Slice `S-D` (WebRTC Media Plane & Supervised Helpers):** Control-plane signalling (`svc 1/3/15/16/17/26/202`), SDP H.264 answer trimming, and `svc 202` binary little-endian SCTP input parsing require zero new Gradle dependencies; media decoding/capture runs in supervised helper processes (`gstreamer1.0` / `v4l2loopback` / PipeWire on Linux desktop; standard Android `MediaCodec` + `VirtualDeviceManager` / `MediaProjection` on `:android-app`).
 
 ---
 
 ## 4. Target Package & File Layout
 
-All files live strictly inside our reserved paths:
+All files live strictly inside our reserved paths (matching `docs/engine/smart-connect-design.md` §4.1):
 
 ```text
 docs/engine/
-├── roadmap.md                         # Master architecture & slice roadmap (Slices 0–11 + T16 S-A..S-E)
-├── design.md                          # Slice 0: Native ec0-engine wire format, crypto spec, threat model
-├── coloros-resilience.md              # Slice 7: Reconnect state machine, offline queue, Android service contract
-├── system-integration-and-camdroid.md # Slice 8: CamDroid v1/v2 wire spec + Linux/Android bridges
-└── smart-connect-design.md            # T16: Normative Motorola Smart Connect parity design (S-A..S-E)
+├── roadmap.md                            # Master architecture & slice roadmap (Slices 0–11 + T16 S-A..S-E)
+├── design.md                             # Slice 0: Native ec0-engine wire format, crypto spec, threat model
+├── coloros-resilience.md                 # Slice 7: Reconnect state machine, offline queue, Android service contract
+├── system-integration-and-camdroid.md    # Slice 8: CamDroid v1/v2 wire spec + Linux/Android bridges
+└── smart-connect-design.md               # T16: Normative Motorola Smart Connect parity design (S-A..S-E)
 
 core/src/commonMain/kotlin/ec0/core/engine/
-├── EngineConstants.kt                 # Protocol version, service names, port walks
-├── EngineIdentity.kt                  # DeviceId, PeerInfo, Capabilities, PairingQrPayload
-├── CanonicalJson.kt                   # Deterministic RFC 8785 subset JSON canonicalizer
-├── EnvelopeModel.kt                   # Ec0Envelope, Ec0Cmd, Ec0Info, ReplayWindow
-├── HkdfSha256.kt                      # Pure-Kotlin RFC 5869 HKDF-SHA256 + rekey/bulk/readyfor derivation
-├── MdnsCodec.kt                       # Pure-Kotlin RFC 6762/6763 DNS codec (_ec0._tcp, _camdroid._tcp, _readyformdns._tcp)
-├── QrCodeMatrix.kt                    # Pure-Kotlin ISO/IEC 18004 QR Code Version 1–10 encoder
+├── EngineConstants.kt                    # Protocol version, service names, port walks
+├── EngineIdentity.kt                     # DeviceId, PeerInfo, Capabilities, PairingQrPayload
+├── CanonicalJson.kt                      # Deterministic RFC 8785 subset JSON canonicalizer
+├── EnvelopeModel.kt                      # Ec0Envelope, Ec0Cmd, Ec0Info, ReplayWindow
+├── HkdfSha256.kt                         # Pure-Kotlin RFC 5869 HKDF-SHA256 + rekey/bulk subkey derivation
+├── MdnsCodec.kt                          # Pure-Kotlin RFC 6762/6763 DNS codec (_ec0._tcp, _camdroid._tcp, _readyformdns._tcp)
+├── QrCodeMatrix.kt                       # Pure-Kotlin ISO/IEC 18004 QR Code Version 1–10 encoder
 ├── protocol/
-│   ├── ClipboardModels.kt             # ClipboardPayload, dedupe hash, privacy flags
-│   ├── FileTransferModels.kt          # FileOffer, FileAccept, FileChunkHeader, ResumeManifest, FileCancel
-│   ├── InputModels.kt                 # KeyEventFrame, PointerEventFrame, TouchpadDeltaFrame
-│   ├── NotificationModels.kt          # NotificationEvent (POST, DISMISS), NotificationReply
-│   ├── PresenceModels.kt              # PresenceBeacon (batteryPct, charging, screenOn, capabilities)
-│   ├── CameraModels.kt                # CamDroid v1/v2 codecs & 14 studio control commands
-│   ├── UniversalControlModels.kt      # Screen-edge barrier & cursor handoff models
-│   ├── HotspotAndTelephonyModels.kt   # Instant hotspot & call state/action models
-│   ├── MediaControlModels.kt          # MPRIS2 <-> Android MediaSession models
-│   └── HandoffAndProximityModels.kt   # App/URL handoff, 2FA OTP extractor, proximity lock, Continuity sketch
-└── smartconnect/                      # [T16 S-A..S-E] Smart Connect wire models & codecs (commonMain)
-    ├── SmartConnectConstants.kt       # Service IDs (0,1,2,3,5,9,13,15,16,17,22,25,26,37,100,168,202,204), ports, BLE UUIDs
-    ├── SmartConnectEnvelope.kt        # {id, type, service, data} double-encoded JSON envelope codec
-    ├── SmartConnectQrModels.kt        # Pairing QR JSON (ips, wsPort, fp, sn, net, ble, p2p, v, f) & BLE wake payload
-    ├── SealedDiscoveryFrameCodec.kt   # UDP :53320 AES-256-GCM sealed frame header/AAD/payload codec
-    ├── CapabilityMapModels.kt         # svc 25 CapabilityMap wire truth, ClientProfile (LINUX_HONEST vs WIN_UNLOCKED)
-    ├── DeviceStatusModels.kt          # svc 1/25 battery, charging, thermal, storage, tiles, remote launch
-    ├── SmartConnectClipboardModels.kt # svc 9 actions 0..2, 13..17
-    ├── SmartConnectNotifModels.kt     # svc 5/37 notifications, inline reply, WebP icon framing, svc 22 PC lock
-    ├── NfsV3XdrCodec.kt               # svc 168 RFC 5531 ONC RPC + MOUNT v3 + NFS v3 XDR codec
-    ├── FexProtocolModels.kt           # svc 2/17 fex file notification & HTTP :9886 range-pull models
-    ├── WebRtcSignalingModels.kt       # svc 17 SDP offer/answer/ICE, svc 1/15/16 mirror/appstream, svc 3 webcam, svc 202 extend
-    ├── CrossControlProtoCodec.kt      # svc 26 TCP protobuf pointer/scroll/key/edge/drag-drop codec
-    └── SmsAndHotspotModels.kt         # svc 204/100 SMS sync/send & svc 13 AutoHotspot credentials
+│   ├── ClipboardModels.kt                # ClipboardPayload, dedupe hash, privacy flags
+│   ├── FileTransferModels.kt             # FileOffer, FileAccept, FileChunkHeader, ResumeManifest, FileCancel
+│   ├── InputModels.kt                    # KeyEventFrame, PointerEventFrame, TouchpadDeltaFrame
+│   ├── NotificationModels.kt             # NotificationEvent (POST, DISMISS), NotificationReply
+│   ├── PresenceModels.kt                 # PresenceBeacon (batteryPct, charging, screenOn, capabilities)
+│   ├── CameraModels.kt                   # CamDroid v1/v2 codecs & 14 studio control commands
+│   ├── UniversalControlModels.kt         # Screen-edge barrier & cursor handoff models
+│   ├── HotspotAndTelephonyModels.kt      # Instant hotspot & call state/action models
+│   ├── MediaControlModels.kt             # MPRIS2 <-> Android MediaSession models
+│   └── HandoffAndProximityModels.kt      # App/URL handoff, 2FA OTP extractor, proximity lock, Continuity sketch
+└── smartconnect/                         # [T16 S-A..S-E] Smart Connect wire models & codecs (commonMain)
+    ├── SmartConnectConstants.kt          # Service IDs, version gates, cap-map bitmasks, baseline maps (S-A)
+    ├── SmartConnectEnvelope.kt           # Outer envelope + per-service payload codecs + JSON-string unwrapper (S-A)
+    ├── SmartConnectIdentity.kt           # realDeviceId, salted-hash nonceId codec, sn UUID guard, QR wsData (S-A)
+    └── protocol/
+        ├── SmartConnectHandshakeModels.kt # svc 0 Hello, VerifyReply, ExchangeKey, Disconnect, DeviceBean (S-A)
+        ├── SmartConnectStatusModels.kt    # svc 25 Status, CapMap, Wallpaper, DndState (S-A)
+        ├── SmartConnectClipNotifModels.kt # svc 9 NEGO/CONFIRM/UPDATE_NOTIFY/PULL; svc 5/37 NtfEvent/Reply; svc 22 (S-B)
+        ├── SmartConnectFileModels.kt      # svc 2 FileExSendData, fex frame parser; svc 168 StationData cmd 1001 (S-C)
+        ├── SmartConnectMediaModels.kt     # svc 1/15/16 Mirror/AppStream/Input; svc 3 Webcam; svc 26; svc 202 + SCTP input codec (S-D)
+        └── SmartConnectSmsHotspotModels.kt # svc 100 cmd 1018; svc 204 pId=110 SMS/Contacts; svc 13 Hotspot (S-E)
 
 core/src/jvmMain/kotlin/ec0/core/engine/
 ├── crypto/
-│   ├── Ed25519Identity.kt             # Ed25519 keygen, SPKI/PKCS8 conversion, sign/verify
-│   ├── X25519Handshake.kt             # Ephemeral X25519 ECDH + 4-message mutual auth transcript
-│   ├── AeadFrameCodec.kt              # ChaCha20-Poly1305 AEAD framing + epoch key rotation (FRAME_KEY_UPDATE)
-│   ├── PairingCoordinator.kt          # QR URI pairing, HMAC pairing_proof, TOFU PinStore
-│   ├── EnvelopeSigner.kt              # Canonical JSON signing & ReplayWindow enforcement
-│   └── PersistentEngineStore.kt       # EncryptedIdentityStore + PersistentPinStore (pinned_peers.json v2)
+│   ├── Ed25519Identity.kt                # Ed25519 keygen, SPKI/PKCS8 conversion, sign/verify
+│   ├── X25519Handshake.kt                # Ephemeral X25519 ECDH + 4-message mutual auth transcript
+│   ├── AeadFrameCodec.kt                 # ChaCha20-Poly1305 AEAD framing + epoch key rotation (FRAME_KEY_UPDATE)
+│   ├── PairingCoordinator.kt             # QR URI pairing, HMAC pairing_proof, TOFU PinStore
+│   ├── EnvelopeSigner.kt                 # Canonical JSON signing & ReplayWindow enforcement
+│   └── PersistentEngineStore.kt          # EncryptedIdentityStore + PersistentPinStore
 ├── discovery/
-│   ├── Ec0MdnsDiscovery.kt            # MulticastSocket 224.0.0.251:5353 (_ec0._tcp, _camdroid._tcp, _readyformdns._tcp)
-│   └── EndpointResolver.kt            # Tier-0 USB ADB -> QR -> mDNS -> cached IP -> SoftAP/P2P gateway fallback
+│   ├── Ec0MdnsDiscovery.kt               # MulticastSocket 224.0.0.251:5353 (_ec0._tcp, _camdroid._tcp, _readyformdns._tcp)
+│   └── EndpointResolver.kt               # Tier-0 USB ADB -> QR -> mDNS -> cached IP -> SoftAP/P2P gateway fallback
 ├── transport/
-│   ├── PinnedTlsWebSocketTransport.kt # [T16 S-A] Shared cert-pinned TLS + RFC 6455 WS trait (Smart Connect & O+ Synergy)
-│   ├── Ec0WsCodec.kt                  # Client + Server RFC 6455 HTTP upgrade & frame codec
-│   ├── Ec0Session.kt                  # Authenticated session mux
-│   ├── Ec0Client.kt                   # Outbound connector with exponential backoff + jitter
-│   └── Ec0Server.kt                   # Inbound listener
+│   ├── PinnedTlsWebSocketTransport.kt    # [T16 S-A] Shared trait (Smart Connect + O+ Synergy), LeafDerPinningTrustManager
+│   ├── SealedDiscoveryFrameCodec.kt      # [T16 S-A] AES-256-GCM 17B-AAD binary discovery frame codec + golden vector
+│   ├── Ec0WsCodec.kt                     # Client + Server RFC 6455 HTTP upgrade & frame codec
+│   ├── Ec0Session.kt                     # Authenticated session mux
+│   ├── Ec0Client.kt                      # Outbound connector with exponential backoff + jitter
+│   └── Ec0Server.kt                      # Inbound listener
 ├── services/
-│   ├── ClipboardService.kt            # Native + Smart Connect svc 9 bidirectional clipboard sync
-│   ├── FileTransferService.kt         # Native .ec0part resumable transfer + Smart Connect fex/NFS integration
-│   ├── InputShareService.kt           # Native input share + Smart Connect svc 26 CrossControlService integration
-│   ├── NotificationRelayService.kt    # Native + Smart Connect svc 5/37 notification relay & inline reply
-│   ├── PresenceService.kt             # Native presence + Smart Connect svc 1/25 DeviceStatusService
-│   ├── ScrcpyMirrorCoordinator.kt     # External scrcpy coordinator
-│   ├── ContinuityCameraCoordinator.kt # CamDroid v1/v2 + Smart Connect svc 3 WebcamSessionCoordinator
-│   ├── ContinuityExpansionServices.kt # Universal Control, Hotspot/Telephony, MPRIS2 MediaSession
-│   └── Slice11ContinuityServices.kt   # USB ADB tunnel, PipeWire VirtualMic, Handoff, Proximity Lock, Loopback CLI IPC
-├── smartconnect/                      # [T16 S-A..S-E] Smart Connect runtime services & helpers (jvmMain)
-│   ├── SmartConnectPairingService.kt  # QR generator/scanner, svc 0 initConnect, HKDF secretKey export, UDP :53320 discovery
-│   ├── SmartConnectCapabilityService.kt # svc 25 exchange, peer cap-map gate evaluation, UI Capabilities projection
-│   ├── SmartConnectLockService.kt     # svc 22 PC lock -> Linux loginctl lock-session
-│   ├── NfsV3TlsServer.kt              # svc 168 mTLS listener + user-space VirtualFsProvider + optional FUSE mount helper
-│   ├── FexHttpServer.kt               # svc 2/17 HTTPS :9886 range-enabled file staging server & pull client
-│   ├── MirrorSessionCoordinator.kt    # svc 1/15/16/17 RTP/WebRTC mirror session + supervised helper lifecycle
-│   ├── WebcamSessionCoordinator.kt    # svc 3/17 WebRTC webcam sink -> /dev/video10 v4l2loopback
-│   ├── AppStreamCoordinator.kt        # svc 15/17 per-app virtual display stream + Android VDM VirtualDisplay host
-│   ├── CrossControlService.kt         # svc 26 TCP protobuf input server/client + screen-edge cursor transition
-│   ├── VirtualDisplayExtendCoordinator.kt # svc 202 virtual monitor -> Wayland/X11 headless output + WebRTC sink
-│   ├── SmsRelayService.kt             # svc 204/100 SMS thread sync, outbound send, MMS notice
-│   └── SmartConnectHotspotService.kt  # svc 13 AutoHotspot request -> Linux nmcli Wi-Fi join
+│   ├── ClipboardService.kt               # Native + Smart Connect svc 9 bidirectional clipboard sync
+│   ├── FileTransferService.kt            # Native .ec0part resumable transfer + Smart Connect fex/NFS integration
+│   ├── InputShareService.kt              # Native input share + Smart Connect svc 16/26 integration
+│   ├── NotificationRelayService.kt       # Native + Smart Connect svc 5/37 notification relay & inline reply
+│   ├── PresenceService.kt                # Native presence + Smart Connect svc 25 status integration
+│   ├── ScrcpyMirrorCoordinator.kt        # External scrcpy coordinator
+│   ├── ContinuityCameraCoordinator.kt    # CamDroid v1/v2 + Smart Connect svc 3 webcam integration
+│   ├── ContinuityExpansionServices.kt    # Universal Control, Hotspot/Telephony, MPRIS2 MediaSession
+│   └── Slice11ContinuityServices.kt      # USB ADB tunnel, PipeWire VirtualMic, Handoff, Proximity Lock, Loopback CLI IPC
+├── smartconnect/                         # [T16 S-A..S-E] Smart Connect runtime coordinators & helpers (jvmMain)
+│   ├── SmartConnectNodeCoordinator.kt    # Session loop, Relay (fromPhone/toPhone/service -1), CapRegistry (S-A)
+│   ├── SmartConnectDiscoveryAndBle.kt    # _readyformdns._tcp + /readyfor/mdns + BlueZ 0x5246 GATT wake (S-A)
+│   ├── SmartConnectControlServices.kt    # Inline handlers: svc 9 Clipboard, svc 5/37 Notifications, svc 22 PC Lock (S-B)
+│   ├── SmartConnectFexService.kt         # TLS-pinned fex HTTP/1.1 + /websocket pull/push + svc 17 icon cache (S-C)
+│   ├── SmartConnectFileStationNfs.kt     # svc 168 cmd 1001 SOCKET_SSL mTLS NFSv3 client & 64B-FH server (S-C)
+│   ├── SmartConnectHelperSupervisor.kt   # Daemon+Supervised-Helpers manager (flock, backoff, watch/send IPC) (S-D)
+│   ├── SmartConnectWebRtcHelpers.kt      # Mirror/AppStream host, Webcam sink, CrossControl edge, Display sender (S-D)
+│   └── SmartConnectSmsAndHotspot.kt      # svc 204/100 thread store & sender; svc 13 nmcli hotspot auto-join (S-E)
 ├── linux/
-│   ├── LinuxSystemBridge.kt           # Wayland/X11 clipboard, D-Bus notifications, pkexec v4l2 setup, CLI commands
+│   ├── LinuxSystemBridge.kt              # Wayland/X11 clipboard, D-Bus notifications, pkexec v4l2 setup, CLI commands
 │   ├── LinuxDesktopIntegrationGenerator.kt # Dolphin/Nautilus AirDrop menus & systemd user service
-│   └── LinuxInputInjectionBridge.kt   # Wayland ydotool & X11 xdotool discrete-argv input injection
+│   └── LinuxInputInjectionBridge.kt      # Wayland ydotool & X11 xdotool discrete-argv input injection
 ├── android/
-│   └── AndroidCompanionBridge.kt      # KMP foreground service runtime contract for :android-app
-└── Ec0EngineNode.kt                   # Unified facade + wire-true Capabilities projection for :desktop and :android-app
+│   └── AndroidCompanionBridge.kt         # KMP foreground service runtime contract for :android-app
+└── Ec0EngineNode.kt                      # Unified facade + wire-true Capabilities projection for :desktop and :android-app
 ```
 
 ---
@@ -183,113 +176,103 @@ Every slice lands with **100% deterministic unit tests** (RFC/NIST test vectors 
 
 ---
 
-#### Slice `S-A` — Shared `PinnedTlsWebSocketTransport`, Pairing/Discovery, `svc 25` Cap Map & Device Status (`First Live Pairing with Aryan's A5x`)
-**Goal:** Establish the shared cert-pinned TLS WebSocket transport trait, QR/mDNS/BLE/sealed-UDP discovery, `svc 0` pairing handshake, `svc 25` capability map negotiation, and `svc 1/25` device telemetry—enabling **immediate live pairing between `:desktop` and Aryan's OPPO A5x running stock Motorola Smart Connect (`09.0.4.005.0`)**.
+#### Slice `S-A` — Shared `PinnedTlsWebSocketTransport`, Pairing/Discovery, `svc 0` Handshake & `svc 25` Status/Cap-Map (`First Live Pairing with Aryan's A5x`)
+**Goal:** Establish the shared cert-pinned TLS WebSocket transport trait, QR/mDNS/BLE/sealed-WS discovery, 6-step `svc 0` pairing handshake, `svc 25` capability map registry, and device status telemetry—enabling **immediate live pairing between `:desktop` and Aryan's OPPO A5x (`CPH2733IN`) running stock Motorola Smart Connect (`09.0.4.005.0`)**.
 
 - **Deliverables (`core/**/ec0/core/engine/**`):**
-  - `commonMain/.../smartconnect/{SmartConnectConstants,SmartConnectEnvelope,SmartConnectQrModels,SealedDiscoveryFrameCodec,CapabilityMapModels,DeviceStatusModels}.kt`
-  - `jvmMain/.../transport/PinnedTlsWebSocketTransport.kt`
-  - `jvmMain/.../smartconnect/{SmartConnectPairingService,SmartConnectCapabilityService}.kt`
+  - `commonMain/.../smartconnect/{SmartConnectConstants,SmartConnectEnvelope,SmartConnectIdentity}.kt`
+  - `commonMain/.../smartconnect/protocol/{SmartConnectHandshakeModels,SmartConnectStatusModels}.kt`
+  - `jvmMain/.../transport/{PinnedTlsWebSocketTransport,SealedDiscoveryFrameCodec}.kt`
+  - `jvmMain/.../smartconnect/{SmartConnectNodeCoordinator,SmartConnectDiscoveryAndBle}.kt`
   - Updates to `MdnsCodec.kt` (`_readyformdns._tcp.local.` PTR/SRV/TXT/A extraction) and `Ec0EngineNode.kt` (wire-true `Capabilities` projection into `:ui`).
 - **Key Features:**
-  - **`PinnedTlsWebSocketTransport`:** Shared across Smart Connect (`wss://<ip>:<wsPort>/readyfor/`, subprotocol `"readyfor"`) and O+ Synergy (`wss://<ip>:<port>/`). Enforces constant-time SHA-256 leaf certificate / SPKI pinning against the QR `fp` digest (`PinVerificationMode.EXACT_CERT_SHA256`), disables DNS/IP SAN hostname verification (`endpointIdentificationAlgorithm = ""`), and supports optional mTLS client cert presentation for `svc 168`.
-  - **Discovery & Wake:**
-    - QR pairing payload generator & parser (`ips`, `wsPort`, `fp`, `sn`, `net`, `ble`, `p2p`, `v`, `f`).
-    - `_readyformdns._tcp.local.` mDNS discovery alongside `_ec0._tcp.local.`.
-    - `SealedDiscoveryFrameCodec` on UDP `:53320`: `[version=0x01][msgType: 1B][deviceId15: 15B ASCII][iv: 12B][ciphertext + 16B GCM tag]` encrypted with the per-pair 32-byte `secretKey` (`AAD = header[0..17]`).
-    - BLE GATT wake payload encoder (`0x5246` → characteristic `0x0722`, `[0x01, ip0, ip1, ip2, ip3, portHi, portLo]`).
-  - **`svc 0` Handshake & Key Export:** Exchanges `initConnect` / `connectRsp` (`protocolVersion: 3`, `verCode: 1500000`), exports 32-byte per-pair `secretKey` via `HKDF-SHA256(ikm, salt = clientId || serverId, info = "readyfor-tls-export-v1", len = 32)`, and persists the peer in `PersistentPinStore` v2.
-  - **`svc 25` Capability Map (Wire Truth) & Client Profile:** Parses peer capability map as the sole feature gate; supports `ClientProfile.LINUX_HONEST` (`clientType=5, osType="linux"`) and `ClientProfile.WIN_UNLOCKED` (`clientType=1, osType="windows"`, unlocking `appstream: "1"` on stock Moto APK) and projects wire-true `Capabilities` into `:ui`.
-  - **`svc 1` & `svc 25` Device Status & Tiles:** Battery %, charging state, thermal level, storage bytes, quick-action tiles, and `launchModule`.
+  - **`PinnedTlsWebSocketTransport` & `LeafDerPinningTrustManager`:** Shared across Smart Connect (`/readyfor/`, `/readyfor/mdns`, `maxFrameBytes = 20 MiB`) and O+ Synergy (`/`). Pins `SHA-256(leafCert.encoded)` via constant-time `MessageDigest.isEqual` while bypassing PKIX v3 / SAN validation so minimal X.509 v1 phone certs work seamlessly.
+  - **Identity & Privacy-Preserving `nonceId`:** Separates persistent 16-byte `realDeviceId` (`paired.json` key) from rotating 16-byte `nonceId = salt8 || SHA-256(realDeviceId || salt8)[0..8)` (`matchNonceIdToPairedPeer()`), and enforces a stable non-empty UUID `sn` so the phone's SQLite pairing table never hits an empty-`sn` primary-key collision.
+  - **`SealedDiscoveryFrameCodec` (`/readyfor/mdns` & BLE `0x0722`):** Encodes/decodes `[16B senderNonceId][1B frameType = 0x01][12B IV][AES-256-GCM ct || 16B tag]` with `17`-byte AAD (`bytes[0..17)`) under the 32-byte `perPairKey` (no KDF; strictly never emits `0x02` or `0x03`, which cause the phone to delete its pairing).
+  - **6-Step `svc 0` Handshake & `SmartConnectCapRegistry` (`svc 25`):**
+    - Generates `motorolardpconnection{"wsData":{cmd:1,...},"version":"3.0.0"}` QR code.
+    - Answers phone Hello (`svc 0 cmd 0/3`) with PC Verify Reply (`os=6, type=4, scType=2, verCode=903013000, verName="09.0.3.013.000"`, `key=perPairKeyB64`, `serviceVersions` without `rfaServiceVersions`), immediately emits `svc 25 cmd 1` tile `cap` map (`SmartConnectCapRegistry` replace-whole semantics), completes `svc 0 cmd 1` `EXCHANGE_KEY` with both `deviceId` and `realDeviceId` set to `<pcRealId>` (+ 2s unprompted fallback timer), and runs the 5s post-pair discovery refresh.
+  - **Discovery & BLE `0x5246` Wake:** Combines `_readyformdns._tcp.local.` mDNS, 30s TCP `ECONNREFUSED` background-presence probing, and BlueZ `0x5246` 20-byte `ServiceData` GATT Central wake (`0x0722` write → phone dials back in `~0.3 s`).
 - **Verification Gate:**
-  - Unit tests (`SmartConnectEnvelopeTest`, `SealedDiscoveryFrameCodecTest`, `PinnedTlsWebSocketTransportTest`, `CapabilityMapModelsTest`) green on CI.
-  - **Live Hardware Milestone:** `ec0` desktop pairs with Aryan's A5x (`CPH2733IN`) running stock Smart Connect over hotspot LAN and renders live battery/storage/cap-map telemetry in the shared `:ui` Sync screen.
+  - `SmartConnectIdentityAndDiscoveryTest` (pins salted-hash `nonceId` vector `EBESExQVFhcdZK3SpjiDZw==`, 54-byte `AES-256-GCM` `SealedDiscoveryFrame` golden vector `3c20b576a1c7f82af0...`, `sn` guard, 6-step `svc 0` handshake, and `SmartConnectCapRegistry` merge) green on CI.
+  - **Live Hardware Milestone:** `ec0` Desktop pairs with Aryan's A5x (`CPH2733IN`) running stock Smart Connect and lights up all feature tiles on the phone's device page.
 
 ---
 
-#### Slice `S-B` — Control-WS Services: Clipboard (`svc 9`), Notifications (`svc 5/37` + Inline Reply) & PC Lock (`svc 22`)
-**Goal:** Deliver all zero-extra-socket Smart Connect productivity features over the established `PinnedTlsWebSocketTransport` control plane.
+#### Slice `S-B` — Control-WS Services: Clipboard (`svc 9`), Notifications (`svc 5/37` + Quick Reply + Action Routing) & PC Lock (`svc 22`)
+**Goal:** Deliver all zero-extra-socket Smart Connect productivity features over the established `/readyfor/` control WebSocket.
 
 - **Deliverables (`core/**/ec0/core/engine/**`):**
-  - `commonMain/.../smartconnect/{SmartConnectClipboardModels,SmartConnectNotifModels}.kt`
-  - `jvmMain/.../smartconnect/SmartConnectLockService.kt`
-  - Extensions to `ClipboardService.kt` and `NotificationRelayService.kt`.
+  - `commonMain/.../smartconnect/protocol/SmartConnectClipNotifModels.kt`
+  - `jvmMain/.../smartconnect/SmartConnectControlServices.kt`
 - **Key Features:**
-  - **Clipboard (`svc 9`):** Bidirectional sync for `action: 0` (push), `action: 1` (ack), `action: 2` (pull), plus extended actions `13..17` (rich HTML/URI/image clipboard metadata with graceful fallback), integrated with `ClipboardService`'s SHA-256 loopback echo deduplicator and 30s OTP auto-scrub.
-  - **Notifications (`svc 5` & `svc 37`):** Full snapshot (`action: 0`), live post (`action: 1`), dismiss (`action: 2` / `action: 10`), inline direct reply (`action: 11` with `key`, `actionKey`, `replyText`), and `svc 37` binary WebP app-icon framing (`[4B keyLen BE][key UTF-8][WebP bytes]`) with bounded LRU caching (`128` icons).
-  - **PC Lock (`svc 22`):** Handles `{"action": 1, "reason": "manual" | "proximity"}` by invoking `loginctl lock-session` on Linux desktop (with 5s cooldown rate limit) and sending `{"action": 2, "locked": true}` ack.
+  - **Clipboard (`svc 9`):** Dispatches on `data.msgId`: `1` (`NEGO`) → `2` (`CONFIRM` within `50 ms`), `3` (`UPDATE_NOTIFY` text sync with SHA-256 loopback echo suppression and sensitive-clip filtering), `4` (`PULL` for file/image clips via `S-C`), and enforces a strict outbound firewall blocking `msgId 13..17` and `101`.
+  - **Notifications (`svc 5` & `svc 37`):** Handles `event = 0/1/2` across styles `0..6`, coalesces updates at `1 Hz` by `(key, visibleTextHash)`, disambiguates `person_icon` vs `apk_icon` (`person_name == title` check to avoid WhatsApp owner-photo bug), sends inline quick replies (`cmd: 0, event: 0`), and emits local `service = -1` (`notification_action`) events prior to `cmd: 0, event: 1/2` so `S-D` catches the phone's resulting app-stream invite.
+  - **PC Lock (`svc 22`):** Answers `cmd 1` by executing the lock cascade (`loginctl lock-session`), polling `LockedHint`, and reporting `cmd 2` (`state: 1` locked → `state: 0` unlocked).
 - **Verification Gate:**
-  - Unit tests for `svc 9` loopback suppression, `svc 5/37` post/dismiss/reply + WebP icon framing, and `svc 22` lock dispatch.
-  - Live copy/paste, notification toast + inline reply, and phone-triggered PC lock verified against Aryan's A5x.
+  - `SmartConnectControlServicesTest` green on CI + live clipboard sync, notification quick reply, and phone-triggered PC lock verified against Aryan's A5x.
 
 ---
 
-#### Slice `S-C` — File Exchange: FileStation NFSv3-over-mTLS (`svc 168`) + `fex` HTTP (`svc 2` / `svc 17`)
-**Goal:** Enable both push/pull file transfers (`fex`) and live zero-copy phone storage browsing (`FileStation` NFSv3-over-mTLS) across `:desktop` and `:android-app`.
+#### Slice `S-C` — File Exchange: `fex` (`svc 2` & `svc 17` App Icons) + File Station NFSv3 over Mutual TLS (`svc 168`)
+**Goal:** Enable app-icon harvesting (`svc 17`, unlocking `recentApps`), clipboard image/file pulls (`svc 9` + `svc 2`), and bidirectional zero-copy file browsing (`svc 168` NFSv3 over mutual TLS).
 
 - **Deliverables (`core/**/ec0/core/engine/**`):**
-  - `commonMain/.../smartconnect/{NfsV3XdrCodec,FexProtocolModels}.kt`
-  - `jvmMain/.../smartconnect/{NfsV3TlsServer,FexHttpServer}.kt`
+  - `commonMain/.../smartconnect/protocol/SmartConnectFileModels.kt`
+  - `jvmMain/.../smartconnect/{SmartConnectFexService,SmartConnectFileStationNfs}.kt`
 - **Key Features:**
-  - **FileStation (`svc 168`) Embedded NFSv3-over-mTLS:**
-    - Pure-Kotlin RFC 4506 XDR + RFC 5531 ONC RPC v2 record-marking codec (`lastFragment = bit 31`).
-    - Implements `MOUNT` (`100005` v3: `NULL`, `MNT`, `UMNT`, `EXPORT`) and `NFS` (`100003` v3: `GETATTR`, `SETATTR`, `LOOKUP`, `ACCESS`, `READ`, `WRITE`, `CREATE`, `MKDIR`, `REMOVE`, `RMDIR`, `RENAME`, `READDIR`, `READDIRPLUS`, `FSSTAT`, `FSINFO`, `PATHCONF`, `COMMIT`) over a single mTLS socket authenticated by the pair's pinned certificates.
-    - Enforces canonical root sandboxing (`File.canonicalPath.startsWith(exportRoot.canonicalPath)`), rejecting `..` and symlink escapes with `NFS3ERR_ACCES (13)`.
-    - Exposes a direct `VirtualFsProvider` to `:ui` (works out-of-the-box with zero root/FUSE privileges) plus an optional supervised `ec0-fuse-mount` helper for `~/.local/share/ec0/mounts/<peerId>/`.
-  - **`fex` (`svc 2` & `svc 17`):**
-    - HTTPS server on `:9886` (pinned pair cert) serving staged files via `/fex/<transferId>/<fileId>` with `Range: bytes=<start>-<end>` resumable support + HTTP pull client writing into `FileTransferService`'s sanitized download pipeline.
+  - **`fex` Client & Server (`svc 2` & `svc 17`):** Connects TLS 1.3 (`ALPN http/1.1` only) pinned to lowercase hex `SHA-256(DER) == fingerprint`, runs `/websocket` (`Server1001` version negotiation → `Server1002` `sendRequest`), downloads zip/files via `/download` or `/downloadFile` into `~/.cache/ec0/app-icons/` (sanitized, atomic rename), and sends `Client1001:status` (`type: 1`) so the phone pushes `svc 17 cmd 10` (`recentApps`).
+  - **File Station Tunnelled NFSv3 over mTLS (`svc 168 cmd 1001`):**
+    - Negotiates `dt2type = 2` (`SOCKET_SSL` mutual TLS over TCP, avoiding proprietary `dt2socket` QUIC `dt2type: 3`) using a dedicated `files-identity` X.509 cert (`0600`).
+    - **Browse Phone Storage (`type: 0 -> 1`):** Connects directly to `ip:nfsport`, runs RFC 1813 `MOUNT` v3 `MNT("/sdcard")` + `NFS` v3 (`GETATTR`, `LOOKUP`, `READDIRPLUS`, `READ`) to power `:ui` file browsing and optional `~/Phone` FUSE mount.
+    - **Share PC Folder (`serve`, `"206": 1, "20": 1`):** Exports `~/PhoneShare` over single-port mTLS (`port == nfsport`) with mandatory **64-byte file handles**, `cmd 2006 -> 2007` recovery, and custom procedures `22` (`READTHUMBNAIL`), `23` (`READCATEGORYDIR`), and `27` (`REMOVEBATCH`).
 - **Verification Gate:**
-  - Byte-exact XDR/RPC/MOUNTv3/NFSv3 roundtrip + path-traversal rejection tests and `fex` HTTP range-resume tests green on CI.
-  - Live directory listing and file push/pull verified with Aryan's A5x.
+  - `SmartConnectFexAndNfsTest` green on CI + live app-icon pull (`recentApps` populated), phone `/sdcard` browse, and PC folder share verified with Aryan's A5x.
 
 ---
 
-#### Slice `S-D` — WebRTC & RTP Media Plane: Mirroring (`1/15/16`), Webcam (`3`), App Streaming (`15/17` + VDM), Cross Control (`26`) & Phone-as-Display (`202`)
-**Goal:** Deliver low-latency hardware-accelerated screen mirroring, virtual webcam, per-app virtual display streaming, seamless mouse/keyboard cross-control, and desktop display extension using `smartconnect-linux`'s proven **daemon + supervised-helper** architecture adapted to Kotlin.
+#### Slice `S-D` — WebRTC Media Plane & Supervised Helpers: Mirroring (`1/15/16`), Webcam (`3`), App Streaming (`15/17` + VDM), Cross Control (`26`) & Phone-as-Display (`202`)
+**Goal:** Deliver wireless, ADB-free Screen Mirroring, Ready For Desktop, Per-App Streaming Windows, Continuity Webcam, Cross Control, and Phone-as-Display using `smartconnect-linux`'s **daemon + supervised-helpers** pattern (`SmartConnectHelperSupervisor` over `LocalDaemonIpcServer` `watch`/`send`).
 
 - **Deliverables (`core/**/ec0/core/engine/**`):**
-  - `commonMain/.../smartconnect/{WebRtcSignalingModels,CrossControlProtoCodec}.kt`
-  - `jvmMain/.../smartconnect/{MirrorSessionCoordinator,WebcamSessionCoordinator,AppStreamCoordinator,CrossControlService,VirtualDisplayExtendCoordinator}.kt`
+  - `commonMain/.../smartconnect/protocol/SmartConnectMediaModels.kt`
+  - `jvmMain/.../smartconnect/{SmartConnectHelperSupervisor,SmartConnectWebRtcHelpers}.kt`
 - **Key Features:**
-  - **Step `S-D.1` — Screen Mirroring (`svc 1`, `15`, `16`, `17`):** Supports both Direct RTP (`svc 16` H.264 Annex-B NAL framing + TCP touch/key return channel) and WebRTC (`svc 17` SDP offer/answer + host ICE candidates on LAN/SoftAP/USB) routed to a supervised media helper window.
-  - **Step `S-D.2` — Webcam (`svc 3` + `svc 17`):** Phone camera (`front`/`back`, `720p`/`1080p`, `30`/`60` fps) streamed over WebRTC (`svc 17`, `sessionType = "webcam"`) into `/dev/video10` (`v4l2loopback`) via `ContinuityCameraCoordinator`.
-  - **Step `S-D.3` — App Streaming (`svc 15` + `svc 17` + Android VDM):**
-    - On `:desktop`: negotiates `WIN_UNLOCKED` profile (`appstream: "1"` in `svc 25`), syncs installed app list (`svc 15` `action: 0`) + WebP icons (`svc 37`), and launches individual Android apps in dedicated desktop windows (`action: 10`, `displayMode: "virtual"`).
-    - On `:android-app` (Phone Host): creates an unprivileged VirtualDisplay (`MediaProjectionManager` + `DisplayManager.createVirtualDisplay("ec0-appstream-<pkg>", width, height, dpi, encoderSurface, VIRTUAL_DISPLAY_FLAG_PUBLIC or VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY)`), encodes via hardware `MediaCodec` (`video/avc`), and injects per-window touch/key events.
-  - **Step `S-D.4` — Cross Control (`svc 26`):** Low-latency TCP protobuf stream (`PointerMove`, `PointerButton`, `Scroll`, `Key`, `EdgeTransition`, `DragDropOffer`, `Heartbeat`) paired with `UniversalControlService` screen-edge hit detection (`0..1000` permille entry coordinate) and `LinuxInputInjectionBridge` (`ydotool`/`xdotool`).
-  - **Step `S-D.5` — Phone-as-Display (`svc 202`, Stretch):** Creates a virtual second monitor on Linux desktop (`swaymsg create_output` / `gnome-monitor-config` / `xrandr`) and streams it to `:android-app`'s full-screen `SurfaceView` decoder, routing phone multi-touch gestures back to desktop coordinates.
+  - **Shared WebRTC Answerer Rules:** Phone is always SDP Offerer; PC is SDP Answerer offering host UDP candidates on `pcAddress` only, stripping non-`H.264` payload types and `urn:3gpp:video-orientation`.
+  - **Screen Mirroring, Mobile Desktop & Virtual Phone (`svc 1, 15, 16`):** Handles PC- and phone-initiated views (`1` mirror, `2` desktop, `3` virtual phone), `svc 15 cmd 1` (`supportCustomDisplay: false` boolean, persistent `instanceId`), `cmd 9` 30s watchdog heartbeat, and `svc 16` mouse/keyboard/text input.
+  - **Continuity Webcam (`svc 3`):** Enforces the `isReply` key-absence invariant on PC-initiated `cmd 0`, `cmd 13` 10s heartbeat, lens/torch/zoom controls (`cmd 4/7/9`), and outputs 1280×720 YUY2 to `v4l2loopback` or PipeWire `Video/Source`.
+  - **Per-App Android Streaming (`svc 15, 17` + VDM):** Streams up to 5 concurrent Android apps in individual desktop windows (`cmd 12` merge, `cmd 13` focus, `cmd 17/26` debounced resize, `cmd 24` visible list), includes the headless notification-action runner (`svc -1`), and uses Android 14+ `VirtualDeviceManager` / `createVirtualDisplay` on `:android-app`.
+  - **Cross Control (`svc 26` + `svc 16 displayId: 0`):** Sets `cap["26"] = 9` (`CAP_AVAILABLE or CAP_IN_USE`) within `1 s` of reconnect, captures screen edges via Wayland `wlr-layer-shell` or `xdg-desktop-portal` `InputCapture`, and streams `<= 125 Hz` motion/clicks/keys.
+  - **Phone-as-Display (`svc 202` "R4SS"):** Streams PC mirror (`ScreenCast`) or virtual second monitor (`vkms`/`RecordVirtual`) to the phone and parses binary little-endian SCTP `touchDataChannel` frames (`type 0` 128B Touch, `type 1` 32B Key, `type 2` 48B Mouse, `type 3` 56B Pen).
 - **Verification Gate:**
-  - Unit tests for `svc 17` SDP/ICE state machine, `svc 15` app catalog/launch, `svc 26` protobuf frame codec, and supervised-helper crash/restart isolation.
-  - Live Mirroring, Webcam (`/dev/video10`), App Streaming, and Cross Control verified against Aryan's A5x.
+  - `SmartConnectMediaSignallingTest` green on CI + live Mirroring, Webcam, Per-App Streaming, Cross Control, and Phone-as-Display verified against Aryan's A5x.
 
 ---
 
-#### Slice `S-E` — SMS Relay (`svc 204` / `svc 100`) & Hotspot Auto-Join (`svc 13`)
-**Goal:** Complete the Smart Connect feature surface with desktop SMS conversation sync/send and 1-click Instant Hotspot auto-connect.
+#### Slice `S-E` — Telephony SMS/MMS Relay (`svc 204/100`) & Instant Hotspot Auto-Join (`svc 13`)
+**Goal:** Complete 100% Smart Connect feature parity with SMS conversation sync/send and 1-click Hotspot handoff.
 
 - **Deliverables (`core/**/ec0/core/engine/**`):**
-  - `commonMain/.../smartconnect/SmsAndHotspotModels.kt`
-  - `jvmMain/.../smartconnect/{SmsRelayService,SmartConnectHotspotService}.kt`
+  - `commonMain/.../smartconnect/protocol/SmartConnectSmsHotspotModels.kt`
+  - `jvmMain/.../smartconnect/SmartConnectSmsAndHotspot.kt`
 - **Key Features:**
-  - **SMS Relay (`svc 204` & `svc 100`):** Thread list (`action: 0`), message history (`action: 1`), live incoming SMS push (`action: 2`), outbound SMS send (`action: 3` via `SmsManager.sendMultipartTextMessage` on `:android-app`), and read-receipt sync (`action: 4`).
-  - **Hotspot Auto-Join (`svc 13`):** Requests phone Wi-Fi tether (`action: 1` → `action: 2` `{ssid, passphrase, bandGhz, gatewayIp}`) and joins automatically on Linux desktop via `LinuxSystemBridge` (`nmcli device wifi connect <ssid> password <passphrase>`).
+  - **SMS Relay (`svc 100` & `svc 204`):** Parses `svc 100 cmd 1018` status, sends `svc 204 cmd 18` (`ver: "5.0", pId: 110`) for first-time PC enablement, syncs SIMs (`cmd 12/13`), contacts (`cmd 1/2`), and 50-message batches (`cmd 28/29`), normalizes counterpart threads (last 10 digits), and sends SMS via `cmd 4` (with mandatory `medias: []`).
+  - **Hotspot Auto-Join (`svc 13`):** Sends `cmd 1` with ephemeral `SmartConnect-<4hex>` SSID and 16-char password, joins via `nmcli dev wifi connect` on `cmd 2` (with password redaction), and removes the temporary NetworkManager profile on `cmd 4/6` stop.
 - **Verification Gate:**
-  - Unit tests for `svc 204/100` SMS pagination/send/delivery state machine and `svc 13` hotspot credential parsing + discrete-argv `nmcli` command construction.
-  - Live SMS send/receive and Hotspot auto-join verified on Aryan's A5x.
+  - `SmartConnectSmsAndHotspotTest` green on CI + live SMS sync/send and 1-click Hotspot auto-join verified on Aryan's A5x.
 
 ---
 
 ## 6. Verification & Coordination Protocol
 
-1. **Hub Discipline (`agentchat.md`):**
-   - Log `CLAIMED` / `WORKING` / `DONE` at each slice boundary, maintaining the 25-entry cap in `agentchat.md`.
-   - Never force-push (`git push --force` forbidden); never touch `main-2`, `.github/workflows/build.yml`, `android/`, `localsend-upstream/`, or other agents' files (`android-app/`, `desktop/`, `core/localsend/`).
+1. **Hub Discipline & PR Workflow (`agentchat.md`):**
+   - Push feature branches (`feat/gemini-argon-*`) and open Pull Requests via GitHub API / `gh pr create`; never force-push (`git push --force` forbidden); never touch `main-2`, `.github/workflows/build.yml`, `android/`, `localsend-upstream/`, or other agents' files (`android-app/`, `desktop/`, `core/localsend/`).
 2. **Design Gate First (`T16`):**
-   - Stop after committing `docs/engine/smart-connect-design.md` and `docs/engine/roadmap.md`; wait for `agent-0` review before writing `S-A` implementation code.
+   - Stop after `docs/engine/smart-connect-design.md` and `docs/engine/roadmap.md` are submitted for review; wait for `agent-0` approval before writing `S-A` implementation code.
 3. **CI is the Compiler & Same-Commit Tests:**
    - Every code slice updates production code, unit tests, and any affected signatures in the **same commit**, pushes to `origin`, and verifies `.github/workflows/build.yml` finishes green (inspecting the uploaded `test-reports` artifact if any test fails, as Gradle console output truncates stack traces).
 4. **Cryptographic & Wire Vector Verification Rule:**
-   - Every test constant (SHA-256, HKDF-SHA256, AES-256-GCM sealed discovery frame, Ed25519, X25519, ChaCha20-Poly1305, RFC 6455 accept key, DNS wire bytes, XDR/NFSv3 frames) is computed/verified via `python3` before being pinned in `commonTest` / `jvmTest`.
+   - Every test constant (SHA-256, HKDF-SHA256, AES-256-GCM `SealedDiscoveryFrame`, salted-hash `nonceId`, Ed25519, X25519, ChaCha20-Poly1305, RFC 6455 accept key, DNS wire bytes, XDR/NFSv3 frames) is computed/verified via `python3` before being pinned in `commonTest` / `jvmTest`.
 
 ---
 
@@ -299,10 +282,11 @@ Every slice lands with **100% deterministic unit tests** (RFC/NIST test vectors 
 |---|---|---|---|
 | **Slices 0–7** | Core `ec0-engine` (Crypto, mDNS, WS+AEAD, Clipboard, Resumable Files, Input, Notifs, Presence, ColorOS Resilience) | `docs/engine/{design,coloros-resilience}.md`, `core/**/ec0/core/engine/**` | **COMPLETE** (CI green, Slice 1 crypto gate & rekey review cleared by `agent-0`) |
 | **Slices 8–11** | CamDroid v1/v2, Linux/Android OS Bridges, QR, Persistent Store, Universal Control, USB-C Tunnel, VirtualMic, Handoff, OTP Scrub | `CameraModels`, `ContinuityCameraCoordinator`, `LinuxSystemBridge`, `PersistentEngineStore`, `Slice11ContinuityServices` | **COMPLETE** (CI green, all 5 runtime tests fixed & verified in `d5b82af` / `980aa05`) |
-| **T16 Design** | Motorola Smart Connect Full-Parity Architecture & Slice Plan | `docs/engine/smart-connect-design.md`, `docs/engine/roadmap.md` | **READY FOR LEAD REVIEW** (STOP before `S-A` implementation) |
-| **Slice `S-A`** | `PinnedTlsWebSocketTransport`, QR/mDNS/BLE/Sealed-UDP Discovery, `svc 0` Pairing, `svc 25` Cap Map & `svc 1/25` Status | `PinnedTlsWebSocketTransport`, `SealedDiscoveryFrameCodec`, `SmartConnectPairingService`, `SmartConnectCapabilityService` | CI green + **first live pairing with Aryan's A5x (`CPH2733IN`)** |
-| **Slice `S-B`** | Control-WS Productivity: Clipboard (`svc 9`), Notifications (`svc 5/37` + Reply + Icons), PC Lock (`svc 22`) | `SmartConnectClipboardModels`, `SmartConnectNotifModels`, `SmartConnectLockService`, `ClipboardService`, `NotificationRelayService` | CI green + live clipboard, notification reply, and PC lock with A5x |
-| **Slice `S-C`** | File Exchange: FileStation NFSv3-over-mTLS (`svc 168`) + `fex` HTTPS (`svc 2/17`) | `NfsV3XdrCodec`, `NfsV3TlsServer`, `FexProtocolModels`, `FexHttpServer` | CI green + path-traversal unit tests + live phone storage browse & `fex` transfer |
-| **Slice `S-D`** | WebRTC Media & Input: Mirroring (`1/15/16`), Webcam (`3`), App Streaming (`15/17` + VDM), Cross Control (`26`), Display (`202`) | `WebRtcSignalingModels`, `MirrorSessionCoordinator`, `WebcamSessionCoordinator`, `AppStreamCoordinator`, `CrossControlService`, `VirtualDisplayExtendCoordinator` | CI green + live Mirroring, `/dev/video10` Webcam, VDM App Streaming & Cross Control |
-| **Slice `S-E`** | SMS Relay (`svc 204/100`) & Hotspot Auto-Join (`svc 13`) | `SmsAndHotspotModels`, `SmsRelayService`, `SmartConnectHotspotService` | CI green + live SMS sync/send & 1-click Hotspot auto-join |
+| **T16 Design** | Motorola Smart Connect Full-Parity Architecture & Slice Plan | `docs/engine/smart-connect-design.md`, `docs/engine/roadmap.md` | **READY FOR LEAD REVIEW** (PR open, STOP before `S-A` implementation) |
+| **Slice `S-A`** | `PinnedTlsWebSocketTransport`, `SealedDiscoveryFrameCodec`, QR/mDNS/BLE `0x5246` Wake, `svc 0` Handshake & `svc 25` Cap Map | `PinnedTlsWebSocketTransport`, `SealedDiscoveryFrameCodec`, `SmartConnectNodeCoordinator`, `SmartConnectDiscoveryAndBle` | CI green + **first live pairing with Aryan's A5x (`CPH2733IN`)** |
+| **Slice `S-B`** | Control-WS Productivity: Clipboard (`svc 9`), Notifications (`svc 5/37` + Reply + Action Routing), PC Lock (`svc 22`) | `SmartConnectClipNotifModels`, `SmartConnectControlServices` | CI green + live clipboard, notification reply, and PC lock with A5x |
+| **Slice `S-C`** | File Exchange: `fex` (`svc 2/17` App Icons & Clips) + File Station NFSv3 over mTLS (`svc 168` `SOCKET_SSL`, 64B FHs) | `SmartConnectFileModels`, `SmartConnectFexService`, `SmartConnectFileStationNfs` | CI green + live `recentApps` icons, `/sdcard` browse & `~/PhoneShare` export |
+| **Slice `S-D`** | WebRTC Media & Supervised Helpers: Mirroring (`1/15/16`), Webcam (`3`), App Stream (`15/17` + VDM), Cross Control (`26`), Display (`202`) | `SmartConnectMediaModels`, `SmartConnectHelperSupervisor`, `SmartConnectWebRtcHelpers` | CI green + live Mirroring, Webcam, VDM App Streaming, Cross Control & Display |
+| **Slice `S-E`** | SMS Relay (`svc 204/100`, `pId=110`) & Instant Hotspot Auto-Join (`svc 13`) | `SmartConnectSmsHotspotModels`, `SmartConnectSmsAndHotspot` | CI green + live SMS sync/send & 1-click Hotspot auto-join |
+
 
