@@ -25,7 +25,6 @@ import ec0.core.localsend.security.LocalsendSecurity
 import ec0.core.localsend.security.PinDecision
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentLength
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
@@ -35,13 +34,14 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
+import io.ktor.server.request.origin
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.request.uri
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.utils.io.copyTo
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 import java.security.MessageDigest
@@ -178,17 +178,17 @@ class LocalsendReceiverKtor(
             val raw = File(target.toString()).outputStream()
             val output = if (digest != null) java.security.DigestOutputStream(raw, digest) else raw
             output.use {
-                val channel = call.request.receiveChannel()
                 val buffer = ByteArray(64 * 1024)
+                val input = call.request.receiveChannel().toInputStream()
                 while (true) {
-                    val read = channel.readAvailable(buffer, 0, buffer.size) ?: break
-                    if (read == -1L) break
+                    val read = input.read(buffer)
+                    if (read == -1) break
                     written += read
                     if (declaredSize in 1..Long.MAX_VALUE && written > declaredSize) {
                         overflowed = true
                         break
                     }
-                    output.write(buffer, 0, read.toInt())
+                    output.write(buffer, 0, read)
                     store.markProgress(sessionId, fileId, written)
                 }
             }
@@ -289,14 +289,11 @@ class LocalsendReceiverKtor(
         }
         val path = config.offeredFiles[fileId] ?: return call.respondText("Unknown file", status = HttpStatusCode.NotFound)
         val file = File(path.toString())
-        call.response.headers.append("Content-Type", guessMimeType(path.toString()))
-        call.respond(object : OutgoingContent.WriteChannelContent() {
-            override val contentLength: Long? = file.length()
-            override val contentType: ContentType = ContentType.parse(guessMimeType(path.toString()))
-            override suspend fun writeTo(channel: io.ktor.utils.io.ByteWriteChannel) {
-                file.inputStream().use { input -> input.copyTo(channel.asOutputStream()) }
-            }
-        })
+        call.respondBytes(
+            file.readBytes(),
+            ContentType.parse(guessMimeType(path.toString())),
+            HttpStatusCode.OK,
+        )
     }
 
     private suspend fun handleInfo(call: ApplicationCall) {
@@ -320,7 +317,7 @@ class LocalsendReceiverKtor(
     // ---------------------------------------------------------------- helpers
 
     private fun ApplicationCall.clientIp(): String =
-        request.origin.remoteHost.takeIf { it.isNotBlank() } ?: "unknown"
+        request.origin.remoteHost ?: "unknown"
 
     private fun ApplicationCall.query(): Map<String, String> =
         request.uri.substringAfter('?', "").split('&').filter { it.isNotBlank() }.associate {
@@ -333,24 +330,10 @@ class LocalsendReceiverKtor(
 
     private suspend fun <T : Any> parseJsonBody(call: ApplicationCall, serializer: kotlinx.serialization.KSerializer<T>): T? =
         runCatching {
-            val bytes = call.request.receiveChannel().toByteArray(MAX_BODY_BYTES + 1)
+            val bytes = call.request.receiveChannel().toInputStream().readNBytes(MAX_BODY_BYTES.toInt() + 1)
             if (bytes.size > MAX_BODY_BYTES) return null
             json.decodeFromString(serializer, bytes.decodeToString())
         }.getOrNull()
-
-    private suspend fun io.ktor.utils.io.ByteReadChannel.toByteArray(cap: Int): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(64 * 1024)
-        var total = 0L
-        while (true) {
-            val n = readAvailable(buffer, 0, buffer.size) ?: break
-            if (n == -1L) break
-            total += n
-            if (total > cap) return ByteArray(cap + 1) // oversize marker: caller treats >cap as too big
-            out.write(buffer, 0, n.toInt())
-        }
-        return out.toByteArray()
-    }
 
     private fun guessMimeType(name: String): String = when (name.substringAfterLast('.').lowercase()) {
         "jpg", "jpeg" -> "image/jpeg"
