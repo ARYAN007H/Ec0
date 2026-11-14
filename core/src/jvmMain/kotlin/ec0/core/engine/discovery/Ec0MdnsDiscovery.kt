@@ -9,10 +9,12 @@ package ec0.core.engine.discovery
 
 import ec0.core.engine.DiscoveredCamDroidService
 import ec0.core.engine.DiscoveredPeerRecord
+import ec0.core.engine.DiscoveredReadyForPeer
 import ec0.core.engine.EngineConstants
 import ec0.core.engine.MdnsCodec
 import ec0.core.engine.PeerInfo
 import ec0.core.engine.protocol.CamDroidConstants
+import ec0.core.engine.smartconnect.SmartConnectConstants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -148,7 +150,12 @@ class Ec0MdnsDiscovery(
     private val _camDroidServices = MutableStateFlow<List<DiscoveredCamDroidService>>(emptyList())
     val camDroidServices: StateFlow<List<DiscoveredCamDroidService>> = _camDroidServices.asStateFlow()
 
+    private val readyForCache = ConcurrentHashMap<String, DiscoveredReadyForPeer>()
+    private val _readyForPeers = MutableStateFlow<List<DiscoveredReadyForPeer>>(emptyList())
+    val readyForPeers: StateFlow<List<DiscoveredReadyForPeer>> = _readyForPeers.asStateFlow()
+
     private val listeners = CopyOnWriteArrayList<(PeerInfo) -> Unit>()
+    private val readyForListeners = CopyOnWriteArrayList<(DiscoveredReadyForPeer) -> Unit>()
     private val running = AtomicBoolean(false)
     private var transport: MdnsDatagramTransport? = null
     private var scope: CoroutineScope? = null
@@ -161,6 +168,19 @@ class Ec0MdnsDiscovery(
 
     fun removePeerListener(listener: (PeerInfo) -> Unit) {
         listeners.remove(listener)
+    }
+
+    fun addReadyForPeerListener(listener: (DiscoveredReadyForPeer) -> Unit) {
+        readyForListeners.add(listener)
+    }
+
+    fun removeReadyForPeerListener(listener: (DiscoveredReadyForPeer) -> Unit) {
+        readyForListeners.remove(listener)
+    }
+
+    fun sendRawPacket(payload: ByteArray) {
+        val t = transport ?: return
+        runCatching { t.send(payload) }
     }
 
     /**
@@ -215,6 +235,8 @@ class Ec0MdnsDiscovery(
         t.send(queryBytes)
         val camQueryBytes = MdnsCodec.encodePtrQuery(CamDroidConstants.MDNS_SERVICE_TYPE)
         t.send(camQueryBytes)
+        val readyForQueryBytes = MdnsCodec.encodePtrQuery(SmartConnectConstants.MDNS_SERVICE_TYPE)
+        t.send(readyForQueryBytes)
     }
 
     fun announceNow() {
@@ -270,6 +292,29 @@ class Ec0MdnsDiscovery(
                 }
             }
             _camDroidServices.value = camDroidCache.values
+                .filter { !it.isExpired(nowMs) }
+                .sortedBy { it.deviceName }
+        }
+
+        val readyForExtracted = MdnsCodec.extractReadyForPeers(
+            packet = packet,
+            nowMs = nowMs,
+            serviceType = SmartConnectConstants.MDNS_SERVICE_TYPE,
+            fallbackSenderIp = senderIp,
+        )
+        if (readyForExtracted.isNotEmpty()) {
+            for (rfPeer in readyForExtracted) {
+                val key = rfPeer.deviceId
+                if (rfPeer.isGoodbye) {
+                    readyForCache.remove(key)
+                } else {
+                    readyForCache[key] = rfPeer
+                    for (rfListener in readyForListeners) {
+                        runCatching { rfListener(rfPeer) }
+                    }
+                }
+            }
+            _readyForPeers.value = readyForCache.values
                 .filter { !it.isExpired(nowMs) }
                 .sortedBy { it.deviceName }
         }

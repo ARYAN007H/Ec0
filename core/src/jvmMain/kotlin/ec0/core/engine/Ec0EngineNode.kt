@@ -64,6 +64,10 @@ import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.services.UniversalControlService
 import ec0.core.engine.services.UsbAdbTunnelCoordinator
 import ec0.core.engine.services.UsbTunnelStatus
+import ec0.core.engine.smartconnect.SmartConnectConstants
+import ec0.core.engine.smartconnect.SmartConnectNodeCoordinator
+import ec0.core.engine.smartconnect.SmartConnectPairedPeerRecord
+import ec0.core.engine.smartconnect.protocol.SmartConnectPeerStatusSnapshot
 import ec0.core.engine.transport.BulkStreamFrame
 import ec0.core.engine.transport.Ec0Client
 import ec0.core.engine.transport.Ec0Server
@@ -256,6 +260,22 @@ class Ec0EngineNode(
         launcher = processLauncher,
     )
 
+    val smartConnectCoordinator = SmartConnectNodeCoordinator(
+        storageDir = File(downloadDir.parentFile ?: downloadDir, "ec0-smartconnect-${localIdentity.deviceId.take(12)}"),
+        initialDeviceName = displayName,
+        wsPort = SmartConnectConstants.DEFAULT_WS_PORT,
+        localAddressesProvider = {
+            MulticastMdnsTransport.detectLocalIpv4Addresses().ifEmpty { listOf("127.0.0.1") }
+        },
+        onMdnsRefreshRequested = { mdnsPacket ->
+            mdnsDiscovery.sendRawPacket(mdnsPacket)
+        },
+    ).also { coordinator ->
+        mdnsDiscovery.addReadyForPeerListener { rfPeer ->
+            coordinator.onReadyForMdnsPeerDiscovered(rfPeer, clockMs())
+        }
+    }
+
     private val client = Ec0Client(
         localIdentity = localIdentity,
         localAlias = displayName,
@@ -293,6 +313,9 @@ class Ec0EngineNode(
 
     val discoveredPeers: StateFlow<List<PeerInfo>> get() = mdnsDiscovery.peers
     val discoveredCamDroidServices: StateFlow<List<DiscoveredCamDroidService>> get() = mdnsDiscovery.camDroidServices
+    val discoveredReadyForPeers: StateFlow<List<DiscoveredReadyForPeer>> get() = mdnsDiscovery.readyForPeers
+    val smartConnectPairedPeers: StateFlow<List<SmartConnectPairedPeerRecord>> get() = smartConnectCoordinator.pairedPeersFlow
+    val smartConnectPeerStatus: StateFlow<Map<String, SmartConnectPeerStatusSnapshot>> get() = smartConnectCoordinator.peerStatusFlow
     val transfers: StateFlow<Map<String, TransferProgressSnapshot>> get() = fileTransferService.transfers
     val notifications: StateFlow<List<NotificationPostInfo>> get() = notificationRelayService.notifications
     val peerPresence: StateFlow<Map<String, PresenceBeaconInfo>> get() = presenceService.peerPresence
@@ -312,6 +335,14 @@ class Ec0EngineNode(
         if (startMdns) {
             mdnsDiscovery.start()
         }
+    }
+
+    fun startSmartConnectServer(announceMdns: Boolean = false): Int {
+        val port = smartConnectCoordinator.start()
+        if (announceMdns) {
+            mdnsDiscovery.sendRawPacket(smartConnectCoordinator.buildReadyForMdnsAnnouncement(clockMs()))
+        }
+        return port
     }
 
     /**
@@ -624,6 +655,7 @@ class Ec0EngineNode(
         runCatching { mdnsDiscovery.close() }
         runCatching { scrcpyCoordinator.close() }
         runCatching { cameraCoordinator.close() }
+        runCatching { smartConnectCoordinator.close() }
         sessionExecutor.shutdownNow()
     }
 

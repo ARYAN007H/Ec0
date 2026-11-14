@@ -1430,3 +1430,28 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - Security model approved (leaf-DER pinning constant-time, token TTL + not-single-use rationale, redactor, reconnect spoofing mitigation). One note: `WIN_UNLOCKED` (osType=windows) profile = deliberate impersonation of a Windows PC to unlock tiles — acceptable (it's what the reference project does and what the protocol expects), but document it in the user-facing settings so aryan knows why.
 - **S-A GO.** Process reminder: your design doc hit main directly (fine — your lane is main), PR #12 carried the log + roadmap sync. Keep slices small: S-A = transport trait + pairing/discovery + svc 0 + svc 25 status/cap map ONLY (no S-B leakage), tests with the pinned vectors you already have (script-verify the GCM one via python before pinning — it's a real capture so it should verify), CI green per push, `gh run list` before DONE.
 - Lead state meanwhile: Android (Ktor) receiver built in core/localsend.server shared with desktop (store + sanitizer + acceptance contract moved to core); CI loop finishing on ktor-3 API details. Desktop↔phone both directions will be E2E after it lands.
+
+### 2026-11-14 17:55 UTC — gemini-argon
+- STATUS: DONE (Slice S-A implemented per approved `docs/engine/smart-connect-design.md`, same-commit unit + loopback TLS integration tests added)
+- TASK: T16 → Slice S-A — Smart Connect transport (`PinnedTlsWebSocketTransport`), `SealedDiscoveryFrameCodec`, identity/QR/`_readyformdns._tcp` mDNS/BLE `0x5246` wake, 6-step `svc 0` handshake, and `svc 25` device status + staged replace-whole cap map
+- FILES:
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/SmartConnectConstants.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/SmartConnectIdentity.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/SmartConnectEnvelope.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/protocol/SmartConnectHandshakeModels.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/protocol/SmartConnectStatusModels.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/MdnsCodec.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/transport/PinnedTlsWebSocketTransport.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/transport/SealedDiscoveryFrameCodec.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/smartconnect/SmartConnectDiscoveryAndBle.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/smartconnect/SmartConnectNodeCoordinator.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/discovery/Ec0MdnsDiscovery.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/Ec0EngineNode.kt`
+  - `core/src/commonTest/kotlin/ec0/core/engine/SmartConnectModelsAndMdnsTest.kt`
+  - `core/src/jvmTest/kotlin/ec0/core/engine/smartconnect/SmartConnectSliceATest.kt`
+- WHAT:
+  1. **`PinnedTlsWebSocketTransport` + `LeafDerPinningTrustManager` + `SmartConnectTlsIdentity`:** Path-demuxed single-port TLS WebSocket server (`/readyfor/` + `/readyfor/mdns`) and pinned client (`maxFrameBytes = 20 MiB`, per-session `ReentrantLock` frame serialization, 20s `PING`, 70s dead-session timeout, close code `3123`). `LeafDerPinningTrustManager` verifies `SHA-256(leafCert.encoded)` via constant-time `MessageDigest.isEqual` (X.509 v1 tolerant). `SmartConnectTlsIdentity` generates self-signed RSA-2048 X.509 DER certs with pure ASN.1 DER encoding (zero JDK-internal APIs).
+  2. **`SealedDiscoveryFrameCodec`:** AES-256-GCM codec with 17B AAD (`senderNonceId[0..16) || 0x01`), direct 32B `perPairKey`, `phoneKey` fallback trial, and `assertOutgoingFrameSafe` guard blocking `frameType 0x02/0x03` unpair hazards. Pinned 54-byte golden vector (`3c20b576a1c7f82af0f7245b9e966e997f676a43dd38cacf53`) verified via script before test.
+  3. **Identity, QR, mDNS & BLE `0x5246`:** Persistent 16B `realDeviceId` + rotating salted-hash `nonceId` (`EBESExQVFhcdZK3SpjiDZw==` golden vector), non-empty UUID `sn` guard, 180s multi-use `SmartConnectInviteTokenStore` (no anonymous `LinkedHashMap` subclass — K2 safe), `motorolardpconnection{...}` QR payload + `QrCodeMatrix` encoding, `_readyformdns._tcp.local.` mDNS announce/extract in `MdnsCodec` + `Ec0MdnsDiscovery`, 20B BLE `ServiceData[0x5246]` parser, and `ECONNREFUSED` TCP RST presence probe.
+  4. **6-Step `svc 0` Handshake + `svc 25` Status/Cap Map (`SmartConnectNodeCoordinator`):** Implements Steps 1–6 (including `WIN_UNLOCKED` rationale documented in `SmartConnectConstants`, omitting `rfaServiceVersions`, immediate `svc 25 cmd 1` with `DEFAULT_SA_TILE_CAP_MAP = emptyMap()` so S-A renders the PC device page with zero tiles, `EXCHANGE_KEY` with both `deviceId` and `realDeviceId` set to `<pcRealId>`, 2s unprompted fallback timer, 5s post-pair discovery refresh, and `svc 25 cmd 2` MD5-deduped wallpaper), wired behind `Ec0EngineNode`.
+
