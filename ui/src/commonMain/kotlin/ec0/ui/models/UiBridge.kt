@@ -13,6 +13,15 @@ import kotlinx.coroutines.flow.StateFlow
 /** One offered file of a pending incoming transfer, UI-safe view. */
 data class IncomingFileInfo(val fileName: String, val size: Long)
 
+/** Smart Connect pairing QR (desktop renders it; phone peers scan it). */
+data class SmartConnectPairingQr(
+    val payload: String,
+    val size: Int,
+    val modules: List<Boolean>,
+    val wsPort: Int,
+    val deviceName: String,
+)
+
 /** An incoming transfer awaiting the user's decision (accept / decline / trust). */
 data class IncomingRequest(
     val senderAlias: String,
@@ -63,6 +72,9 @@ interface UiBridge {
      * keep this null forever.
      */
     val incomingRequest: StateFlow<IncomingRequest?> get() = MutableStateFlow<IncomingRequest?>(null)
+
+    /** Smart Connect pairing QR — null on platforms without the engine running. */
+    val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?> get() = MutableStateFlow<SmartConnectPairingQr?>(null)
 
     /** Accept the pending incoming transfer (all offered files), optionally trusting the sender. */
     fun acceptIncoming(trust: Boolean = false) {}

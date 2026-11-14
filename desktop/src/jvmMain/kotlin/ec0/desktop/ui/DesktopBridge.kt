@@ -13,7 +13,10 @@ import ec0.ui.models.UiDevice
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 
-class DesktopBridge(private val appState: AppState) : UiBridge {
+class DesktopBridge(
+    private val appState: AppState,
+    private val smartConnectQrSupplier: (() -> ec0.ui.models.SmartConnectPairingQr?)? = null,
+) : UiBridge {
     override val devices: StateFlow<List<UiDevice>> = appState.devices
     override val transfers: StateFlow<List<ec0.ui.models.TransferItem>> = appState.transfers
     override val settings: StateFlow<SettingsState> = appState.settings
@@ -21,6 +24,9 @@ class DesktopBridge(private val appState: AppState) : UiBridge {
 
     // Honest capability flags: the continuity service attaches via the tray
     // path; receiver + sync slices land in later PRs.
+    override val smartConnectPairingQr: StateFlow<ec0.ui.models.SmartConnectPairingQr?> =
+        kotlinx.coroutines.flow.MutableStateFlow(smartConnectQrSupplier?.invoke())
+
     override val capabilities: Capabilities = Capabilities(
         canReceive = true,
         clipboardSync = false,

@@ -21,9 +21,30 @@ fun runApp() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val appState = AppState(scope)
     appState.startScan()
+
+    // Engine + Smart Connect (T16 S-A): identity persists across runs; the
+    // coordinator's TLS listener pairs with stock Smart Connect on phones.
+    val hub = ec0.desktop.continuity.ContinuityHubController(scope)
+    runCatching { hub.node.startServer() }
+    val smartConnectPort = runCatching { hub.node.startSmartConnectServer() }.getOrDefault(0)
+    val smartConnectQrSupplier: () -> ec0.ui.models.SmartConnectPairingQr? = {
+        runCatching {
+            val matrix = hub.node.smartConnectCoordinator.buildPairingQrMatrix()
+            ec0.ui.models.SmartConnectPairingQr(
+                payload = hub.node.smartConnectCoordinator.buildPairingQrPayload(),
+                size = matrix.size,
+                modules = List(matrix.size * matrix.size) { i ->
+                    matrix[i / matrix.size, i % matrix.size]
+                },
+                wsPort = smartConnectPort,
+                deviceName = hub.node.smartConnectCoordinator.deviceName,
+            )
+        }.getOrNull()
+    }
+
     application {
         val windowState = rememberWindowState(width = 1080.dp, height = 720.dp)
-        val bridge = remember { DesktopBridge(appState) }
+        val bridge = remember { DesktopBridge(appState, smartConnectQrSupplier) }
         Window(onCloseRequest = ::exitApplication, title = "ec0 — unified ecosystem", state = windowState) {
             Ec0App(
                 bridge = bridge,

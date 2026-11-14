@@ -3,6 +3,7 @@
  */
 package ec0.ui.panels
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -29,6 +31,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
@@ -143,6 +148,37 @@ fun SettingsPanel(bridge: UiBridge) {
                     checked = settings.synergyProbeEnabled,
                     onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(synergyProbeEnabled = checked) } },
                 )
+            }
+        }
+
+        bridge.smartConnectPairingQr.collectAsState().value?.let { qr ->
+            SettingsCard("Pair — Smart Connect") {
+                Text(
+                    "Open Smart Connect on the phone and scan this code (port ${qr.wsPort})",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f),
+                ) {
+                    val quiet = 2
+                    val total = qr.size + quiet * 2
+                    val cell = size.width / total
+                    for (y in 0 until qr.size) {
+                        for (x in 0 until qr.size) {
+                            if (qr.modules[y * qr.size + x]) {
+                                drawRect(
+                                    color = Color.Black,
+                                    topLeft = Offset((x + quiet) * cell, (y + quiet) * cell),
+                                    size = Size(cell, cell),
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(qr.deviceName, style = MaterialTheme.typography.labelSmall)
             }
         }
 
