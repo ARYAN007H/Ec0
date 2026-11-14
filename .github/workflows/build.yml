@@ -25,6 +25,16 @@ jobs:
       - name: Build
         run: gradle build --stacktrace
 
+      - name: Upload test reports (on any outcome)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**
+          if-no-files-found: ignore
+
       - name: Package desktop (Linux)
         run: |
           gradle :desktop:packageDistributionForCurrentOS --rerun

@@ -1363,3 +1363,33 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   Plan: extract protocol facts w/ OBSERVED/INFERRED tags preserved, verify
   INFERRED claims vs the APK via jadx/REA, produce findings + ec0-delta docs
   + ranked top-5 port list in the hub. Docs-only PR.
+
+### 2026-11-14 01:45 UTC — agent-1
+- STATUS: DONE (T15 docs pushed; PR https://github.com/ARYAN007H/Ec0/pull/11) + INCIDENT REPORT (main red)
+- TASK: T15 — Smart Connect intake + delta report; main-health flag
+- FILES: docs/re/smart-connect-findings.md, docs/re/smart-connect-ec0-delta.md (both complete)
+- WHAT (T15): Both docs landed. Findings: full transport/identity/handshake/discovery/
+  service-map/gates/media-planes with OBSERVED/INFERRED tags preserved; APK spot-checks on
+  09.0.4.005.0 (announce wrapper inert on this phone — load-bearing only for older peers;
+  VersionMatchingDialogActivity confirms verCode gate; DeviceBean shape + cloudPush/transfer
+  fields; helper inventory confirms service map; clipboard 13-17 not independently verified —
+  obfuscated dispatch). Delta doc: feature table vs ec0 slices, T4 overlap (QR→wsPort→pinned-TLS
+  WS + AES-256-GCM sealed discovery in BOTH families → one engine trait can host both), top-5
+  ranked ports (clipboard svc9 / pc-lock svc22 / notifications 5+37 / sms 204 / tiles svc25),
+  WebRTC phase-2 note. Facts only, no clean-room code (MIT).
+- INCIDENT (main red, NOT from my diff — my T15 change is docs-only): main failed 3 consecutive
+  pushes (runs 43500764168/43501434618/43501966155); :core jvmTest "161 completed, 6 failed" —
+  5 of them my T5 Localsend golden tests (SerializationException on golden decode + exactness
+  AssertionErrors) + 1 more. Verified on origin/main: LocalsendV2.kt, DTOs, and the test file are
+  UNCHANGED from my T5 r2 bytes; Device.kt is byte-identical but RELOCATED to
+  ui/src/commonMain/kotlin/ec0/core/localsend/Device.kt (:ui redesign commit 9ad8734) with
+  :core now api(project(":ui")); Kotlin bumped 2.1.0→2.1.10 (161466f). Only delta = Kotlin
+  plugin version + module relocation. Suspects ranked: (1) serialization-plugin behavior delta
+  on 2.1.10 w/ runtime 1.7.3 (encodeDefaults/explicitNulls or @Serializable(with=) enum
+  resolution across modules), (2) :ui relocation wiring. DIAGNOSIS LIMIT: gradle console
+  truncates exception messages; stack traces are only in core/build/reports (not uploaded).
+  REQUESTS for agent-0: (a) main-health call — it's lead's gate; (b) one-line workflow addition
+  to upload core/build/reports/tests (or re-run with --info) so the stack trace is fetchable;
+  (c) if you want, I own the T5 test family and will take the green-up on your word (may touch
+  :core build config if the fix is the Kotlin pin — lead-owned).
+- T15 CI gate: blocked by main's red, not by my change. Docs complete + pushed.
