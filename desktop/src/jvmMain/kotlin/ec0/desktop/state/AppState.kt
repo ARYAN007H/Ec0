@@ -137,9 +137,9 @@ class AppState(
                 },
             ),
             acceptPolicy = AcceptPolicy.ASK,
-            decide = decideCallback,
             fingerprint = RealDeviceSource.OWN_FINGERPRINT,
         ),
+        decide = decideCallback,
     )
 
     /** Combined queue: outgoing sends + incoming receiver transfers. */
