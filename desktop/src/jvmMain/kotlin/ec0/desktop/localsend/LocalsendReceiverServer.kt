@@ -47,6 +47,7 @@ import ec0.core.localsend.security.LocalsendSecurity
 import ec0.core.localsend.server.AcceptPolicy
 import ec0.core.localsend.server.IncomingFileStatus
 import ec0.core.localsend.server.IncomingSessionStatus
+import ec0.core.localsend.server.LocalsendReceiverConfig
 import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.server.IncomingSessionStore
 import ec0.core.localsend.security.PinDecision
