@@ -77,15 +77,6 @@ fun HomePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
     val settings by bridge.settings.collectAsState()
     val incoming by bridge.incomingRequest.collectAsState()
 
-    incoming?.let { request ->
-        IncomingRequestCard(
-            request = request,
-            onAccept = { bridge.acceptIncoming(trust = false) },
-            onAcceptTrust = { bridge.acceptIncoming(trust = true) },
-            onDecline = { bridge.declineIncoming() },
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -93,6 +84,14 @@ fun HomePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
             .padding(horizontal = 24.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        incoming?.let { request ->
+            IncomingRequestCard(
+                request = request,
+                onAccept = { bridge.acceptIncoming(trust = false) },
+                onAcceptTrust = { bridge.acceptIncoming(trust = true) },
+                onDecline = { bridge.declineIncoming() },
+            )
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
