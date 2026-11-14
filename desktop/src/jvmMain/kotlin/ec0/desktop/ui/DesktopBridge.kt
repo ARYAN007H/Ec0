@@ -34,6 +34,12 @@ class DesktopBridge(private val appState: AppState) : UiBridge {
     override fun updateSettings(transform: (SettingsState) -> SettingsState) =
         appState.updateSettings(transform)
 
+    override val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = appState.incomingRequest
+
+    override fun acceptIncoming(trust: Boolean) = appState.acceptIncoming(trust)
+
+    override fun declineIncoming() = appState.declineIncoming()
+
     override fun sendFile(fileRef: Any, device: UiDevice) {
         if (fileRef is File) appState.sendFile(fileRef, device)
     }

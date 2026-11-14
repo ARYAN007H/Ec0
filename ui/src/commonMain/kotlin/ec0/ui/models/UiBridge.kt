@@ -7,7 +7,19 @@
  */
 package ec0.ui.models
 
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+
+/** One offered file of a pending incoming transfer, UI-safe view. */
+data class IncomingFileInfo(val fileName: String, val size: Long)
+
+/** An incoming transfer awaiting the user's decision (accept / decline / trust). */
+data class IncomingRequest(
+    val senderAlias: String,
+    val senderFingerprint: String,
+    val senderIp: String,
+    val files: List<IncomingFileInfo>,
+)
 
 /** Which full-suite features are live on this platform — panels render REAL states only. */
 data class Capabilities(
@@ -44,4 +56,17 @@ interface UiBridge {
 
     /** Human label for the last raw protocol error on a transfer, or null. */
     fun isDarkTheme(): Boolean = false
+
+    /**
+     * Incoming transfer awaiting the user's accept/decline decision —
+     * non-null while the dialog should show. Platforms without a receiver
+     * keep this null forever.
+     */
+    val incomingRequest: StateFlow<IncomingRequest?> get() = MutableStateFlow<IncomingRequest?>(null)
+
+    /** Accept the pending incoming transfer (all offered files), optionally trusting the sender. */
+    fun acceptIncoming(trust: Boolean = false) {}
+
+    /** Decline the pending incoming transfer (→ 403 to the sender). */
+    fun declineIncoming() {}
 }

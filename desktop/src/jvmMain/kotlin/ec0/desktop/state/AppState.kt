@@ -23,6 +23,7 @@ import ec0.ui.models.TransferItem
 import ec0.ui.models.TransferState
 import ec0.ui.models.UiDevice
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -70,6 +71,59 @@ class AppState(
      * per-process id) so peers see one consistent identity. Alias/PIN changes
      * apply on app restart — the receiver config is built once.
      */
+    /**
+     * Incoming transfer awaiting the user's decision — the receiver's ASK
+     * callback parks on a [CompletableDeferred] and the shared UI shows the
+     * dialog from this state. Trusted fingerprints skip the dialog entirely.
+     */
+    private val _incomingRequest = MutableStateFlow<ec0.ui.models.IncomingRequest?>(null)
+    val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = _incomingRequest.asStateFlow()
+
+    /** The raw request + decision handle behind the currently-shown dialog. */
+    private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, CompletableDeferred<LocalsendReceiverServer.Acceptance>>? = null
+
+    private val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> LocalsendReceiverServer.Acceptance =
+        { request, _ ->
+            val fingerprint = request.info.fingerprint
+            if (fingerprint in _settings.value.trustedFingerprints) {
+                LocalsendReceiverServer.Acceptance.ACCEPT(request.files.keys)
+            } else {
+                val decision = CompletableDeferred<LocalsendReceiverServer.Acceptance>()
+                pendingRequestRef = request to decision
+                _incomingRequest.value = ec0.ui.models.IncomingRequest(
+                    senderAlias = request.info.alias,
+                    senderFingerprint = fingerprint,
+                    senderIp = "",
+                    files = request.files.values.map {
+                        ec0.ui.models.IncomingFileInfo(fileName = it.fileName, size = it.size)
+                    },
+                )
+                try {
+                    decision.await()
+                } finally {
+                    _incomingRequest.value = null
+                    pendingRequestRef = null
+                }
+            }
+        }
+
+    /** Accept the pending incoming transfer (all offered files), optionally trusting the sender. */
+    fun acceptIncoming(trust: Boolean) {
+        pendingRequestRef?.let { (request, decision) ->
+            if (trust) {
+                updateSettings { s ->
+                    s.copy(trustedFingerprints = s.trustedFingerprints + request.info.fingerprint)
+                }
+            }
+            decision.complete(LocalsendReceiverServer.Acceptance.ACCEPT(request.files.keys))
+        }
+    }
+
+    /** Decline the pending incoming transfer (sender gets 403). */
+    fun declineIncoming() {
+        pendingRequestRef?.second?.complete(LocalsendReceiverServer.Acceptance.DECLINE)
+    }
+
     private val receiver: LocalsendReceiverServer = LocalsendReceiverServer(
         config = LocalsendReceiverConfig(
             alias = _settings.value.alias,
@@ -81,7 +135,8 @@ class AppState(
                     System.getProperty("user.home") + "/Downloads"
                 },
             ),
-            acceptPolicy = AcceptPolicy.AUTO_ACCEPT_ALL,
+            acceptPolicy = AcceptPolicy.ASK,
+            decide = decideCallback,
             fingerprint = RealDeviceSource.OWN_FINGERPRINT,
         ),
     )
@@ -94,6 +149,27 @@ class AppState(
     private var scanJob: Job? = null
     private var tickerJob: Job? = null
 
+    private val neighborTtlMs = 20_000L
+    private val discoveryPeriodMs = 5_000L
+
+    /**
+     * Neighbor cache — peers persist across sweeps and expire after
+     * [neighborTtlMs] unseen, so devices SHOW UP AUTOMATICALLY while both
+     * clients run (each side announces on its own ticker; no simultaneous
+     * manual scans needed).
+     */
+    private val neighborCache = LinkedHashMap<String, Pair<UiDevice, Long>>()
+
+    private suspend fun sweepAndMerge() {
+        val found = deviceSource.discover()
+        val now = System.currentTimeMillis()
+        synchronized(neighborCache) {
+            found.forEach { d -> neighborCache[d.fingerprint] = d to now }
+            neighborCache.values.removeAll { (_, seen) -> now - seen > neighborTtlMs }
+        }
+        _devices.value = synchronized(neighborCache) { neighborCache.values.map { it.first } }
+    }
+
     init {
         runCatching { receiver.start() }.onFailure {
             // TEMP diagnostic: the deb launcher swallows stderr, so write the
@@ -103,15 +179,21 @@ class AppState(
         java.io.File("/tmp/ec0-receiver-status.txt").writeText(
             "started=${receiver.boundPort != null} boundPort=${receiver.boundPort} at=${System.currentTimeMillis()}",
         )
+        scope.launch {
+            while (isActive) {
+                runCatching { sweepAndMerge() }
+                delay(discoveryPeriodMs)
+            }
+        }
     }
 
-    /** Run one discovery sweep; devices are replaced on success. */
+    /** Run one discovery sweep immediately (button); results merge into the cache. */
     fun startScan() {
         if (_scanning.value) return
         scanJob = scope.launch {
             _scanning.value = true
             try {
-                _devices.value = deviceSource.discover()
+                sweepAndMerge()
             } finally {
                 _scanning.value = false
             }

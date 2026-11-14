@@ -62,6 +62,8 @@ data class SettingsState(
     val synergyProbeEnabled: Boolean = false,
     /** null = follow system. */
     val darkTheme: Boolean? = null,
+    /** Peers whose incoming transfers are auto-accepted (user trusted them). */
+    val trustedFingerprints: Set<String> = emptySet(),
 )
 
 /**

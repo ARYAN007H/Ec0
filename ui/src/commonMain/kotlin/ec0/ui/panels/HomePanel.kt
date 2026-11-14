@@ -75,6 +75,16 @@ fun HomePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
     val transfers by bridge.transfers.collectAsState()
     val scanning by bridge.scanning.collectAsState()
     val settings by bridge.settings.collectAsState()
+    val incoming by bridge.incomingRequest.collectAsState()
+
+    incoming?.let { request ->
+        IncomingRequestCard(
+            request = request,
+            onAccept = { bridge.acceptIncoming(trust = false) },
+            onAcceptTrust = { bridge.acceptIncoming(trust = true) },
+            onDecline = { bridge.declineIncoming() },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -302,4 +312,60 @@ private fun Capabilities.label(): String = buildString {
     if (canReceive) append("Receiving")
     if (clipboardSync) append(if (isEmpty()) "Clipboard" else " · Clipboard")
     if (isEmpty()) append("Discovery + send")
+}
+
+/** Incoming-transfer decision dialog (reference: upstream's ask flow). */
+@Composable
+private fun IncomingRequestCard(
+    request: ec0.ui.models.IncomingRequest,
+    onAccept: () -> Unit,
+    onAcceptTrust: () -> Unit,
+    onDecline: () -> Unit,
+) {
+    val accent = ec0Colors().synergy
+    Card(
+        shape = Ec0Shapes.hero,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Incoming transfer",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "${request.senderAlias} · ${request.files.size} file(s)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                )
+            }
+            request.files.take(4).forEach { f ->
+                Text(
+                    "• ${f.fileName} (${f.size} B)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onAccept, shape = Ec0Shapes.pill) {
+                    Text("Accept")
+                }
+                FilledTonalButton(onClick = onAcceptTrust, shape = Ec0Shapes.pill) {
+                    Text("Accept & trust")
+                }
+                FilledTonalButton(onClick = onDecline, shape = Ec0Shapes.pill) {
+                    Text("Decline")
+                }
+            }
+            Text(
+                "Trusted devices are accepted automatically next time",
+                style = MaterialTheme.typography.labelSmall,
+                color = accent.copy(alpha = 0.9f),
+            )
+        }
+    }
 }
