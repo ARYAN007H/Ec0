@@ -37,6 +37,7 @@ import ec0.ui.models.UiDevice
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -94,6 +95,24 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
      * mandatory for UDP :53317 discovery (KDE Connect does the same).
      */
     private var multicastLock: WifiManager.MulticastLock? = null
+
+    private val discoveryPeriodMs = 5_000L
+
+    init {
+        // Multicast reception on Android requires the lock held CONTINUOUSLY —
+        // the discovery ticker runs for the app lifetime, so does the lock.
+        val wifi = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        multicastLock = wifi.createMulticastLock("ec0-discovery").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                runCatching { _devices.value = discovery.discoverSweep() }
+                kotlinx.coroutines.delay(discoveryPeriodMs)
+            }
+        }
+    }
 
     override fun startScan() {
         if (_scanning.value) return
