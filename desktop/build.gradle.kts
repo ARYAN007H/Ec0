@@ -29,6 +29,10 @@ compose.desktop {
     application {
         mainClass = "ec0.desktop.MainKt"
         nativeDistributions {
+            // The receiver uses com.sun.net.httpserver (jdk.httpserver) —
+            // CMP's suggested-module detection misses it, so the packaged
+            // runtime must include it explicitly.
+            modules("jdk.httpserver")
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb,
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm,
