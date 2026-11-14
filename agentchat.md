@@ -173,20 +173,6 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 ## Log
 <!-- append below, newest last, keep max 25 entries — trim the oldest -->
 
-### 2026-11-12 18:13 UTC — agent-2
-- STATUS: DONE (PR #1 open, review requested)
-- TASK: T2 — Synergy message catalog + transport constants
-- FILES: docs/re/synergy-message-catalog.md, docs/re/synergy-catalog.yaml
-- WHAT: Full catalog extracted from decompiled OPSynergy 17.7.35. Gate:
-  SynergyCmd 65/65 string consts + 11/11 flag ints (100%, grep-verified vs
-  source); YAML parses, full value coverage PASS. Key findings: envelope
-  noncestr/signature are LONGs; base send path uses signature=0x0FFFFFFF
-  constant + Random(timestamp) nonce (WebSocketConnectManager:558); port
-  fallback 8080→39888→49888→59888 + scene port 8792; RESPONSE_KSC_CODE
-  (32 zeros) is a response code not a key; src_role="synergy"; TLS via
-  pairing-exchanged certs. 5 explicit unknowns queued for T4. Branch
-  feat/agent-2-catalog @ origin, PR https://github.com/ARYAN007H/Ec0/pull/1.
-
 ### 2026-11-12 18:16 UTC — agent-0
 - STATUS: WORKING
 - TASK: T3 — monorepo scaffold
@@ -1420,3 +1406,24 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - T14 review round 2 (re-dispatched reviewer): REQUEST-CHANGES with P0 traversal + 3 P1s + P2/P3 sweep — ALL fixed by lead on the branch (FileNameSanitizer per reference filename.rs; containment check; session finishes on DONE-or-FAILED (is_complete); size enforcement; atomic validateAndClaim; incremental sha256; /show token gate; /download PIN+IP-gated sessions; /cancel IP check; checksum retry window; executor shutdownNow; register echo; ASK-decision slot claim). Merged @da6b826. Wire fidelity + lead-applied fixes re-verified by the reviewer.
 - Receiver wired into the desktop app (AppState owns it, starts at boot, combined outgoing+incoming queue, announce download=true honest, canReceive capability true @d8de79c/5871f4d).
 - Known deferred (filed): incoming-transfer cancel from UI; ASK-dialog UI for desktop incoming; settings-live-reload for receiver config (restart applies); incoming PIN enforcement UI; flaky Ec0EngineResilienceTest.endToEndNodePairing (timing — deflake with polling, not sleeps).
+
+### 2026-11-14 14:40 UTC — gemini-argon
+- STATUS: DONE (T16 Smart Connect design doc & roadmap complete — STOPPED for agent-0 review gate before S-A implementation)
+- TASK: T16 — Smart Connect full-parity design specification (`docs/engine/smart-connect-design.md`) & roadmap integration (`docs/engine/roadmap.md`)
+- FILES: docs/engine/smart-connect-design.md, docs/engine/roadmap.md
+- WHAT:
+  1. Read `agentchat.md`, `docs/re/vendor/smartconnect-linux/` (PROVENANCE, architecture, security, control-socket-api, and all 14 protocol specs), `docs/re/smart-connect-{findings,ec0-delta,unlock}.md`, and `docs/engine/{design,roadmap,coloros-resilience}.md`. Preserved `[OBSERVED]` / `[INFERRED]` / `[APK-STATIC]` provenance tags and clean-room rules (zero code transplantation).
+  2. Wrote normative specification in `docs/engine/smart-connect-design.md` covering:
+     - **Shared Transport Trait (`PinnedTlsWebSocketTransport`):** Unifies Motorola Smart Connect (`wss://<ip>:<wsPort>/readyfor/`, subprotocol `"readyfor"`, QR `fp` SHA-256 cert pinning, hostname verification disabled) and O+ Synergy (`wss://<ip>:<port>/`, pinned APK cert) under one KMP transport abstraction with optional mTLS client cert support for `svc 168`.
+     - **Discovery, Wake & Sealed Frames:** QR payload (`ips`, `wsPort`, `fp`, `sn`, `net`, `ble`, `p2p`, `v`, `f`), `_readyformdns._tcp.local.` mDNS, BLE GATT wake (`0x5246` -> characteristic `0x0722` 7-byte payload `[0x01, ip0..3, portHi, portLo]`), and `SealedDiscoveryFrameCodec` on UDP `:53320` (`[0x01][msgType:1B][deviceId15:15B][iv:12B][ciphertext+16B GCM tag]`, 17B header as AAD, encrypted under per-pair 32B `secretKey` derived via `HKDF-SHA256` with `info="readyfor-tls-export-v1"`).
+     - **Wire-True Capability Map (`svc 25`) & Client Profiles:** Models peer `svc 25` map as the sole feature gate (`docs/re/smart-connect-unlock.md`), supporting `LINUX_HONEST` (`clientType=5, osType="linux"`) and `WIN_UNLOCKED` (`clientType=1, osType="windows"`, unlocking `appstream: "1"` on stock Moto APK) and projecting wire-true `Capabilities` directly into `:ui`'s Sync/feature cards.
+     - **Phased Slices `S-A` .. `S-E`:**
+       - `S-A`: `PinnedTlsWebSocketTransport`, QR/mDNS/BLE/Sealed-UDP discovery, `svc 0` `initConnect`, `svc 25` cap map, and `svc 1/25` device status/tiles -> **first live pairing with Aryan's A5x (`CPH2733IN`) running stock Smart Connect**.
+       - `S-B`: Control-WS services — Clipboard (`svc 9` actions `0..2, 13..17` w/ SHA-256 loopback dedupe & 30s OTP scrub), Notifications (`svc 5/37` + inline reply `action: 11` + binary WebP icon framing), and PC Lock (`svc 22` -> `loginctl lock-session`).
+       - `S-C`: File Exchange — FileStation (`svc 168`) embedded **NFSv3-over-mTLS** (`MOUNT` v3 + `NFS` v3 over single mTLS socket, canonical root sandboxing, user-space `VirtualFsProvider` + optional FUSE helper) and `fex` (`svc 2/17`) HTTPS `:9886` range-resumable file transfer.
+       - `S-D`: WebRTC & RTP Media Plane — Mirroring (`svc 1/15/16/17`), Webcam (`svc 3/17` -> `/dev/video10` `v4l2loopback`), App Streaming (`svc 15/17` + stock Android API 34+ VDM `createVirtualDisplay`), Cross Control (`svc 26` TCP protobuf + screen-edge transition), and Phone-as-Display (`svc 202` stretch).
+       - `S-E`: SMS Relay (`svc 204/100`) and Hotspot Auto-Join (`svc 13` -> `nmcli`).
+     - **Daemon + Supervised-Helpers Split:** Adapted `smartconnect-linux`'s architecture to Kotlin across `:desktop` and `:android-app` (ColorOS-resilient single foreground service per `docs/engine/coloros-resilience.md`).
+  3. Merged `S-A` .. `S-E` and Slices `8–11` into `docs/engine/roadmap.md`.
+  4. STOPPED per T16 instructions — awaiting `agent-0` design review before starting `S-A` implementation.
+
