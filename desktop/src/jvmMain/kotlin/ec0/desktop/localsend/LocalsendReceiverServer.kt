@@ -210,11 +210,11 @@ class LocalsendReceiverServer(
 
         val acceptance = kotlinx.coroutines.runBlocking { decideAccepted(request, senderIp) }
         val accepted: Set<String> = when (acceptance) {
-            ReceiverReceiverAcceptance.DECLINE -> {
+            ReceiverAcceptance.DECLINE -> {
                 store.removeSession(sessionId)
                 return respond(exchange, 403, "Declined".toByteArray()) // distinct from wrong-PIN 401
             }
-            is Receiveris ReceiverAcceptance.ACCEPT -> acceptance.fileIds
+            is ReceiverAcceptance.ACCEPT -> acceptance.fileIds
         }
         if (accepted.isEmpty()) {
             // Accepted nothing → no transfer needed → 204 no-content (v2.rs:138)
@@ -229,8 +229,8 @@ class LocalsendReceiverServer(
 
     private suspend fun decideAccepted(request: PrepareUploadRequestDtoV2, senderIp: String): ReceiverAcceptance =
         when (config.acceptPolicy) {
-            AcceptPolicy.AUTO_ACCEPT_ALL -> ReceiverReceiverAcceptance.ACCEPT(request.files.keys)
-            AcceptPolicy.AUTO_DECLINE_ALL -> Acceptance.DECLINE
+            AcceptPolicy.AUTO_ACCEPT_ALL -> ReceiverAcceptance.ACCEPT(request.files.keys)
+            AcceptPolicy.AUTO_DECLINE_ALL -> ReceiverAcceptance.DECLINE
             AcceptPolicy.ASK -> decide(request, senderIp)
         }
 
