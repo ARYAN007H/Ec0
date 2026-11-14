@@ -32,9 +32,6 @@
  */
 package ec0.desktop.localsend
 
-/** Compat alias — the acceptance contract now lives in core (shared with Android). */
-typealias Acceptance = ReceiverAcceptance
-
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import ec0.core.localsend.LocalsendV2
@@ -65,6 +62,9 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.logging.Level
 import java.util.logging.Logger
+
+/** Compat alias — the acceptance contract now lives in core (shared with Android). */
+typealias Acceptance = ReceiverAcceptance
 
 class LocalsendReceiverServer(
     val config: LocalsendReceiverConfig,
