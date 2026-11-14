@@ -270,7 +270,7 @@ class LocalsendReceiverServer(
             var written = 0L
             var overflowed = false
             exchange.requestBody.use { input ->
-                java.io.DigestOutputStream(
+                java.security.DigestOutputStream(
                     Files.newOutputStream(target, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE),
                     digest,
                 ).use { output ->
