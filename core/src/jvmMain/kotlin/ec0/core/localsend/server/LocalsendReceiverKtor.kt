@@ -34,9 +34,10 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
-import io.ktor.server.request.origin
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.request.uri
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
