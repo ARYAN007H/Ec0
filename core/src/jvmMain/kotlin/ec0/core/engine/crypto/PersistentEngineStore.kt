@@ -158,9 +158,24 @@ class EncryptedIdentityStore(
 
         fun defaultConfigDir(): File {
             val xdg = System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }
-            val base = if (xdg != null) File(xdg) else File(System.getProperty("user.home", "."), ".config")
+            if (xdg != null) {
+                return File(File(xdg), "ec0")
+            }
+            val userHome = System.getProperty("user.home", "").trim()
+            val base = if (userHome.isNotEmpty() && userHome != "/") {
+                File(userHome, ".config")
+            } else {
+                File(System.getProperty("java.io.tmpdir", "."), ".config")
+            }
             return File(base, "ec0")
         }
+
+        /**
+         * Resolves an explicit `<appFilesDir>/ec0` directory for Android `context.filesDir`
+         * so Android callers never rely on `user.home/.config`.
+         */
+        fun forAppFilesDir(appFilesDir: File, secretOverride: ByteArray? = null): EncryptedIdentityStore =
+            EncryptedIdentityStore(configDir = File(appFilesDir, "ec0"), secretOverride = secretOverride)
 
         internal fun ensureDirectoryPermissions(dir: File) {
             if (!dir.exists()) {
@@ -192,13 +207,26 @@ class EncryptedIdentityStore(
 }
 
 /**
- * Persistent implementation of [PinStore] backed by `~/.config/ec0/pinned_peers.json`.
+ * Persistent implementation of [PinStore] backed by `<storeDir>/pinned_peers.json`.
  * Also stores each peer's last verified `(host, port)` endpoint for Tier-2 reconnect.
  */
 class PersistentPinStore(
     private val storeFile: File = File(EncryptedIdentityStore.defaultConfigDir(), "pinned_peers.json"),
     allowAutoTofuOnUnknownPeer: Boolean = false,
 ) : PinStore {
+    companion object {
+        /**
+         * Creates a [PersistentPinStore] rooted at `<appFilesDir>/ec0/pinned_peers.json`
+         * for Android `context.filesDir`.
+         */
+        fun forAppFilesDir(
+            appFilesDir: File,
+            allowAutoTofuOnUnknownPeer: Boolean = false,
+        ): PersistentPinStore = PersistentPinStore(
+            storeFile = File(File(appFilesDir, "ec0"), "pinned_peers.json"),
+            allowAutoTofuOnUnknownPeer = allowAutoTofuOnUnknownPeer,
+        )
+    }
     private val lock = ReentrantLock()
     private val delegate = InMemoryPinStore(allowAutoTofuOnUnknownPeer = allowAutoTofuOnUnknownPeer)
     private val endpoints = ConcurrentHashMap<String, PersistedEndpoint>()

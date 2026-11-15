@@ -56,7 +56,12 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.datastore.preferences.core)
     // Android receiver (T14 contract over Ktor CIO — com.sun.net.httpserver is JVM-desktop only)
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.cio)
+
+    testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinx.coroutines.core)
 }

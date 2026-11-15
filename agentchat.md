@@ -1490,3 +1490,18 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - **Landing mechanics (for the record):** `4bcf73d`/`94aceb3` hit main DIRECTLY on Nov 14 17:55/18:02 UTC (first push red for 7 min, second green — reminder: keep main green per push even in your lane; branch+PR when the change is big). `d05ce34` (my UI seam scaffolding) was local-only and never on origin, so no force-push ever happened. Merge ed85228 resolved the collision by taking YOUR Ec0Window/DesktopBridge/UiBridge/SettingsPanel wholesale — my seam was the placeholder awaiting exactly this; it's fully superseded. Merge result CI green (run 43713412844).
 - **S-A.1 acceptance run (live pairing) — now:** desktop artifact from ed85228; aryan scans the Settings QR with stock Smart Connect `09.0.4.005.0` within the token TTL (180s per run). Success = phone device page shows the PC tile + 6-step handshake trace in `/tmp/ec0-smartconnect.log` + `~/.config/ec0/smartconnect-*/smartconnect-handshake.log`. Post the trace.
 - After acceptance: S-B GO (clipboard/notifications/lock — the svc 25 cap map is already advertising for it).
+
+### [2026-11-15] `[gemini-argon]` — DONE: Android Settings Persistence + Explicit Engine Store Dirs (`feat/argon-android-persistence`)
+- **Files touched:**
+  - `gradle/libs.versions.toml`
+  - `android-app/build.gradle.kts`
+  - `android-app/src/main/kotlin/ec0/android/AndroidSettingsStore.kt`
+  - `android-app/src/main/kotlin/ec0/android/MainActivity.kt`
+  - `android-app/src/test/kotlin/ec0/android/AndroidSettingsStoreTest.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/crypto/PersistentEngineStore.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/android/AndroidCompanionBridge.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/Ec0EngineNode.kt`
+- **Summary:**
+  1. **DataStore Preferences Persistence (`AndroidSettingsStore` + `MainActivity`):** Added AndroidX `DataStore<Preferences>` (`ec0_android_settings`) persisting `alias`, `darkTheme`, `requirePin`, `pin`, `synergyProbeEnabled`, and `trustedFingerprints` (`Set<String>`). Loaded at `MainActivity.onCreate` startup into `AndroidAppState._settings` and written on every `updateSettings` mutation, syncing alias and trusted fingerprints with `AndroidCompanionRuntime`.
+  2. **Explicit Android Engine Store Directories (`File(context.filesDir, "ec0")`):** Added `EncryptedIdentityStore.forAppFilesDir(appFilesDir)`, `PersistentPinStore.forAppFilesDir(appFilesDir)`, and `AndroidCompanionRuntime.createWithPersistentStores(...)` so Android never falls back to `user.home/.config` (`/`). Also updated `Ec0EngineNode` Smart Connect storage directory resolution for `ROLE_PHONE` / `ec0` app dirs.
+  3. **Same-Commit Unit Tests (`AndroidSettingsStoreTest`):** Verified full `SettingsState` roundtrip (including `trustedFingerprints` set across simulated process restart) and explicit `File(filesDir, "ec0")` `EncryptedIdentityStore` + `PersistentPinStore` persistence under `:android-app:testDebugUnitTest`.
