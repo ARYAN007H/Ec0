@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -50,15 +51,16 @@ class DesktopBridge(
             MutableStateFlow(null)
         } else {
             combine(hub.pairingQrUri, hub.pairingQrMatrix) { uri, matrix ->
-                matrix?.let { ec0.ui.models.PairingQr(uri, it.size, it.modules.toList()) }
+                matrix?.let { ec0.ui.models.PairingQr(uri, it.size, it.toRowMajorList()) }
             }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
         }
 
     override val trustedPeerCount: StateFlow<Int> =
-        hub?.pinnedPeers?.let { pinned ->
-            kotlinx.coroutines.flow.map(pinned) { it.size }
-                .stateIn(bridgeScope, SharingStarted.Eagerly, 0)
-        } ?: MutableStateFlow(0)
+        if (hub == null) {
+            MutableStateFlow(0)
+        } else {
+            hub.pinnedPeers.map { it.size }.stateIn(bridgeScope, SharingStarted.Eagerly, 0)
+        }
 
     init {
         // The Smart Connect invite token expires after ~180 s — rotate and rebuild so the
