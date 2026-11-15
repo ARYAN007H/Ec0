@@ -4,7 +4,7 @@ coroutines = "1.9.0"
 serialization = "1.8.1"
 composeMultiplatform = "1.7.3"
 # Decoupled from the CMP plugin — carries the M3 Expressive APIs (experimental)
-material3Expressive = "1.9.0-beta06"
+material3Expressive = "1.11.0-alpha07"
 ktor = "3.0.3"
 protobuf = "4.28.2"
 grpc = "1.68.1"
