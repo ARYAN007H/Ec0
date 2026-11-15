@@ -4,12 +4,16 @@
 package ec0.ui.panels
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,8 +33,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -38,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.UiBridge
+import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Shapes
 import ec0.ui.widgets.SectionHeader
 
@@ -138,6 +145,30 @@ fun SettingsPanel(bridge: UiBridge) {
         }
 
         SettingsCard("Appearance") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Color theme", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Ec0Seed.entries.forEach { seed ->
+                    val selected = Ec0Seed.fromId(settings.themeSeed) == seed
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 10.dp)
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(seed.swatch)
+                            .border(
+                                width = if (selected) 2.dp else 1.dp,
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant
+                                },
+                                shape = CircleShape,
+                            )
+                            .clickable { bridge.updateSettings { it.copy(themeSeed = seed.id) } },
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Theme", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 val options = listOf("System", "Light", "Dark")

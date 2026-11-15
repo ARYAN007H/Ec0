@@ -63,6 +63,8 @@ data class SettingsState(
     val synergyProbeEnabled: Boolean = false,
     /** null = follow system. */
     val darkTheme: Boolean? = null,
+    /** M3 Expressive seed id (ec0.ui.theme.Ec0Seed) — user-picked color theme. */
+    val themeSeed: String = "amber",
     /** Peers whose incoming transfers are auto-accepted (user trusted them). */
     val trustedFingerprints: Set<String> = emptySet(),
 )

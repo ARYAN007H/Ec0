@@ -52,6 +52,7 @@ import ec0.ui.panels.SettingsPanel
 import ec0.ui.panels.SharePanel
 import ec0.ui.panels.SyncPanel
 import ec0.ui.panels.TransfersPanel
+import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Theme
 
 enum class Section(val label: String, val icon: ImageVector) {
@@ -73,9 +74,10 @@ fun Ec0App(
     pickFile: (onPicked: (Any?) -> Unit) -> Unit,
     compact: Boolean,
 ) {
-    val dark = bridge.settings.collectAsState().value.darkTheme
+    val settings = bridge.settings.collectAsState().value
+    val dark = settings.darkTheme
     val systemDark = isSystemInDarkTheme()
-    Ec0Theme(dark = dark ?: systemDark) {
+    Ec0Theme(dark = dark ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
         var section by remember { mutableStateOf(Section.HOME) }
 
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
