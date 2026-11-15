@@ -294,4 +294,40 @@ class AndroidCompanionRuntime(
     override fun close() {
         node.close()
     }
+
+    companion object {
+        /**
+         * Creates an [AndroidCompanionRuntime] backed by explicit `<appFilesDir>/ec0`
+         * store directories ([EncryptedIdentityStore] and [PersistentPinStore]) rather
+         * than `user.home/.config` (which is invalid on Android).
+         */
+        fun createWithPersistentStores(
+            storeDir: File,
+            phoneModelName: String,
+            callbacks: AndroidPlatformCallbacks,
+            listenPort: Int = EngineConstants.PRIMARY_PORT,
+            downloadDir: File = File(storeDir, "downloads"),
+            allowAutoTofuOnUnknownPeer: Boolean = false,
+            mdnsTransportFactory: (() -> MdnsDatagramTransport)? = null,
+            clockMs: () -> Long = { System.currentTimeMillis() },
+        ): AndroidCompanionRuntime {
+            storeDir.mkdirs()
+            downloadDir.mkdirs()
+            val identityStore = ec0.core.engine.crypto.EncryptedIdentityStore(configDir = storeDir)
+            val pinStore = ec0.core.engine.crypto.PersistentPinStore(
+                storeFile = File(storeDir, "pinned_peers.json"),
+                allowAutoTofuOnUnknownPeer = allowAutoTofuOnUnknownPeer,
+            )
+            return AndroidCompanionRuntime(
+                phoneIdentity = identityStore.loadOrCreateIdentity(),
+                phoneModelName = phoneModelName,
+                callbacks = callbacks,
+                listenPort = listenPort,
+                downloadDir = downloadDir,
+                pinStore = pinStore,
+                mdnsTransportFactory = mdnsTransportFactory,
+                clockMs = clockMs,
+            )
+        }
+    }
 }

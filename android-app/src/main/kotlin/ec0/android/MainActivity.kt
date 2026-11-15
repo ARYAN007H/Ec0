@@ -55,17 +55,42 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** Android-side app state — implements the shared [UiBridge] seam. */
-class AndroidAppState(private val context: Context, private val scope: CoroutineScope) : UiBridge {
+class AndroidAppState(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    private val settingsStore: AndroidSettingsStore = AndroidSettingsStore(context.applicationContext),
+    private val ec0StoreDir: File = File(context.filesDir, "ec0"),
+) : UiBridge {
+
+    private val defaultSettings = SettingsState(
+        alias = Build.MODEL.ifBlank { "Android" },
+        deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+        deviceType = DeviceType.MOBILE,
+        protocol = ProtocolType.HTTP,
+    )
 
     private val _settings = MutableStateFlow(
-        SettingsState(
-            alias = Build.MODEL.ifBlank { "Android" },
-            deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-            deviceType = DeviceType.MOBILE,
-            protocol = ProtocolType.HTTP,
-        ),
+        kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+            runCatching { settingsStore.load(defaultSettings) }.getOrDefault(defaultSettings)
+        },
     )
     override val settings: StateFlow<SettingsState> = _settings.asStateFlow()
+
+    /**
+     * Companion engine runtime wired with explicit `File(context.filesDir, "ec0")` store
+     * directories so Android never falls back to `user.home/.config` (`PersistentEngineStore.kt:161`).
+     */
+    val companionRuntime: ec0.core.engine.android.AndroidCompanionRuntime =
+        ec0.core.engine.android.AndroidCompanionRuntime.createWithPersistentStores(
+            storeDir = ec0StoreDir,
+            phoneModelName = _settings.value.alias,
+            callbacks = object : ec0.core.engine.android.AndroidPlatformCallbacks {},
+            listenPort = 0,
+            downloadDir = File(
+                context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
+                "ec0",
+            ),
+        )
 
     private val discovery = LocalsendUdpDiscovery(
         settingsProvider = { _settings.value },
@@ -91,6 +116,8 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
         photoSync = false,
         remoteInput = false,
     )
+
+    override fun isDarkTheme(): Boolean = _settings.value.darkTheme ?: false
 
     private var scanJob: Job? = null
     private val cancelled = mutableSetOf<String>()
@@ -172,6 +199,10 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
     private val discoveryPeriodMs = 5_000L
 
     init {
+        scope.launch(Dispatchers.IO) {
+            val loaded = runCatching { settingsStore.load(defaultSettings) }.getOrDefault(defaultSettings)
+            _settings.value = loaded
+        }
         // Multicast reception on Android requires the lock held CONTINUOUSLY —
         // the discovery ticker runs for the app lifetime, so does the lock.
         val wifi = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -217,7 +248,15 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
     }
 
     override fun updateSettings(transform: (SettingsState) -> SettingsState) {
-        _settings.update(transform)
+        var updatedSnapshot = _settings.value
+        _settings.update { current ->
+            val next = transform(current)
+            updatedSnapshot = next
+            next
+        }
+        scope.launch(Dispatchers.IO) {
+            runCatching { settingsStore.save(updatedSnapshot) }
+        }
     }
 
     override fun sendFile(fileRef: Any, device: UiDevice) {
@@ -301,6 +340,7 @@ class AndroidAppState(private val context: Context, private val scope: Coroutine
     }
 
     fun release() {
+        runCatching { companionRuntime.close() }
         multicastLock?.release()
         multicastLock = null
     }
@@ -326,7 +366,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         scope = activityScope
-        val state = AndroidAppState(applicationContext, activityScope)
+        val settingsStore = AndroidSettingsStore(applicationContext.ec0SettingsDataStore)
+        val ec0StoreDir = File(applicationContext.filesDir, "ec0")
+        val state = AndroidAppState(
+            context = applicationContext,
+            scope = activityScope,
+            settingsStore = settingsStore,
+            ec0StoreDir = ec0StoreDir,
+        )
         appState = state
         setContent {
             Ec0App(
