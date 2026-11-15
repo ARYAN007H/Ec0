@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -65,7 +66,7 @@ fun OnboardingPanel(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            QrStage(alias, qr, Modifier.size(252.dp))
+            QrStage(alias, qr, 252.dp)
             OnboardingCopy(compact)
             ExploreButton(onExploreUnpaired, Modifier.fillMaxWidth())
         }
@@ -97,7 +98,7 @@ fun OnboardingPanel(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                QrStage(alias, qr, Modifier.size(264.dp))
+                QrStage(alias, qr, 264.dp)
             }
         }
     }
