@@ -15,7 +15,7 @@ class QrCodeMatrix(
     private val modules: BooleanArray,
 ) {
     init {
-        require(version in 1..15) { "QR version must be in 1..15 (got $version)" }
+        require(version in 1..20) { "QR version must be in 1..20 (got $version)" }
         require(size == version * 4 + 17) { "Invalid QR dimension $size for version $version" }
         require(modules.size == size * size) { "Modules array length mismatch" }
     }
@@ -24,6 +24,11 @@ class QrCodeMatrix(
         require(x in 0 until size && y in 0 until size) { "Coordinates ($x, $y) out of range 0..<$size" }
         return modules[y * size + x]
     }
+
+    /**
+     * Returns all `size * size` modules in row-major order (`y * size + x`).
+     */
+    fun toRowMajorList(): List<Boolean> = modules.toList()
 
     fun toAsciiArt(quietZone: Int = 2): String = buildString {
         val total = size + quietZone * 2
@@ -46,7 +51,7 @@ class QrCodeMatrix(
     }
 
     companion object {
-        // Total data codewords and EC codewords per block for Version 1..10, EC Level L (ISO/IEC 18004 Table 9)
+        // Total data codewords and EC codewords per block for Version 1..20, EC Level L (ISO/IEC 18004 Table 9)
         private data class VersionSpec(
             val version: Int,
             val totalDataCodewords: Int,
@@ -74,11 +79,16 @@ class QrCodeMatrix(
             VersionSpec(13, 428, 26, 4, 107, alignmentCenters = intArrayOf(6, 34, 62)),
             VersionSpec(14, 461, 30, 3, 115, 1, 116, alignmentCenters = intArrayOf(6, 26, 46, 66)),
             VersionSpec(15, 523, 22, 5, 87, 1, 88, alignmentCenters = intArrayOf(6, 26, 48, 70)),
+            VersionSpec(16, 589, 24, 5, 98, 1, 99, alignmentCenters = intArrayOf(6, 26, 50, 74)),
+            VersionSpec(17, 647, 28, 1, 107, 5, 108, alignmentCenters = intArrayOf(6, 30, 54, 78)),
+            VersionSpec(18, 721, 30, 5, 120, 1, 121, alignmentCenters = intArrayOf(6, 30, 56, 82)),
+            VersionSpec(19, 795, 28, 3, 113, 4, 114, alignmentCenters = intArrayOf(6, 30, 58, 86)),
+            VersionSpec(20, 861, 28, 3, 107, 5, 108, alignmentCenters = intArrayOf(6, 34, 62, 90)),
         )
 
         /**
          * Encodes [text] (UTF-8) into the smallest fitting ISO/IEC 18004 QR Code
-         * matrix (Versions 1..15, Error Correction Level L, Byte Mode).
+         * matrix (Versions 1..20, Error Correction Level L, Byte Mode).
          */
         fun encodeText(text: String): QrCodeMatrix = encodeBytes(text.encodeToByteArray())
 
@@ -98,7 +108,7 @@ class QrCodeMatrix(
                 if (neededBits <= maxBits) return spec
             }
             throw IllegalArgumentException(
-                "QR payload length ($byteLen bytes) exceeds Version 15-L capacity (520 bytes)",
+                "QR payload length ($byteLen bytes) exceeds Version 20-L capacity (858 bytes)",
             )
         }
 
@@ -252,6 +262,20 @@ class QrCodeMatrix(
                 if (!isFunction[(size - 1 - i) * size + 8]) setFunc(8, size - 1 - i, false)
             }
             setFunc(8, size - 8, true)
+
+            // 4b. Draw 18-bit Version Information blocks (Versions 7..20, ISO/IEC 18004 §7.10, Golay 0x1F25)
+            if (spec.version >= 7) {
+                var rem = spec.version
+                repeat(12) {
+                    rem = (rem shl 1) xor ((rem ushr 11) * 0x1F25)
+                }
+                val vbits = (spec.version shl 12) or rem
+                for (i in 0 until 18) {
+                    val bit = ((vbits ushr i) and 1) != 0
+                    setFunc(size - 11 + (i % 3), i / 3, bit)
+                    setFunc(i / 3, size - 11 + (i % 3), bit)
+                }
+            }
 
             // 5. Place data + EC bits in zigzag upward/downward 2-column strips
             var bitIdx = 0

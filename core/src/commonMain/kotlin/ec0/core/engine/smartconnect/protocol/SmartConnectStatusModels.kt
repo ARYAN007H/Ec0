@@ -4,19 +4,29 @@ import ec0.core.engine.smartconnect.SmartConnectConstants
 import ec0.core.engine.smartconnect.SmartConnectEnvelope
 import ec0.core.engine.smartconnect.SmartConnectEnvelopeCodec
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
 
 /**
  * Wire models and replace-whole capability registry (`SmartConnectCapRegistry`) for Smart Connect
  * Service `25` (`svc 25`) device status, capability map (`cmd 1`), phone wallpaper (`cmd 2`),
  * DND state (`cmd 5`), and connect-burst display metrics (`svc 1 cmd 31`, `svc 16 cmd 14`).
  *
- * Normative reference: `docs/engine/smart-connect-design.md` §2.1 & §3-S-A.
+ * Normative reference: `docs/engine/smart-connect-design.md` §2.1, §3-S-A & `device-status-and-tiles.md`.
  */
 @Serializable
 data class SmartConnectStatusAndCapPayload(
+    val ver: String = "1",
     val cmd: Int = SmartConnectConstants.STATUS_CMD_CAP_AND_BATTERY,
-    val data: SmartConnectStatusAndCapData
+    val cap: Map<String, Int> = SmartConnectConstants.DEFAULT_SA_TILE_CAP_MAP,
+    val battery: Int = 100,
+    val deviceName: String = "EC0-PC",
+    val realDeviceName: String = "EC0-PC",
+    val model: String = "Linux PC",
+    val data: SmartConnectStatusAndCapData = SmartConnectStatusAndCapData()
 )
 
 @Serializable
@@ -32,8 +42,11 @@ data class SmartConnectStatusAndCapData(
 
 @Serializable
 data class SmartConnectWallpaperPayload(
+    val ver: String = "1",
     val cmd: Int = SmartConnectConstants.STATUS_CMD_WALLPAPER,
-    val data: SmartConnectWallpaperData
+    val wallpaper: String = "",
+    val md5: String = "",
+    val data: SmartConnectWallpaperData = SmartConnectWallpaperData()
 )
 
 @Serializable
@@ -44,8 +57,11 @@ data class SmartConnectWallpaperData(
 
 @Serializable
 data class SmartConnectDndPayload(
+    val ver: String = "1",
     val cmd: Int = SmartConnectConstants.STATUS_CMD_DND,
-    val data: SmartConnectDndData
+    val dnd: Int = 1,
+    val dndState: Int = 0,
+    val data: SmartConnectDndData = SmartConnectDndData()
 )
 
 @Serializable
@@ -133,6 +149,7 @@ object SmartConnectStatusCodec {
         pcNonceIdBase64: String,
         msgId: Int,
         capMap: Map<String, Int> = SmartConnectConstants.DEFAULT_SA_TILE_CAP_MAP,
+        pcDeviceName: String = "EC0-PC",
         battery: Int = 100,
         charge: Int = 1,
         volume: Int = 50,
@@ -140,17 +157,25 @@ object SmartConnectStatusCodec {
         dnd: Int = 1,
         camera: Int = 1
     ): String {
+        val cleanName = pcDeviceName.ifBlank { "EC0-PC" }
+        val innerData = SmartConnectStatusAndCapData(
+            battery = battery,
+            charge = charge,
+            volume = volume,
+            mute = mute,
+            dnd = dnd,
+            camera = camera,
+            cap = capMap
+        )
         val payload = SmartConnectStatusAndCapPayload(
+            ver = "1",
             cmd = SmartConnectConstants.STATUS_CMD_CAP_AND_BATTERY,
-            data = SmartConnectStatusAndCapData(
-                battery = battery,
-                charge = charge,
-                volume = volume,
-                mute = mute,
-                dnd = dnd,
-                camera = camera,
-                cap = capMap
-            )
+            cap = capMap,
+            battery = battery,
+            deviceName = cleanName,
+            realDeviceName = cleanName,
+            model = "Linux PC",
+            data = innerData
         )
         return SmartConnectEnvelopeCodec.encodeTypedFrame(
             deviceId = pcNonceIdBase64,
@@ -166,7 +191,54 @@ object SmartConnectStatusCodec {
             "Expected serviceId=25 for status/cap, got ${envelope.serviceId}"
         }
         val dataObj = SmartConnectEnvelopeCodec.unwrapDataObject(envelope.data)
-        return SmartConnectEnvelopeCodec.json.decodeFromJsonElement<SmartConnectStatusAndCapPayload>(dataObj)
+        val nested = dataObj["data"] as? JsonObject
+        if (nested != null) {
+            val parsedData = SmartConnectEnvelopeCodec.json.decodeFromJsonElement<SmartConnectStatusAndCapData>(nested)
+            val devName = (dataObj["deviceName"] as? JsonPrimitive)?.content ?: "Motorola Phone"
+            return SmartConnectStatusAndCapPayload(
+                cmd = SmartConnectConstants.STATUS_CMD_CAP_AND_BATTERY,
+                cap = parsedData.cap,
+                battery = parsedData.battery,
+                deviceName = devName,
+                realDeviceName = devName,
+                data = parsedData
+            )
+        }
+        val bat = (dataObj["battery"] as? JsonPrimitive)?.intOrNull ?: 100
+        val isChargingBool = (dataObj["isCharging"] as? JsonPrimitive)?.booleanOrNull
+        val chg = when {
+            isChargingBool == true -> 1
+            isChargingBool == false -> 0
+            else -> (dataObj["charge"] as? JsonPrimitive)?.intOrNull ?: 0
+        }
+        val vol = (dataObj["volume"] as? JsonPrimitive)?.intOrNull ?: 50
+        val mute = (dataObj["mute"] as? JsonPrimitive)?.booleanOrNull ?: false
+        val dnd = (dataObj["dnd"] as? JsonPrimitive)?.intOrNull ?: 1
+        val cam = (dataObj["camera"] as? JsonPrimitive)?.intOrNull ?: 1
+        val devName = (dataObj["deviceName"] as? JsonPrimitive)?.content ?: "Motorola Phone"
+        val model = (dataObj["model"] as? JsonPrimitive)?.content ?: "Android"
+        val capMap = mutableMapOf<String, Int>()
+        (dataObj["cap"] as? JsonObject)?.forEach { (k, v) ->
+            (v as? JsonPrimitive)?.intOrNull?.let { capMap[k] = it }
+        }
+        val statusData = SmartConnectStatusAndCapData(
+            battery = bat,
+            charge = chg,
+            volume = vol,
+            mute = mute,
+            dnd = dnd,
+            camera = cam,
+            cap = capMap
+        )
+        return SmartConnectStatusAndCapPayload(
+            cmd = SmartConnectConstants.STATUS_CMD_CAP_AND_BATTERY,
+            cap = capMap,
+            battery = bat,
+            deviceName = devName,
+            realDeviceName = devName,
+            model = model,
+            data = statusData
+        )
     }
 
     fun parseWallpaper(envelope: SmartConnectEnvelope): SmartConnectWallpaperPayload {
@@ -174,7 +246,15 @@ object SmartConnectStatusCodec {
             "Expected serviceId=25 for wallpaper, got ${envelope.serviceId}"
         }
         val dataObj = SmartConnectEnvelopeCodec.unwrapDataObject(envelope.data)
-        return SmartConnectEnvelopeCodec.json.decodeFromJsonElement<SmartConnectWallpaperPayload>(dataObj)
+        val nested = dataObj["data"] as? JsonObject
+        if (nested != null && nested.containsKey("wallpaper")) {
+            val d = SmartConnectEnvelopeCodec.json.decodeFromJsonElement<SmartConnectWallpaperData>(nested)
+            return SmartConnectWallpaperPayload(wallpaper = d.wallpaper, md5 = d.md5, data = d)
+        }
+        val wp = (dataObj["wallpaper"] as? JsonPrimitive)?.content.orEmpty()
+        val md5 = (dataObj["md5"] as? JsonPrimitive)?.content.orEmpty()
+        val d = SmartConnectWallpaperData(wallpaper = wp, md5 = md5)
+        return SmartConnectWallpaperPayload(wallpaper = wp, md5 = md5, data = d)
     }
 
     fun parseDnd(envelope: SmartConnectEnvelope): SmartConnectDndPayload {
@@ -182,6 +262,15 @@ object SmartConnectStatusCodec {
             "Expected serviceId=25 for DND, got ${envelope.serviceId}"
         }
         val dataObj = SmartConnectEnvelopeCodec.unwrapDataObject(envelope.data)
-        return SmartConnectEnvelopeCodec.json.decodeFromJsonElement<SmartConnectDndPayload>(dataObj)
+        val nested = dataObj["data"] as? JsonObject
+        if (nested != null && nested.containsKey("dnd")) {
+            val d = SmartConnectEnvelopeCodec.json.decodeFromJsonElement<SmartConnectDndData>(nested)
+            return SmartConnectDndPayload(dnd = d.dnd, data = d)
+        }
+        val dndVal = (dataObj["dnd"] as? JsonPrimitive)?.intOrNull
+            ?: (dataObj["dndState"] as? JsonPrimitive)?.intOrNull
+            ?: 1
+        val d = SmartConnectDndData(dnd = dndVal)
+        return SmartConnectDndPayload(dnd = dndVal, dndState = dndVal, data = d)
     }
 }

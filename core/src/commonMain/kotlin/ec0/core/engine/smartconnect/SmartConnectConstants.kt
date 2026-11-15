@@ -238,24 +238,48 @@ object SmartConnectConstants {
     // -------------------------------------------------------------------------
 
     /**
+     * Minimum peer version codes advertised in `svc 0 cmd 0` Verify Reply (`device.minVerCode`).
+     */
+    val MIN_VER_CODE_MAP: Map<String, Long> = mapOf(
+        "1" to 7_000_000L,
+        "2" to 700_000_000L,
+        "3" to 7_000_000L,
+        "4" to 7_000_000L
+    )
+
+    /**
+     * Device-level capability map advertised in `svc 0 cmd 0` Verify Reply (`device.caps`).
+     */
+    val DEFAULT_DEVICE_CAPS: Map<String, Int> = mapOf(
+        "1" to 2,
+        "9" to 3,
+        "15" to 3,
+        "16" to 3,
+        "26" to 2,
+        "202" to 1
+    )
+
+    /**
      * Service versions advertised inside `svc 0 cmd 0` PC Verify Reply (`serviceVersions`).
      * Note: `rfaServiceVersions` MUST be omitted (`null`), because including it triggers a
      * Gson cast error in the stock phone APK (`c0.o.w`).
      */
     val DEFAULT_SERVICE_VERSIONS: Map<String, Int> = mapOf(
-        "0" to 1,
-        "1" to 3,
-        "3" to 2,
+        "0" to 3,
+        "1" to 10,
+        "2" to 5,
+        "3" to 3,
         "5" to 2,
-        "9" to 1,
-        "13" to 2,
-        "15" to 2,
+        "9" to 4,
+        "13" to 1,
+        "15" to 16,
         "16" to 3,
         "17" to 1,
-        "22" to 1,
+        "22" to 2,
         "23" to 1,
-        "25" to 2,
-        "26" to 2,
+        "24" to 2,
+        "25" to 1,
+        "26" to 1,
         "32" to 1,
         "35" to 1,
         "37" to 1,

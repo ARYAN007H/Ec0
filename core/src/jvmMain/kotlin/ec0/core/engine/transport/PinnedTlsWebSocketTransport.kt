@@ -168,11 +168,18 @@ class LeafDerPinningTrustManager(
         }
 
         fun normalizeHexFingerprint(fpHex: String): String {
-            val cleaned = fpHex.trim().replace(":", "").lowercase()
-            require(cleaned.length == 64 && cleaned.all { it in '0'..'9' || it in 'a'..'f' }) {
-                "Expected 64-character hex SHA-256 fingerprint, got '$fpHex'"
+            val trimmed = fpHex.trim()
+            val cleaned = trimmed.replace(":", "").lowercase()
+            if (cleaned.length == 64 && cleaned.all { it in '0'..'9' || it in 'a'..'f' }) {
+                return cleaned
             }
-            return cleaned
+            val decoded = runCatching { Base64.getDecoder().decode(trimmed) }.getOrNull()
+            if (decoded != null && decoded.size == 32) {
+                return bytesToHexLower(decoded)
+            }
+            throw IllegalArgumentException(
+                "Expected 64-character hex or 44-character Base64 SHA-256 fingerprint, got '$fpHex'"
+            )
         }
 
         internal fun hexToBytes(hex: String): ByteArray {
@@ -658,7 +665,15 @@ class PinnedTlsWebSocketTransport(
         val sslContext = tlsIdentity.buildSslContext(trustManager)
         val srv = sslContext.serverSocketFactory.createServerSocket() as SSLServerSocket
         srv.reuseAddress = true
-        srv.bind(InetSocketAddress(port))
+        try {
+            srv.bind(InetSocketAddress(port))
+        } catch (bindEx: java.net.BindException) {
+            if (port != 0) {
+                srv.bind(InetSocketAddress(0))
+            } else {
+                throw bindEx
+            }
+        }
         srv.enabledProtocols = srv.supportedProtocols.filter {
             it == "TLSv1.3" || it == "TLSv1.2"
         }.toTypedArray()

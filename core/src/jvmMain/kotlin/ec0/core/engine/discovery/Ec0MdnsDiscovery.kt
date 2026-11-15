@@ -114,23 +114,36 @@ class MulticastMdnsTransport(
             }
         }
 
+        private val IGNORED_INTERFACE_PREFIXES = listOf(
+            "docker", "br-", "veth", "virbr", "tun", "tap", "wg", "tailscale", "zt", "vmnet", "vboxnet", "lo"
+        )
+
         /**
-         * Enumerates non-loopback IPv4 addresses on active network interfaces.
+         * Enumerates reachable non-loopback LAN IPv4 addresses on active network interfaces,
+         * excluding container bridges and VPN/tunnel interfaces (`pairing-and-discovery.md` Pitfall #7).
          */
         fun detectLocalIpv4Addresses(): List<String> {
-            val result = mutableListOf<String>()
+            val preferred = mutableListOf<String>()
+            val fallback = mutableListOf<String>()
             val interfaces = runCatching { NetworkInterface.getNetworkInterfaces()?.toList().orEmpty() }
                 .getOrDefault(emptyList())
             for (nif in interfaces) {
-                val up = runCatching { nif.isUp && !nif.isLoopback }.getOrDefault(false)
+                val up = runCatching { nif.isUp && !nif.isLoopback && !nif.isVirtual }.getOrDefault(false)
                 if (!up) continue
+                val name = nif.name.lowercase()
+                val isIgnored = IGNORED_INTERFACE_PREFIXES.any { name.startsWith(it) }
                 for (addr in nif.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        addr.hostAddress?.let { result.add(it) }
+                    if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        if (isIgnored) {
+                            fallback.add(ip)
+                        } else {
+                            preferred.add(ip)
+                        }
                     }
                 }
             }
-            return result.distinct()
+            return (preferred.ifEmpty { fallback }).distinct()
         }
     }
 }

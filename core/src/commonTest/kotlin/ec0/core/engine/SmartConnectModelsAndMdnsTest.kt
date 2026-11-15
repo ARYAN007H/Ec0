@@ -92,8 +92,12 @@ class SmartConnectModelsAndMdnsTest {
         assertEquals(6, parsed.wsData.os)
         assertEquals(4, parsed.wsData.type)
         assertEquals(2, parsed.wsData.scType)
-        assertEquals(fp, parsed.wsData.fp)
+        assertEquals(SmartConnectIdentity.certFingerprintHexToBase64(fp), parsed.wsData.fp)
+        assertEquals(fp, SmartConnectIdentity.certFingerprintBase64ToHex(parsed.wsData.fp))
         assertEquals(token, parsed.wsData.invitation)
+        assertEquals(token, parsed.wsData.token)
+        assertEquals(1, parsed.wsData.cmd)
+        assertEquals(listOf("192.168.43.100"), parsed.wsData.policies.first().wifi)
 
         val matrix = SmartConnectIdentity.buildQrMatrix(
             ips = listOf("192.168.43.100"),
@@ -104,7 +108,8 @@ class SmartConnectModelsAndMdnsTest {
             invitation = token,
             timestampMs = 1710000000000L
         )
-        assertTrue(matrix.size >= 21)
+        assertTrue(matrix.size >= 45)
+        assertEquals(matrix.size * matrix.size, matrix.toRowMajorList().size)
     }
 
     @Test

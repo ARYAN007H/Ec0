@@ -137,7 +137,14 @@ class SmartConnectSliceATest {
 
             val qrPayload = coordinator.buildPairingQrPayload()
             val parsedQr = SmartConnectIdentity.parseQrPayloadString(qrPayload)
-            assertEquals(coordinator.certFingerprintHex, parsedQr.wsData.fp)
+            assertEquals(
+                SmartConnectIdentity.certFingerprintHexToBase64(coordinator.certFingerprintHex),
+                parsedQr.wsData.fp
+            )
+            assertEquals(
+                coordinator.certFingerprintHex,
+                SmartConnectIdentity.certFingerprintBase64ToHex(parsedQr.wsData.fp)
+            )
 
             val phoneTls = SmartConnectTlsIdentity.generateSelfSignedRsa2048("Moto-A5x")
             val phoneTransport = PinnedTlsWebSocketTransport(phoneTls)

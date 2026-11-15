@@ -1455,3 +1455,30 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   3. **Identity, QR, mDNS & BLE `0x5246`:** Persistent 16B `realDeviceId` + rotating salted-hash `nonceId` (`EBESExQVFhcdZK3SpjiDZw==` golden vector), non-empty UUID `sn` guard, 180s multi-use `SmartConnectInviteTokenStore` (no anonymous `LinkedHashMap` subclass — K2 safe), `motorolardpconnection{...}` QR payload + `QrCodeMatrix` encoding, `_readyformdns._tcp.local.` mDNS announce/extract in `MdnsCodec` + `Ec0MdnsDiscovery`, 20B BLE `ServiceData[0x5246]` parser, and `ECONNREFUSED` TCP RST presence probe.
   4. **6-Step `svc 0` Handshake + `svc 25` Status/Cap Map (`SmartConnectNodeCoordinator`):** Implements Steps 1–6 (including `WIN_UNLOCKED` rationale documented in `SmartConnectConstants`, omitting `rfaServiceVersions`, immediate `svc 25 cmd 1` with `DEFAULT_SA_TILE_CAP_MAP = emptyMap()` so S-A renders the PC device page with zero tiles, `EXCHANGE_KEY` with both `deviceId` and `realDeviceId` set to `<pcRealId>`, 2s unprompted fallback timer, 5s post-pair discovery refresh, and `svc 25 cmd 2` MD5-deduped wallpaper), wired behind `Ec0EngineNode`.
 
+### 2026-11-15 11:15 UTC — gemini-argon
+- STATUS: DONE (Slice S-A.1 wired into running desktop app + shared SettingsPanel QR + ZXing-verified QR Version 7..20 Info blocks + stock phone APK wire alignment)
+- TASK: S-A.1 — Instantiate & start `ContinuityHubController` inside `runApp()`, expose `SmartConnectPairingQr` on `UiBridge`/`DesktopBridge`, render `"Pair — Smart Connect"` QR card in `SettingsPanel`, wire default `desktopAlias` from `SettingsState().alias`, and verify QR + wire payload against stock Smart Connect `09.0.4.005.0`
+- FILES:
+  - `desktop/src/jvmMain/kotlin/ec0/desktop/ui/Ec0Window.kt`
+  - `desktop/src/jvmMain/kotlin/ec0/desktop/ui/DesktopBridge.kt`
+  - `desktop/src/jvmMain/kotlin/ec0/desktop/continuity/ContinuityHubController.kt`
+  - `ui/src/commonMain/kotlin/ec0/ui/models/UiBridge.kt`
+  - `ui/src/commonMain/kotlin/ec0/ui/panels/SettingsPanel.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/QrCodeMatrix.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/SmartConnectConstants.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/SmartConnectIdentity.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/protocol/SmartConnectHandshakeModels.kt`
+  - `core/src/commonMain/kotlin/ec0/core/engine/smartconnect/protocol/SmartConnectStatusModels.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/discovery/Ec0MdnsDiscovery.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/transport/PinnedTlsWebSocketTransport.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/smartconnect/SmartConnectNodeCoordinator.kt`
+  - `core/src/jvmMain/kotlin/ec0/core/engine/Ec0EngineNode.kt`
+  - `core/src/commonTest/kotlin/ec0/core/engine/SmartConnectModelsAndMdnsTest.kt`
+  - `core/src/jvmTest/kotlin/ec0/core/engine/smartconnect/SmartConnectSliceATest.kt`
+  - `desktop/src/jvmTest/kotlin/ec0/desktop/ui/DesktopSmartConnectBridgeTest.kt`
+- WHAT:
+  1. **Live Desktop App Wiring (`Ec0Window.kt` + `ContinuityHubController.kt` + `DesktopBridge.kt`):** `runApp()` now instantiates a single `ContinuityHubController(scope, desktopAlias = appState.settings.value.alias)`, calls `hub.node.startServer(startMdns = true)` + `hub.node.startSmartConnectServer(announceMdns = true)`, captures the port, passes `hub` + `smartConnectPort` to `DesktopBridge`, and closes `hub` in `Window(onCloseRequest = ...)`. `ContinuityHubController.desktopAlias` now defaults to `SettingsState().alias`.
+  2. **Shared UI QR Seam & Settings Card (`UiBridge.kt` + `SettingsPanel.kt`):** Added `SmartConnectPairingQr(payload, size, modules, wsPort, deviceName)` and `smartConnectPairingQr: StateFlow<SmartConnectPairingQr?>` (default `null`) to `UiBridge`. `SettingsPanel` renders `"Pair — Smart Connect"` with a 240.dp `Canvas` drawing `modules` row-major with a 2-module quiet zone (`Color.Black` on surface) plus the `WIN_UNLOCKED` (`os=6, type=4, scType=2`) compatibility note.
+  3. **QR Decoder Verification (`QrCodeMatrix.kt` tested against Google ZXing `QRCodeReader`):** Discovered that QR versions `>= 7` (`size >= 45`, used by `motorolardpconnection{...}`) require the two 6x3 18-bit ISO/IEC 18004 §7.10 Version Information blocks (Golay `(18,6)` generator `0x1F25`); without them, real QR scanners fail with `FormatException`. Added the 18-bit Version Information placement and extended `VERSION_SPECS` through v20 — verified 100% decode across v1..v20 with ZXing `QRCodeReader`.
+  4. **Stock APK Wire-Format & Diagnostics Alignment:** Aligned `wsData` (`cmd=1`, `fp` 44-char Base64, `token`, `policies=[{"wifi": ips}]`), `svc 0` flat + nested `device`, `svc 25` flat + nested `cap`, virtual/container/VPN IPv4 interface filtering, and file-based handshake logging (`/tmp/ec0-smartconnect.log` + `~/.config/ec0/smartconnect-*/smartconnect-handshake.log`).
+

@@ -36,6 +36,18 @@ data class Capabilities(
 )
 
 /**
+ * Smart Connect pairing QR code (`motorolardpconnection{...}`) for stock
+ * Motorola Smart Connect Android clients to scan.
+ */
+data class SmartConnectPairingQr(
+    val payload: String,
+    val size: Int,
+    val modules: List<Boolean>,
+    val wsPort: Int,
+    val deviceName: String,
+)
+
+/**
  * Everything the shared UI needs from the host platform. Implementations are
  * thin: desktop wraps [ec0.desktop.state.AppState]-shaped state, Android wraps
  * its own state holder. File refs are opaque (java.io.File / android Uri).
@@ -56,6 +68,13 @@ interface UiBridge {
 
     /** Human label for the last raw protocol error on a transfer, or null. */
     fun isDarkTheme(): Boolean = false
+
+    /**
+     * Smart Connect pairing QR (`motorolardpconnection{...}`) rendered in Settings.
+     * Platforms without a Smart Connect PC listener keep this null.
+     */
+    val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?>
+        get() = MutableStateFlow<SmartConnectPairingQr?>(null)
 
     /**
      * Incoming transfer awaiting the user's accept/decline decision —

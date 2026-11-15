@@ -207,17 +207,54 @@ object SmartConnectIdentity {
     }
 
     /**
+     * Converts a 64-character hex SHA-256 certificate fingerprint into standard 44-character Base64
+     * as required in QR `wsData.fp` and discovery invite `fp` (`pairing-and-discovery.md` §Identity).
+     */
+    fun certFingerprintHexToBase64(fpHexOrB64: String): String {
+        val trimmed = fpHexOrB64.trim()
+        if (trimmed.length == 44 && trimmed.endsWith("=")) {
+            val raw = Base64.Default.decode(trimmed)
+            require(raw.size == 32) { "Expected 32-byte SHA-256 fingerprint in Base64" }
+            return trimmed
+        }
+        val cleaned = trimmed.replace(":", "").lowercase()
+        require(cleaned.length == 64 && cleaned.all { it in '0'..'9' || it in 'a'..'f' }) {
+            "certFingerprintHex must be 64 hex chars"
+        }
+        val bytes = ByteArray(32) { idx ->
+            cleaned.substring(idx * 2, idx * 2 + 2).toInt(16).toByte()
+        }
+        return Base64.Default.encode(bytes)
+    }
+
+    /**
+     * Converts either a 44-character Base64 SHA-256 fingerprint or a 64-character hex fingerprint
+     * to 64-character lowercase hex.
+     */
+    fun certFingerprintBase64ToHex(fpB64OrHex: String): String {
+        val trimmed = fpB64OrHex.trim()
+        val cleanedHex = trimmed.replace(":", "").lowercase()
+        if (cleanedHex.length == 64 && cleanedHex.all { it in '0'..'9' || it in 'a'..'f' }) {
+            return cleanedHex
+        }
+        val decoded = Base64.Default.decode(trimmed)
+        require(decoded.size == 32) { "Expected 32-byte decoded SHA-256 fingerprint, got ${decoded.size}" }
+        return decoded.toHexLower()
+    }
+
+    /**
      * Builds the `motorolardpconnection{"wsData":{...},"version":"3.0.0"}` QR payload string
-     * per `docs/engine/smart-connect-design.md` §3-S-A.
+     * per `docs/engine/smart-connect-design.md` §3-S-A and `pairing-and-discovery.md`.
      *
-     * Note: `wsData.deviceId` is the current rotating `nonceId` (24-char Base64 of 16 bytes),
-     * `wsData.fp` is the 64-char lowercase hex SHA-256 fingerprint of the PC's TLS leaf DER
-     * certificate, and `wsData.invitation` is the 44-char alphanumeric invite token.
+     * Note: `wsData.cmd` MUST be `1` ("open the WebSocket now, as a client"), `wsData.fp` is
+     * the 44-char standard Base64 of the 32-byte SHA-256 leaf DER digest, `wsData.policies`
+     * lists `[{"wifi": ips}]`, and `wsData.token` / `wsData.invitation` carries the 44-char token.
      */
     fun buildQrPayloadString(
         ips: List<String>,
         wsPort: Int = SmartConnectConstants.DEFAULT_WS_PORT,
         nonceIdBase64: String,
+        realDeviceIdBase64: String = nonceIdBase64,
         deviceName: String,
         certFingerprintHex: String,
         invitation: String,
@@ -226,27 +263,48 @@ object SmartConnectIdentity {
         require(ips.isNotEmpty()) { "At least one LAN IPv4 address is required for QR pairing" }
         require(wsPort in 1..65535) { "Invalid wsPort: $wsPort" }
         decodeId16(nonceIdBase64) // Validate 16-byte Base64 nonceId
-        val normalizedFp = certFingerprintHex.trim().lowercase()
-        require(normalizedFp.length == 64 && normalizedFp.all { it in '0'..'9' || it in 'a'..'f' }) {
-            "certFingerprintHex must be 64 hex chars"
-        }
+        val safeRealId = realDeviceIdBase64.trim().ifEmpty { nonceIdBase64.trim() }
+        decodeId16(safeRealId)
+        val fpBase64 = certFingerprintHexToBase64(certFingerprintHex)
         require(invitation.isNotBlank()) { "invitation token must not be blank" }
+        val cleanName = deviceName.ifBlank { "EC0-PC" }
 
         val envelope = SmartConnectQrEnvelope(
             wsData = SmartConnectQrWsData(
-                ips = ips,
-                wsPort = wsPort,
+                cmd = 1,
+                ver = 2,
+                appVer = SmartConnectConstants.PC_VER_NAME,
+                i3 = 1,
                 deviceId = nonceIdBase64.trim(),
-                deviceName = deviceName.ifBlank { "EC0-PC" },
-                type = SmartConnectConstants.PC_TYPE_LAPTOP,
+                realDeviceId = safeRealId,
+                deviceName = cleanName,
+                serviceId = 19,
+                token = invitation,
+                invitation = invitation,
+                fp = fpBase64,
+                wsPort = wsPort,
+                policies = listOf(SmartConnectWifiPolicy(wifi = ips)),
+                ips = ips,
                 os = SmartConnectConstants.PC_OS_WINDOWS,
+                type = SmartConnectConstants.PC_TYPE_LAPTOP,
                 appType = SmartConnectConstants.PC_APP_TYPE_DESKTOP,
                 scType = SmartConnectConstants.PC_SC_TYPE_WIN_UNLOCKED,
                 cap = SmartConnectConstants.PC_BASE_CAP,
-                fp = normalizedFp,
-                invitation = invitation,
+                verCode = SmartConnectConstants.PC_VER_CODE.toLong(),
+                verName = SmartConnectConstants.PC_VER_NAME,
+                bleAddress = "",
                 net = SmartConnectConstants.PC_NET_DEFAULT,
-                timestamp = timestampMs
+                timestamp = timestampMs,
+                device = SmartConnectQrDevice(
+                    deviceId = nonceIdBase64.trim(),
+                    realDeviceId = safeRealId,
+                    deviceName = cleanName,
+                    os = SmartConnectConstants.PC_OS_WINDOWS,
+                    type = SmartConnectConstants.PC_TYPE_LAPTOP,
+                    verCode = SmartConnectConstants.PC_VER_CODE.toLong(),
+                    verName = SmartConnectConstants.PC_VER_NAME,
+                    bleAddress = ""
+                )
             ),
             version = SmartConnectConstants.ENVELOPE_VERSION
         )
@@ -272,6 +330,7 @@ object SmartConnectIdentity {
         ips: List<String>,
         wsPort: Int = SmartConnectConstants.DEFAULT_WS_PORT,
         nonceIdBase64: String,
+        realDeviceIdBase64: String = nonceIdBase64,
         deviceName: String,
         certFingerprintHex: String,
         invitation: String,
@@ -281,6 +340,7 @@ object SmartConnectIdentity {
             ips = ips,
             wsPort = wsPort,
             nonceIdBase64 = nonceIdBase64,
+            realDeviceIdBase64 = realDeviceIdBase64,
             deviceName = deviceName,
             certFingerprintHex = certFingerprintHex,
             invitation = invitation,
@@ -364,6 +424,23 @@ class SmartConnectInviteTokenStore(
 }
 
 @Serializable
+data class SmartConnectWifiPolicy(
+    val wifi: List<String> = emptyList()
+)
+
+@Serializable
+data class SmartConnectQrDevice(
+    val deviceId: String,
+    val realDeviceId: String = "",
+    val deviceName: String,
+    val os: Int = SmartConnectConstants.PC_OS_WINDOWS,
+    val type: Int = SmartConnectConstants.PC_TYPE_LAPTOP,
+    val verCode: Long = SmartConnectConstants.PC_VER_CODE.toLong(),
+    val verName: String = SmartConnectConstants.PC_VER_NAME,
+    val bleAddress: String = ""
+)
+
+@Serializable
 data class SmartConnectQrEnvelope(
     val wsData: SmartConnectQrWsData,
     val version: String = SmartConnectConstants.ENVELOPE_VERSION
@@ -371,17 +448,29 @@ data class SmartConnectQrEnvelope(
 
 @Serializable
 data class SmartConnectQrWsData(
-    val ips: List<String>,
-    val wsPort: Int = SmartConnectConstants.DEFAULT_WS_PORT,
+    val cmd: Int = 1,
+    val ver: Int = 2,
+    val appVer: String = SmartConnectConstants.PC_VER_NAME,
+    val i3: Int = 1,
     val deviceId: String,
+    val realDeviceId: String = "",
     val deviceName: String,
-    val type: Int = SmartConnectConstants.PC_TYPE_LAPTOP,
+    val serviceId: Int = 19,
+    val token: String = "",
+    val invitation: String = "",
+    val fp: String,
+    val wsPort: Int = SmartConnectConstants.DEFAULT_WS_PORT,
+    val policies: List<SmartConnectWifiPolicy> = emptyList(),
+    val ips: List<String> = emptyList(),
     val os: Int = SmartConnectConstants.PC_OS_WINDOWS,
+    val type: Int = SmartConnectConstants.PC_TYPE_LAPTOP,
     val appType: Int = SmartConnectConstants.PC_APP_TYPE_DESKTOP,
     val scType: Int = SmartConnectConstants.PC_SC_TYPE_WIN_UNLOCKED,
     val cap: Int = SmartConnectConstants.PC_BASE_CAP,
-    val fp: String,
-    val invitation: String,
+    val verCode: Long = SmartConnectConstants.PC_VER_CODE.toLong(),
+    val verName: String = SmartConnectConstants.PC_VER_NAME,
+    val bleAddress: String = "",
     val net: Int = SmartConnectConstants.PC_NET_DEFAULT,
-    val timestamp: Long
+    val timestamp: Long = 0L,
+    val device: SmartConnectQrDevice? = null
 )

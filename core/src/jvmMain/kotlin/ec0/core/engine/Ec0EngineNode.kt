@@ -261,7 +261,14 @@ class Ec0EngineNode(
     )
 
     val smartConnectCoordinator = SmartConnectNodeCoordinator(
-        storageDir = File(downloadDir.parentFile ?: downloadDir, "ec0-smartconnect-${localIdentity.deviceId.take(12)}"),
+        storageDir = if (downloadDir.name.startsWith("ec0-downloads")) {
+            File(downloadDir, "smartconnect-${localIdentity.deviceId.take(12)}")
+        } else {
+            File(
+                ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(),
+                "smartconnect-${localIdentity.deviceId.take(12)}"
+            )
+        },
         initialDeviceName = displayName,
         wsPort = SmartConnectConstants.DEFAULT_WS_PORT,
         localAddressesProvider = {

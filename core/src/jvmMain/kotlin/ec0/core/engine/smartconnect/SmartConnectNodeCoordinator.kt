@@ -181,6 +181,10 @@ class SmartConnectNodeCoordinator(
     fun start(): Int {
         val actualPort = transport.startServer(wsPort)
         started.set(true)
+        appendHandshakeLog(
+            "SERVER_STARTED wsPort=$actualPort deviceName=${localIdentity.deviceName} " +
+                "realId=${localIdentity.realDeviceIdBase64} nonceId=$currentNonceIdBase64"
+        )
         return actualPort
     }
 
@@ -200,15 +204,18 @@ class SmartConnectNodeCoordinator(
         val token = inviteTokenStore.issueToken(nowMs, activeInviteToken)
         activeInviteToken = token
         val ips = localAddressesProvider().ifEmpty { listOf("127.0.0.1") }
-        return SmartConnectIdentity.buildQrPayloadString(
+        val payload = SmartConnectIdentity.buildQrPayloadString(
             ips = ips,
             wsPort = boundPort,
             nonceIdBase64 = currentNonceIdBase64,
             deviceName = localIdentity.deviceName,
             certFingerprintHex = tlsIdentity.fingerprintHex,
             invitation = token,
-            timestampMs = nowMs
+            timestampMs = nowMs,
+            realDeviceIdBase64 = localIdentity.realDeviceIdBase64
         )
+        appendHandshakeLog("QR_BUILT wsPort=$boundPort ips=$ips deviceName=${localIdentity.deviceName}")
+        return payload
     }
 
     /**
@@ -398,11 +405,14 @@ class SmartConnectNodeCoordinator(
     private inner class ControlChannelListener : PinnedTlsWebSocketListener {
         override fun onConnected(session: PinnedTlsWebSocketSession) {
             activeControlSessions[session.sessionId] = SessionHandshakeContext(session = session)
+            appendHandshakeLog("WS_CONTROL_CONNECTED session=${session.sessionId} remote=${session.remoteAddress}")
         }
 
         override fun onTextMessage(session: PinnedTlsWebSocketSession, text: String) {
             val ctx = activeControlSessions[session.sessionId] ?: return
             val envelope = runCatching { SmartConnectEnvelopeCodec.decodeEnvelope(text) }.getOrNull() ?: return
+            val cmd = SmartConnectEnvelopeCodec.extractCmd(envelope)
+            appendHandshakeLog("RX_FRAME svc=${envelope.serviceId} cmd=$cmd msgId=${envelope.msgId} dev=${envelope.deviceId}")
             when (envelope.serviceId) {
                 SmartConnectConstants.SVC_HANDSHAKE -> handleHandshakeFrame(ctx, envelope)
                 SmartConnectConstants.SVC_DEVICE_STATUS -> handleDeviceStatusFrame(ctx, envelope)
@@ -420,12 +430,14 @@ class SmartConnectNodeCoordinator(
             val removed = activeControlSessions.remove(session.sessionId)
             removed?.cancelTimers()
             refreshConnectedPeerIdsFlow()
+            appendHandshakeLog("WS_CONTROL_CLOSED session=${session.sessionId} code=$code reason=$reason")
         }
 
         override fun onError(session: PinnedTlsWebSocketSession, cause: Throwable) {
             val removed = activeControlSessions.remove(session.sessionId)
             removed?.cancelTimers()
             refreshConnectedPeerIdsFlow()
+            appendHandshakeLog("WS_CONTROL_ERROR session=${session.sessionId} err=${cause.message}")
         }
     }
 
@@ -495,11 +507,14 @@ class SmartConnectNodeCoordinator(
                     pairedPeers = pairedPeersByRealId.values,
                     realDeviceIdSelector = { it.realDeviceId }
                 ) ?: pairedPeersByRealId[helloData.deviceId]
+                    ?: helloData.realDeviceId.takeIf { it.isNotBlank() }?.let { pairedPeersByRealId[it] }
 
                 if (cmd == SmartConnectConstants.CMD_HELLO_PAIR && existingPeer == null) {
-                    val tokenValid = inviteTokenStore.isValid(helloData.invitation, nowMs)
+                    val tokenValid = helloData.invitation == activeInviteToken ||
+                        inviteTokenStore.isValid(helloData.invitation, nowMs)
                     if (!tokenValid && !helloData.invitation.isNullOrBlank()) {
                         // Reject expired/invalid QR invite token on unknown peer
+                        appendHandshakeLog("STEP1_REJECT_TOKEN remote=${ctx.session.remoteAddress}")
                         ctx.session.close()
                         return
                     }
@@ -507,10 +522,14 @@ class SmartConnectNodeCoordinator(
 
                 val perPairKeyB64 = existingPeer?.perPairKey
                     ?: SmartConnectIdentity.generatePerPairKeyBase64()
-                val provisionalRealId = existingPeer?.realDeviceId ?: helloData.deviceId
-                val certFp = helloData.fp.ifBlank {
-                    ctx.session.peerCertificateFingerprintHex.orEmpty()
-                }.lowercase()
+                val provisionalRealId = helloData.realDeviceId.ifBlank {
+                    existingPeer?.realDeviceId ?: helloData.deviceId
+                }
+                val certFp = SmartConnectIdentity.certFingerprintBase64ToHex(
+                    helloData.fp.ifBlank {
+                        ctx.session.peerCertificateFingerprintHex.orEmpty()
+                    }
+                )
 
                 ctx.peerNonceOrRealId = helloData.deviceId
                 ctx.peerRealDeviceId = provisionalRealId
@@ -521,6 +540,11 @@ class SmartConnectNodeCoordinator(
                 ctx.perPairKeyBase64 = perPairKeyB64
                 ctx.phoneKeyBase64 = helloData.key ?: existingPeer?.phoneKey
                 ctx.verified = true
+
+                appendHandshakeLog(
+                    "STEP1_HELLO_RX cmd=$cmd peerName=${ctx.peerDeviceName} " +
+                        "peerNonce=${ctx.peerNonceOrRealId} peerRealId=${ctx.peerRealDeviceId} ip=${ctx.peerIp}:${ctx.peerPort}"
+                )
 
                 val allIps = localAddressesProvider().ifEmpty { listOf("127.0.0.1") }
                 val primaryIp = allIps.first()
@@ -534,17 +558,22 @@ class SmartConnectNodeCoordinator(
                     wsPort = boundPort,
                     serialNumber = localIdentity.serialNumber,
                     perPairKeyBase64 = perPairKeyB64,
-                    msgId = envelope.msgId
+                    msgId = envelope.msgId,
+                    pcRealIdBase64 = localIdentity.realDeviceIdBase64
                 )
                 ctx.session.sendText(verifyReplyFrame)
+                appendHandshakeLog("STEP2_VERIFY_REPLY_TX msgId=${envelope.msgId} pcRealId=${localIdentity.realDeviceIdBase64}")
 
                 // Step 3: Immediately send svc 25 cmd 1 Device Status & Replace-Whole Cap Map
+                val capSnapshot = capRegistry.snapshot()
                 val capFrame = SmartConnectStatusCodec.buildStatusAndCapFrame(
                     pcNonceIdBase64 = currentNonceIdBase64,
                     msgId = msgIdCounter.getAndIncrement(),
-                    capMap = capRegistry.snapshot()
+                    capMap = capSnapshot,
+                    pcDeviceName = localIdentity.deviceName
                 )
                 ctx.session.sendText(capFrame)
+                appendHandshakeLog("STEP3_SVC25_CAP_TX capKeys=${capSnapshot.keys}")
 
                 if (existingPeer != null) {
                     val updated = existingPeer.copy(
@@ -562,6 +591,7 @@ class SmartConnectNodeCoordinator(
                 ctx.unpromptedExchangeKeyFuture = scheduler.schedule(
                     {
                         if (ctx.session.isOpen && !ctx.exchangeKeySent.get()) {
+                            appendHandshakeLog("STEP4_UNPROMPTED_TIMER_FIRED session=${ctx.session.sessionId}")
                             sendExchangeKeyAndFinalizePair(ctx, msgIdCounter.getAndIncrement())
                         }
                     },
@@ -583,6 +613,7 @@ class SmartConnectNodeCoordinator(
                 if (exch.data.key.isNotBlank()) {
                     ctx.phoneKeyBase64 = exch.data.key
                 }
+                appendHandshakeLog("STEP4_EXCHANGE_KEY_RX peerRealId=${ctx.peerRealDeviceId} peerName=${ctx.peerDeviceName}")
                 sendExchangeKeyAndFinalizePair(ctx, envelope.msgId)
             }
 
@@ -612,12 +643,15 @@ class SmartConnectNodeCoordinator(
             pcRealIdBase64 = localIdentity.realDeviceIdBase64,
             pcDeviceName = localIdentity.deviceName,
             perPairKeyBase64 = perPairKeyB64,
-            msgId = replyMsgId
+            msgId = replyMsgId,
+            serialNumber = localIdentity.serialNumber
         )
         runCatching { ctx.session.sendText(exchangeKeyFrame) }
+        appendHandshakeLog("STEP4_EXCHANGE_KEY_TX msgId=$replyMsgId pcRealId=${localIdentity.realDeviceIdBase64}")
 
         // Step 5: Persist paired peer record
         finalizePairedRecord(ctx)
+        appendHandshakeLog("STEP5_PAIRED_RECORD_PERSISTED peerRealId=${ctx.peerRealDeviceId} peerName=${ctx.peerDeviceName}")
 
         // Step 6: Schedule 5s post-pair discovery refresh (rotate nonceId + re-announce mDNS)
         ctx.postPairRefreshFuture?.cancel(false)
@@ -626,6 +660,7 @@ class SmartConnectNodeCoordinator(
                 rotateNonceIdAndInviteToken()
                 val packet = buildReadyForMdnsAnnouncement()
                 onMdnsRefreshRequested?.invoke(packet)
+                appendHandshakeLog("STEP6_POST_PAIR_DISCOVERY_REFRESH newNonceId=$currentNonceIdBase64")
             },
             postPairRefreshDelayMs,
             TimeUnit.MILLISECONDS
@@ -762,8 +797,10 @@ class SmartConnectNodeCoordinator(
             wsPort = boundPort,
             deviceId = currentNonceIdBase64,
             deviceName = localIdentity.deviceName,
-            fp = tlsIdentity.fingerprintHex,
+            fp = SmartConnectIdentity.certFingerprintHexToBase64(tlsIdentity.fingerprintHex),
             invitation = token,
+            token = token,
+            policies = listOf(SmartConnectWifiPolicy(wifi = allIps)),
             type = SmartConnectConstants.PC_TYPE_LAPTOP,
             os = SmartConnectConstants.PC_OS_WINDOWS,
             appType = SmartConnectConstants.PC_APP_TYPE_DESKTOP,
@@ -806,9 +843,11 @@ class SmartConnectNodeCoordinator(
             }.getOrNull()
             if (loaded != null && loaded.realDeviceIdBase64.isNotBlank()) {
                 val safeSn = SmartConnectIdentity.ensureNonEmptySerialNumber(loaded.serialNumber)
+                val resolvedName = defaultDeviceName.takeIf { it.isNotBlank() }
+                    ?: loaded.deviceName.ifBlank { "EC0-PC" }
                 val normalized = loaded.copy(
                     serialNumber = safeSn,
-                    deviceName = loaded.deviceName.ifBlank { defaultDeviceName.ifBlank { "EC0-PC" } }
+                    deviceName = resolvedName
                 )
                 if (normalized != loaded) {
                     saveLocalIdentity(normalized)
@@ -829,6 +868,16 @@ class SmartConnectNodeCoordinator(
         runCatching {
             identityFile.writeText(prettyJson.encodeToString(record))
             SmartConnectTlsIdentity.enforceOwnerOnlyPermissions(identityFile)
+        }
+    }
+
+    private fun appendHandshakeLog(event: String) {
+        val line = "${java.time.Instant.now()} [SmartConnect] $event\n"
+        runCatching {
+            File(storageDir, "smartconnect-handshake.log").appendText(line)
+        }
+        runCatching {
+            File("/tmp/ec0-smartconnect.log").appendText(line)
         }
     }
 

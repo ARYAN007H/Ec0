@@ -11,8 +11,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import ec0.desktop.continuity.ContinuityHubController
 import ec0.desktop.state.AppState
 import ec0.ui.Ec0App
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,11 +22,38 @@ import kotlinx.coroutines.SupervisorJob
 fun runApp() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val appState = AppState(scope)
+    val hub = ContinuityHubController(
+        scope = scope,
+        desktopAlias = appState.settings.value.alias,
+    )
+    val smartConnectPort = runCatching {
+        hub.node.startServer(startMdns = true)
+        val port = hub.node.startSmartConnectServer(announceMdns = true)
+        runCatching {
+            File("/tmp/ec0-smartconnect-status.txt").writeText(
+                "status=running\nwsPort=$port\ndeviceName=${hub.node.smartConnectCoordinator.deviceName}\n" +
+                    "realId=${hub.node.smartConnectCoordinator.realDeviceIdBase64}\n"
+            )
+        }
+        port
+    }.getOrElse { err ->
+        runCatching {
+            File("/tmp/ec0-smartconnect-status.txt").writeText("status=error\nerror=${err.stackTraceToString()}\n")
+        }
+        hub.node.smartConnectCoordinator.boundPort
+    }
     appState.startScan()
     application {
         val windowState = rememberWindowState(width = 1080.dp, height = 720.dp)
-        val bridge = remember { DesktopBridge(appState) }
-        Window(onCloseRequest = ::exitApplication, title = "ec0 — unified ecosystem", state = windowState) {
+        val bridge = remember { DesktopBridge(appState, hub, smartConnectPort) }
+        Window(
+            onCloseRequest = {
+                runCatching { hub.close() }
+                exitApplication()
+            },
+            title = "ec0 — unified ecosystem",
+            state = windowState,
+        ) {
             Ec0App(
                 bridge = bridge,
                 pickFile = { onPicked -> pickFile(onPicked) },
