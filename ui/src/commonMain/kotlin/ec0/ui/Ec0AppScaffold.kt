@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
 import ec0.ui.models.UiBridge
 import ec0.ui.panels.HomePanel
+import ec0.ui.panels.OnboardingPanel
 import ec0.ui.panels.SettingsPanel
 import ec0.ui.panels.SharePanel
 import ec0.ui.panels.SyncPanel
@@ -77,6 +78,12 @@ fun Ec0App(
     val settings = bridge.settings.collectAsState().value
     val dark = settings.darkTheme
     val systemDark = isSystemInDarkTheme()
+    val trustedPeerCount by bridge.trustedPeerCount.collectAsState()
+    val pairingQrAvailable = bridge.pairingQr.collectAsState().value != null
+    var onboardingDismissed by remember { mutableStateOf(false) }
+    // First run = pair before anything else: HOME shows the onboarding QR until a
+    // peer is trusted (or the user explores unpaired for this session).
+    val showOnboarding = trustedPeerCount == 0 && pairingQrAvailable && !onboardingDismissed
     Ec0Theme(dark = dark ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
         var section by remember { mutableStateOf(Section.HOME) }
 
@@ -84,7 +91,15 @@ fun Ec0App(
             if (compact) {
                 Column {
                     Box(Modifier.fillMaxWidth().weight(1f)) {
-                        SectionContent(section, bridge, pickFile)
+                        if (showOnboarding && section == Section.HOME) {
+                            OnboardingPanel(
+                                bridge,
+                                onExploreUnpaired = { onboardingDismissed = true },
+                                compact = true,
+                            )
+                        } else {
+                            SectionContent(section, bridge, pickFile)
+                        }
                     }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
                         Section.entries.forEach { s ->
@@ -113,7 +128,15 @@ fun Ec0App(
                         }
                     }
                     Box(Modifier.fillMaxSize().weight(1f)) {
-                        SectionContent(section, bridge, pickFile)
+                        if (showOnboarding && section == Section.HOME) {
+                            OnboardingPanel(
+                                bridge,
+                                onExploreUnpaired = { onboardingDismissed = true },
+                                compact = false,
+                            )
+                        } else {
+                            SectionContent(section, bridge, pickFile)
+                        }
                     }
                 }
             }

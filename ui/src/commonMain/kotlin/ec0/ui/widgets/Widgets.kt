@@ -11,6 +11,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -279,6 +282,43 @@ fun EmptyState(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * Scannable QR renderer — always a light field with dark modules (scanner
+ * contrast rule; see SettingsPanel) and a 2-module quiet zone. Callers own
+ * sizing and rounding via [modifier].
+ */
+@Composable
+fun QrCodeCanvas(
+    modules: List<Boolean>,
+    size: Int,
+    modifier: Modifier = Modifier,
+    quietZone: Int = 2,
+) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        drawRect(color = Color.White)
+        val total = size + quietZone * 2
+        if (size > 0 && modules.size >= size * size) {
+            val cell = this.size.minDimension / total.toFloat()
+            for (y in 0 until size) {
+                for (x in 0 until size) {
+                    if (modules[y * size + x]) {
+                        val x0 = kotlin.math.floor((x + quietZone) * cell)
+                        val y0 = kotlin.math.floor((y + quietZone) * cell)
+                        drawRect(
+                            color = Color.Black,
+                            topLeft = Offset(x0, y0),
+                            size = Size(
+                                kotlin.math.ceil((x + quietZone + 1) * cell) - x0,
+                                kotlin.math.ceil((y + quietZone + 1) * cell) - y0,
+                            ),
+                        )
+                    }
+                }
+            }
         }
     }
 }
