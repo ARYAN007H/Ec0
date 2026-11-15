@@ -58,7 +58,9 @@ fun SettingsPanel(bridge: UiBridge) {
 
         pairingQr?.let { qr ->
             SettingsCard("Pair — Smart Connect") {
-                val bgSurface = if (bridge.isDarkTheme()) Color.White else MaterialTheme.colorScheme.surface
+                // QR scanners want a light field: always white, regardless of app theme —
+                // a dark surface behind black modules is unscannable in dark mode.
+                val bgSurface = Color.White
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(20.dp),
@@ -210,7 +212,7 @@ fun SettingsPanel(bridge: UiBridge) {
         SettingsCard("About") {
             Text("ec0 — unified cross-device ecosystem", style = MaterialTheme.typography.titleSmall)
             Text(
-                "LocalSend v2 discovery + transfer · ec0-engine (Ed25519 + AEAD) · Synergy RPC seam\nGPL-3.0 — clean-room interoperability",
+                "ec0 direct share over LAN · ec0-engine (Ed25519 + AEAD) · Synergy RPC seam\nGPL-3.0 — clean-room interoperability",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

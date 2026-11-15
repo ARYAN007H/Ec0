@@ -211,7 +211,7 @@ private fun EmptyNearby(scanning: Boolean) {
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                "Peers running ec0 or LocalSend appear here automatically",
+                "Peers running ec0 appear here automatically",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

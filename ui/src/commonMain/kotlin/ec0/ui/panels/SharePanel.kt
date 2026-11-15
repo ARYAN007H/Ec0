@@ -68,7 +68,7 @@ fun SharePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
             EmptyState(
                 icon = Icons.Filled.Share,
                 title = "No peers in range",
-                hint = "Peers running ec0 or LocalSend appear here — scan, then tap one to send",
+                hint = "Nearby devices running ec0 appear here — scan, then tap one to send",
             )
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

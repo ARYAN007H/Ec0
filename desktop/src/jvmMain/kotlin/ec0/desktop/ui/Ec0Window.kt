@@ -43,9 +43,12 @@ fun runApp() {
         hub.node.smartConnectCoordinator.boundPort
     }
     appState.startScan()
+    // Wake the hub's loops: clipboard watch, notification forwarding, IPC daemon,
+    // pairing-QR refresh and the trusted-peer reconnect supervisor.
+    runCatching { hub.start(startMdns = false) }
     application {
         val windowState = rememberWindowState(width = 1080.dp, height = 720.dp)
-        val bridge = remember { DesktopBridge(appState, hub, smartConnectPort) }
+        val bridge = remember { DesktopBridge(appState, hub, smartConnectPort, scope) }
         Window(
             onCloseRequest = {
                 runCatching { hub.close() }

@@ -260,26 +260,31 @@ class Ec0EngineNode(
         launcher = processLauncher,
     )
 
-    val smartConnectCoordinator = SmartConnectNodeCoordinator(
-        storageDir = if (downloadDir.name.startsWith("ec0-downloads")) {
-            File(downloadDir, "smartconnect-${localIdentity.deviceId.take(12)}")
-        } else {
-            File(
-                ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(),
-                "smartconnect-${localIdentity.deviceId.take(12)}"
-            )
-        },
-        initialDeviceName = displayName,
-        wsPort = SmartConnectConstants.DEFAULT_WS_PORT,
-        localAddressesProvider = {
-            MulticastMdnsTransport.detectLocalIpv4Addresses().ifEmpty { listOf("127.0.0.1") }
-        },
-        onMdnsRefreshRequested = { mdnsPacket ->
-            mdnsDiscovery.sendRawPacket(mdnsPacket)
-        },
-    ).also { coordinator ->
-        mdnsDiscovery.addReadyForPeerListener { rfPeer ->
-            coordinator.onReadyForMdnsPeerDiscovered(rfPeer, clockMs())
+    // Lazy: constructing SmartConnectNodeCoordinator generates an RSA-2048 identity and
+    // touches disk. Phone-side nodes (ec0↔ec0 only, Moto parity descoped) must not pay
+    // that cost at startup — first touch of the coordinator is the desktop SC server start.
+    val smartConnectCoordinator: SmartConnectNodeCoordinator by lazy {
+        SmartConnectNodeCoordinator(
+            storageDir = if (downloadDir.name.startsWith("ec0-downloads")) {
+                File(downloadDir, "smartconnect-${localIdentity.deviceId.take(12)}")
+            } else {
+                File(
+                    ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(),
+                    "smartconnect-${localIdentity.deviceId.take(12)}"
+                )
+            },
+            initialDeviceName = displayName,
+            wsPort = SmartConnectConstants.DEFAULT_WS_PORT,
+            localAddressesProvider = {
+                MulticastMdnsTransport.detectLocalIpv4Addresses().ifEmpty { listOf("127.0.0.1") }
+            },
+            onMdnsRefreshRequested = { mdnsPacket ->
+                mdnsDiscovery.sendRawPacket(mdnsPacket)
+            },
+        ).also { coordinator ->
+            mdnsDiscovery.addReadyForPeerListener { rfPeer ->
+                coordinator.onReadyForMdnsPeerDiscovered(rfPeer, clockMs())
+            }
         }
     }
 

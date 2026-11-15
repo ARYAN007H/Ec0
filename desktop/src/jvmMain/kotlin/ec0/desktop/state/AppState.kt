@@ -39,6 +39,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Path
 
@@ -52,8 +55,31 @@ class AppState(
 
     private val _transfers = MutableStateFlow<List<TransferItem>>(emptyList())
 
-    private val _settings = MutableStateFlow(SettingsState())
+    private val _settings = MutableStateFlow(loadPersistedSettings())
     val settings: StateFlow<SettingsState> = _settings.asStateFlow()
+
+    /**
+     * Settings survive restarts: JSON at ~/.config/ec0/settings.json, written atomically
+     * (tmp + rename) on every change. Trust decisions, alias, theme and PIN live here.
+     */
+    private fun loadPersistedSettings(): SettingsState = runCatching {
+        val file = File(ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(), "settings.json")
+        if (file.isFile) Json.decodeFromString<SettingsState>(file.readText()) else SettingsState()
+    }.getOrDefault(SettingsState())
+
+    private fun persistSettings(state: SettingsState) {
+        runCatching {
+            val dir = ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir()
+            dir.mkdirs()
+            val tmp = File(dir, "settings.json.tmp")
+            tmp.writeText(Json.encodeToString(state))
+            val file = File(dir, "settings.json")
+            if (!tmp.renameTo(file)) {
+                file.writeText(tmp.readText())
+                tmp.delete()
+            }
+        }
+    }
 
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
@@ -186,6 +212,9 @@ class AppState(
                 runCatching { sweepAndMerge() }
                 delay(discoveryPeriodMs)
             }
+        }
+        scope.launch {
+            settings.collect { persistSettings(it) }
         }
     }
 

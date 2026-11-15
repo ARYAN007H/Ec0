@@ -12,15 +12,20 @@ import ec0.ui.models.SettingsState
 import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.File
 
 class DesktopBridge(
     private val appState: AppState,
     private val hub: ContinuityHubController? = null,
     private val smartConnectWsPort: Int? = null,
+    qrRefreshScope: CoroutineScope? = null,
 ) : UiBridge {
     override val devices: StateFlow<List<UiDevice>> = appState.devices
     override val transfers: StateFlow<List<ec0.ui.models.TransferItem>> = appState.transfers
@@ -28,12 +33,26 @@ class DesktopBridge(
     override val scanning: StateFlow<Boolean> = appState.scanning
 
     private val _smartConnectPairingQr: MutableStateFlow<SmartConnectPairingQr?> = MutableStateFlow(
-        buildInitialSmartConnectPairingQr()
+        buildSmartConnectPairingQr()
     )
     override val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?> =
         _smartConnectPairingQr.asStateFlow()
 
-    private fun buildInitialSmartConnectPairingQr(): SmartConnectPairingQr? {
+    init {
+        // The Smart Connect invite token expires after ~180 s — rotate and rebuild so the
+        // rendered QR never goes stale mid-session.
+        qrRefreshScope?.launch {
+            while (isActive) {
+                delay(120_000L)
+                runCatching {
+                    hub?.node?.smartConnectCoordinator?.rotateNonceIdAndInviteToken()
+                    _smartConnectPairingQr.value = buildSmartConnectPairingQr()
+                }
+            }
+        }
+    }
+
+    private fun buildSmartConnectPairingQr(): SmartConnectPairingQr? {
         val coordinator = hub?.node?.smartConnectCoordinator ?: return null
         return runCatching {
             val nowMs = System.currentTimeMillis()

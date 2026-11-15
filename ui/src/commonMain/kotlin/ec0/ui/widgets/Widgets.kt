@@ -65,7 +65,13 @@ fun ProtocolChip(protocol: ProtocolFamily, accent: Color) {
         color = accent.copy(alpha = 0.15f),
     ) {
         Text(
-            protocol.name.lowercase().replaceFirstChar { it.uppercase() },
+            // Branding rule: the wire stays LocalSend-compatible, the UI never says the
+            // upstream's name — LOCALSEND reads as our direct LAN share.
+            when (protocol) {
+                ProtocolFamily.LOCALSEND -> "Direct"
+                ProtocolFamily.SYNERGY -> "O+ probe"
+                ProtocolFamily.KDECONNECT -> "KDE"
+            },
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
             color = accent,

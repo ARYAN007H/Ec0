@@ -48,7 +48,8 @@ data class TransferItem(
     val error: String? = null,
 )
 
-/** User-controlled settings (persisted in a later PR; in-memory for now). */
+/** User-controlled settings — persisted to disk by each platform bridge. */
+@kotlinx.serialization.Serializable
 data class SettingsState(
     val alias: String = "ec0-desktop",
     val deviceModel: String = "Linux",

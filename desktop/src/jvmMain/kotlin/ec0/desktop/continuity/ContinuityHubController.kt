@@ -28,6 +28,7 @@ import ec0.core.engine.crypto.EncryptedIdentityStore
 import ec0.core.engine.crypto.PersistentPinStore
 import ec0.core.engine.crypto.PinStore
 import ec0.core.engine.crypto.PinnedPeer
+import ec0.core.engine.discovery.MulticastMdnsTransport
 import ec0.core.engine.linux.InstalledDesktopFiles
 import ec0.core.engine.linux.LinuxClipboardBridge
 import ec0.core.engine.linux.LinuxDesktopIntegrationGenerator
@@ -116,6 +117,8 @@ class ContinuityHubController(
     val throughputTracker = TransferThroughputTracker()
 
     private var daemonIpcServer: LocalDaemonIpcServer? = null
+    private var pairingQrRefreshJob: Job? = null
+    private var reconnectJob: Job? = null
 
     private val _isDarkTheme = MutableStateFlow(true)
     val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
@@ -272,6 +275,8 @@ class ContinuityHubController(
         refreshLinuxCapabilities()
         startClipboardWatchLoop()
         startNotificationForwardLoop()
+        startPairingQrRefreshLoop()
+        startReconnectSupervisor()
     }
 
     fun refreshLinuxCapabilities() {
@@ -279,10 +284,51 @@ class ContinuityHubController(
     }
 
     fun refreshPairingQr() {
-        val qr = node.generatePairingQr()
+        val qr = node.generatePairingQr(
+            // The default is 127.0.0.1 — a phone scanning that would dial itself. Advertise
+            // every real LAN address, falling back to loopback only when nothing exists.
+            ips = MulticastMdnsTransport.detectLocalIpv4Addresses().ifEmpty { listOf("127.0.0.1") },
+        )
         val uri = qr.toUri()
         _pairingQrUri.value = uri
         _pairingQrMatrix.value = runCatching { QrCodeMatrix.encodeText(uri) }.getOrNull()
+    }
+
+    /** QR pairing nonces expire after 120 s — regenerate on a 90 s cadence so the QR never goes stale. */
+    private fun startPairingQrRefreshLoop() {
+        pairingQrRefreshJob?.cancel()
+        pairingQrRefreshJob = scope.launch {
+            while (isActive) {
+                delay(90_000L)
+                runCatching { refreshPairingQr() }
+            }
+        }
+    }
+
+    /**
+     * Trusted peers reconnect on their own: a pinned peer appearing on mDNS triggers an
+     * immediate attempt, and every 15 s any pinned peer without a live session gets one
+     * (EndpointResolver walks live mDNS, then last-known endpoints). Failures land in the
+     * engine's BACKOFF state; attempts are cheap and guarded by the live-session check.
+     */
+    private fun startReconnectSupervisor() {
+        reconnectJob?.cancel()
+        val pinnedIds = { pinStore.all().map { it.deviceId }.toSet() }
+        node.mdnsDiscovery.addPeerListener { peer ->
+            if (peer.deviceId in pinnedIds() && node.activeSessionFor(peer.deviceId) == null) {
+                scope.launch { runCatching { node.connectToPeer(peer.deviceId) } }
+            }
+        }
+        reconnectJob = scope.launch {
+            while (isActive) {
+                pinnedIds().forEach { deviceId ->
+                    if (node.activeSessionFor(deviceId) == null) {
+                        runCatching { node.connectToPeer(deviceId) }
+                    }
+                }
+                delay(15_000L)
+            }
+        }
     }
 
     fun setAutoSyncClipboard(enabled: Boolean) {
@@ -894,6 +940,8 @@ class ContinuityHubController(
     }
 
     override fun close() {
+        pairingQrRefreshJob?.cancel()
+        reconnectJob?.cancel()
         clipboardWatchJob?.cancel()
         notifForwardJob?.cancel()
         scrubJob?.cancel()
