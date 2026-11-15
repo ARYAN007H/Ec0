@@ -43,6 +43,10 @@ android {
         // CI speed/robustness over lint purity for v0.1
         abortOnError = false
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 kotlin {
