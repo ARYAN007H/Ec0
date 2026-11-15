@@ -338,7 +338,6 @@ private fun HonestyTile(modifier: Modifier = Modifier) {
     )
 }
 
-/**
 /** Live-link chip for the dashboard header — connected (green dot) or searching. */
 @Composable
 private fun PeerLinkChip(link: PeerLinkState) {
