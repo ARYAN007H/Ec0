@@ -15,7 +15,9 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -212,6 +214,7 @@ private val Ec0ShapeScale = Shapes(
     extraLarge = Ec0Shapes.hero,
 )
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun Ec0Theme(
     dark: Boolean,
@@ -223,8 +226,9 @@ fun Ec0Theme(
         Ec0Seed.VIOLET -> if (dark) VioletDark else VioletLight
         Ec0Seed.TEAL -> if (dark) TealDark else TealLight
     }
-    MaterialTheme(
+    MaterialExpressiveTheme(
         colorScheme = scheme,
+        motionScheme = MotionScheme.expressive(),
         shapes = Ec0ShapeScale,
         content = content,
     )

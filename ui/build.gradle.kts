@@ -20,7 +20,9 @@ kotlin {
         commonMain.dependencies {
             api(compose.runtime)
             api(compose.foundation)
-            api(compose.material3)
+            // M3 Expressive APIs (MaterialExpressiveTheme, MotionScheme, ButtonGroup…) —
+            // decoupled artifact, version pinned independently of the CMP plugin.
+            api(libs.compose.material3.expressive)
             api(compose.materialIconsExtended)
             api(libs.kotlinx.coroutines.core)
             // DeviceType/ProtocolType wire codecs live here now (moved from core)

@@ -48,6 +48,17 @@ data class SmartConnectPairingQr(
 )
 
 /**
+ * ec0↔ec0 pairing QR (`ec0://pair?...`, engine PairingCoordinator) — rendered
+ * by the onboarding screen for the phone's in-app scanner to capture. The URI
+ * carries a single-use nonce that expires (~120 s); the host refreshes it.
+ */
+data class PairingQr(
+    val uri: String,
+    val size: Int,
+    val modules: List<Boolean>,
+)
+
+/**
  * Everything the shared UI needs from the host platform. Implementations are
  * thin: desktop wraps [ec0.desktop.state.AppState]-shaped state, Android wraps
  * its own state holder. File refs are opaque (java.io.File / android Uri).
@@ -75,6 +86,15 @@ interface UiBridge {
      */
     val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?>
         get() = MutableStateFlow<SmartConnectPairingQr?>(null)
+
+    /**
+     * ec0↔ec0 pairing QR for the onboarding screen. Null while the engine's
+     * pairing service is unavailable (Android before the companion runtime).
+     */
+    val pairingQr: StateFlow<PairingQr?> get() = MutableStateFlow<PairingQr?>(null)
+
+    /** Pinned (trusted) engine peers — 0 means this end has never paired. */
+    val trustedPeerCount: StateFlow<Int> get() = MutableStateFlow(0)
 
     /**
      * Incoming transfer awaiting the user's accept/decline decision —

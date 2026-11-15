@@ -3,6 +3,8 @@ kotlin = "2.1.10"
 coroutines = "1.9.0"
 serialization = "1.8.1"
 composeMultiplatform = "1.7.3"
+# Decoupled from the CMP plugin — carries the M3 Expressive APIs (experimental)
+material3Expressive = "1.9.0-beta06"
 ktor = "3.0.3"
 protobuf = "4.28.2"
 grpc = "1.68.1"
@@ -21,6 +23,7 @@ androidx-activity-compose = { module = "androidx.activity:activity-compose", ver
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "androidxComposeBom" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material3-expressive = { module = "org.jetbrains.compose.material3:material3", version.ref = "material3Expressive" }
 androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 androidx-lifecycle-runtime = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidxDatastore" }

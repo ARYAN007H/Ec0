@@ -13,10 +13,15 @@ import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -25,8 +30,10 @@ class DesktopBridge(
     private val appState: AppState,
     private val hub: ContinuityHubController? = null,
     private val smartConnectWsPort: Int? = null,
-    qrRefreshScope: CoroutineScope? = null,
+    uiScope: CoroutineScope? = null,
 ) : UiBridge {
+    private val bridgeScope: CoroutineScope =
+        uiScope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
     override val devices: StateFlow<List<UiDevice>> = appState.devices
     override val transfers: StateFlow<List<ec0.ui.models.TransferItem>> = appState.transfers
     override val settings: StateFlow<SettingsState> = appState.settings
@@ -38,10 +45,25 @@ class DesktopBridge(
     override val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?> =
         _smartConnectPairingQr.asStateFlow()
 
+    override val pairingQr: StateFlow<ec0.ui.models.PairingQr?> =
+        if (hub == null) {
+            MutableStateFlow(null)
+        } else {
+            combine(hub.pairingQrUri, hub.pairingQrMatrix) { uri, matrix ->
+                matrix?.let { ec0.ui.models.PairingQr(uri, it.size, it.modules.toList()) }
+            }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
+        }
+
+    override val trustedPeerCount: StateFlow<Int> =
+        hub?.pinnedPeers?.let { pinned ->
+            kotlinx.coroutines.flow.map(pinned) { it.size }
+                .stateIn(bridgeScope, SharingStarted.Eagerly, 0)
+        } ?: MutableStateFlow(0)
+
     init {
         // The Smart Connect invite token expires after ~180 s — rotate and rebuild so the
         // rendered QR never goes stale mid-session.
-        qrRefreshScope?.launch {
+        bridgeScope.launch {
             while (isActive) {
                 delay(120_000L)
                 runCatching {
