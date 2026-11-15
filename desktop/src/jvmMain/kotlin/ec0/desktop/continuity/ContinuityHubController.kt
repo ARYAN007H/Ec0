@@ -86,7 +86,7 @@ class ContinuityHubController(
     private val scope: CoroutineScope,
     val localIdentity: Ed25519KeyPair = EncryptedIdentityStore().loadOrCreateIdentity(),
     val pinStore: PinStore = PersistentPinStore(allowAutoTofuOnUnknownPeer = false),
-    val desktopAlias: String = "ec0-linux-desktop",
+    val desktopAlias: String = ec0.ui.models.SettingsState().alias,
     val downloadDir: File = File(System.getProperty("user.home", "."), "Downloads"),
     private val clipboardBridge: LinuxClipboardBridge = LinuxClipboardBridge(),
     private val notificationBridge: LinuxNotificationBridge = LinuxNotificationBridge(),

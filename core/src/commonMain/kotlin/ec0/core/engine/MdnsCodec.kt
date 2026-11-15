@@ -125,6 +125,32 @@ data class DiscoveredCamDroidService(
     fun isExpired(nowMs: Long): Boolean = isGoodbye || (nowMs - receivedAtMs) >= (ttlSeconds * 1000L)
 }
 
+/**
+ * Discovered Motorola Smart Connect ("Ready For") `_readyformdns._tcp.local.` endpoint
+ * announced via mDNS PTR/SRV/TXT/A records (`docs/engine/smart-connect-design.md` §3-S-A).
+ *
+ * Note: [deviceId] is the rotating 16-byte salted-hash `nonceId` (encoded as 24-char Base64),
+ * matched to a paired peer via `SmartConnectIdentity.matchNonceIdBase64ToPairedPeer`.
+ */
+data class DiscoveredReadyForPeer(
+    val instanceName: String,
+    val deviceId: String,
+    val deviceName: String,
+    val port: Int,
+    val addresses: List<String>,
+    val fp: String,
+    val type: Int = 1,
+    val os: Int = 1,
+    val appType: Int = 1,
+    val cap: Int = 0,
+    val timestamp: Long = 0L,
+    val ttlSeconds: Long,
+    val receivedAtMs: Long,
+) {
+    val isGoodbye: Boolean get() = ttlSeconds == 0L
+    fun isExpired(nowMs: Long): Boolean = isGoodbye || (nowMs - receivedAtMs) >= (ttlSeconds * 1000L)
+}
+
 object MdnsCodec {
     const val TYPE_A: Int = 1
     const val TYPE_PTR: Int = 12
@@ -696,6 +722,200 @@ object MdnsCodec {
                 answers = records,
             ),
         )
+    }
+
+    /**
+     * Encodes an mDNS announcement for Motorola Smart Connect `_readyformdns._tcp.local.`
+     * (`docs/engine/smart-connect-design.md` §3-S-A).
+     *
+     * TXT attributes:
+     * - `deviceId`: current rotating `nonceId` (24-char Base64 of 16 bytes)
+     * - `deviceName`: host display name
+     * - `type`: `"4"` (Laptop)
+     * - `os`: `"6"` (Windows PC profile required by stock APK)
+     * - `appType`: `"2"` (Desktop Smart Connect daemon)
+     * - `cap`: `"0"`
+     * - `timestamp`: epoch milliseconds string
+     * - `fp`: 64-char lowercase hex SHA-256 of leaf DER certificate
+     */
+    fun encodeReadyForAnnouncement(
+        nonceIdBase64: String,
+        deviceName: String,
+        port: Int = 9836,
+        addresses: List<String>,
+        certFingerprintHex: String,
+        timestampMs: Long,
+        type: Int = 4,
+        os: Int = 6,
+        appType: Int = 2,
+        cap: Int = 0,
+        ttlSeconds: Long = 120L,
+    ): ByteArray {
+        val safeHostPrefix = deviceName
+            .replace(Regex("[^A-Za-z0-9-]"), "-")
+            .trim('-')
+            .ifBlank { "EC0-PC" }
+            .take(40)
+        val serviceDomain = "_readyformdns._tcp.local."
+        val fullInstance = "$safeHostPrefix.$serviceDomain"
+        val hostTarget = "$safeHostPrefix.local."
+        val normalizedFp = certFingerprintHex.trim().lowercase()
+
+        val records = mutableListOf<MdnsResourceRecord>(
+            MdnsResourceRecord.PtrRecord(
+                name = serviceDomain,
+                rrClass = CLASS_IN,
+                ttlSeconds = ttlSeconds,
+                ptrDomainName = fullInstance,
+            ),
+            MdnsResourceRecord.SrvRecord(
+                name = fullInstance,
+                rrClass = CLASS_FLUSH,
+                ttlSeconds = ttlSeconds,
+                priority = 0,
+                weight = 0,
+                port = port,
+                targetHost = hostTarget,
+            ),
+            MdnsResourceRecord.TxtRecord(
+                name = fullInstance,
+                rrClass = CLASS_FLUSH,
+                ttlSeconds = ttlSeconds,
+                attributes = linkedMapOf(
+                    "deviceId" to nonceIdBase64.trim(),
+                    "deviceName" to deviceName.ifBlank { "EC0-PC" },
+                    "type" to type.toString(),
+                    "os" to os.toString(),
+                    "appType" to appType.toString(),
+                    "cap" to cap.toString(),
+                    "timestamp" to timestampMs.toString(),
+                    "fp" to normalizedFp,
+                ),
+            ),
+        )
+        for (addr in addresses) {
+            if (isValidIpv4(addr)) {
+                records.add(
+                    MdnsResourceRecord.ARecord(
+                        name = hostTarget,
+                        rrClass = CLASS_FLUSH,
+                        ttlSeconds = ttlSeconds,
+                        ipv4Address = addr,
+                    ),
+                )
+            } else if (isValidIpv6(addr)) {
+                records.add(
+                    MdnsResourceRecord.AaaaRecord(
+                        name = hostTarget,
+                        rrClass = CLASS_FLUSH,
+                        ttlSeconds = ttlSeconds,
+                        ipv6Address = addr,
+                    ),
+                )
+            }
+        }
+        return encodePacket(
+            MdnsPacket(
+                header = MdnsHeader(
+                    id = 0,
+                    flags = FLAGS_RESPONSE_AA,
+                    qdCount = 0,
+                    anCount = records.size,
+                ),
+                questions = emptyList(),
+                answers = records,
+            ),
+        )
+    }
+
+    /**
+     * Extracts discovered Motorola Smart Connect (`_readyformdns._tcp.local.`) peers from an
+     * incoming [MdnsPacket].
+     */
+    fun extractReadyForPeers(
+        packet: MdnsPacket,
+        nowMs: Long,
+        serviceType: String = "_readyformdns._tcp.local.",
+        fallbackSenderIp: String? = null,
+    ): List<DiscoveredReadyForPeer> {
+        val normalizedService = normalizeDomain(serviceType)
+        val allRecords = packet.answers + packet.additionals
+
+        val ptrInstances = mutableMapOf<String, Long>()
+        val srvByName = mutableMapOf<String, MdnsResourceRecord.SrvRecord>()
+        val txtByName = mutableMapOf<String, MdnsResourceRecord.TxtRecord>()
+        val addrsByHost = mutableMapOf<String, MutableList<String>>()
+
+        for (rr in allRecords) {
+            when (rr) {
+                is MdnsResourceRecord.PtrRecord -> {
+                    if (normalizeDomain(rr.name).equals(normalizedService, ignoreCase = true)) {
+                        ptrInstances[normalizeDomain(rr.ptrDomainName)] = rr.ttlSeconds
+                    }
+                }
+                is MdnsResourceRecord.SrvRecord -> srvByName[normalizeDomain(rr.name)] = rr
+                is MdnsResourceRecord.TxtRecord -> txtByName[normalizeDomain(rr.name)] = rr
+                is MdnsResourceRecord.ARecord ->
+                    addrsByHost.getOrPut(normalizeDomain(rr.name)) { mutableListOf() }.add(rr.ipv4Address)
+                is MdnsResourceRecord.AaaaRecord ->
+                    addrsByHost.getOrPut(normalizeDomain(rr.name)) { mutableListOf() }.add(rr.ipv6Address)
+                is MdnsResourceRecord.RawRecord -> Unit
+            }
+        }
+
+        val candidateNames = (ptrInstances.keys + srvByName.keys + txtByName.keys)
+            .filter { it.endsWith(".$normalizedService", ignoreCase = true) }
+            .toSet()
+
+        val result = mutableListOf<DiscoveredReadyForPeer>()
+        for (instanceName in candidateNames) {
+            val txt = txtByName[instanceName]
+            val srv = srvByName[instanceName]
+            val attrs = txt?.attributes.orEmpty()
+
+            val deviceId = attrs["deviceId"]?.trim().orEmpty()
+            if (deviceId.isEmpty()) continue
+
+            val rawInstancePrefix = instanceName.removeSuffix(".$normalizedService")
+            val deviceName = attrs["deviceName"]?.takeIf { it.isNotBlank() }
+                ?: rawInstancePrefix.ifBlank { "ReadyFor-Device" }
+            val fp = attrs["fp"]?.trim()?.lowercase().orEmpty()
+            val type = attrs["type"]?.toIntOrNull() ?: 1
+            val os = attrs["os"]?.toIntOrNull() ?: 1
+            val appType = attrs["appType"]?.toIntOrNull() ?: 1
+            val cap = attrs["cap"]?.toIntOrNull() ?: 0
+            val timestamp = attrs["timestamp"]?.toLongOrNull() ?: 0L
+            val port = srv?.port?.takeIf { it in 1..65535 } ?: 9836
+
+            val hostAddrs = srv?.let { addrsByHost[normalizeDomain(it.targetHost)] }?.toList().orEmpty()
+            val resolvedAddrs = when {
+                hostAddrs.isNotEmpty() -> hostAddrs
+                fallbackSenderIp != null -> listOf(fallbackSenderIp)
+                else -> emptyList()
+            }
+
+            val ttlCandidates = listOfNotNull(ptrInstances[instanceName], srv?.ttlSeconds, txt?.ttlSeconds)
+            val effectiveTtl = if (ttlCandidates.any { it == 0L }) 0L else (ttlCandidates.minOrNull() ?: 120L)
+
+            result.add(
+                DiscoveredReadyForPeer(
+                    instanceName = rawInstancePrefix,
+                    deviceId = deviceId,
+                    deviceName = deviceName,
+                    port = port,
+                    addresses = resolvedAddrs,
+                    fp = fp,
+                    type = type,
+                    os = os,
+                    appType = appType,
+                    cap = cap,
+                    timestamp = timestamp,
+                    ttlSeconds = effectiveTtl,
+                    receivedAtMs = nowMs,
+                ),
+            )
+        }
+        return result
     }
 
     fun normalizeDomain(domain: String): String {

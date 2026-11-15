@@ -13,15 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 /** One offered file of a pending incoming transfer, UI-safe view. */
 data class IncomingFileInfo(val fileName: String, val size: Long)
 
-/** Smart Connect pairing QR (desktop renders it; phone peers scan it). */
-data class SmartConnectPairingQr(
-    val payload: String,
-    val size: Int,
-    val modules: List<Boolean>,
-    val wsPort: Int,
-    val deviceName: String,
-)
-
 /** An incoming transfer awaiting the user's decision (accept / decline / trust). */
 data class IncomingRequest(
     val senderAlias: String,
@@ -42,6 +33,18 @@ data class Capabilities(
     val photoSync: Boolean,
     /** Remote input / mirror host available. */
     val remoteInput: Boolean,
+)
+
+/**
+ * Smart Connect pairing QR code (`motorolardpconnection{...}`) for stock
+ * Motorola Smart Connect Android clients to scan.
+ */
+data class SmartConnectPairingQr(
+    val payload: String,
+    val size: Int,
+    val modules: List<Boolean>,
+    val wsPort: Int,
+    val deviceName: String,
 )
 
 /**
@@ -67,14 +70,18 @@ interface UiBridge {
     fun isDarkTheme(): Boolean = false
 
     /**
+     * Smart Connect pairing QR (`motorolardpconnection{...}`) rendered in Settings.
+     * Platforms without a Smart Connect PC listener keep this null.
+     */
+    val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?>
+        get() = MutableStateFlow<SmartConnectPairingQr?>(null)
+
+    /**
      * Incoming transfer awaiting the user's accept/decline decision —
      * non-null while the dialog should show. Platforms without a receiver
      * keep this null forever.
      */
     val incomingRequest: StateFlow<IncomingRequest?> get() = MutableStateFlow<IncomingRequest?>(null)
-
-    /** Smart Connect pairing QR — null on platforms without the engine running. */
-    val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?> get() = MutableStateFlow<SmartConnectPairingQr?>(null)
 
     /** Accept the pending incoming transfer (all offered files), optionally trusting the sender. */
     fun acceptIncoming(trust: Boolean = false) {}

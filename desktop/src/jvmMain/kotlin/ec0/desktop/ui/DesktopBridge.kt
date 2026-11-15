@@ -5,28 +5,52 @@
  */
 package ec0.desktop.ui
 
+import ec0.desktop.continuity.ContinuityHubController
 import ec0.desktop.state.AppState
 import ec0.ui.models.Capabilities
 import ec0.ui.models.SettingsState
+import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 
 class DesktopBridge(
     private val appState: AppState,
-    private val smartConnectQrSupplier: (() -> ec0.ui.models.SmartConnectPairingQr?)? = null,
+    private val hub: ContinuityHubController? = null,
+    private val smartConnectWsPort: Int? = null,
 ) : UiBridge {
     override val devices: StateFlow<List<UiDevice>> = appState.devices
     override val transfers: StateFlow<List<ec0.ui.models.TransferItem>> = appState.transfers
     override val settings: StateFlow<SettingsState> = appState.settings
     override val scanning: StateFlow<Boolean> = appState.scanning
 
+    private val _smartConnectPairingQr: MutableStateFlow<SmartConnectPairingQr?> = MutableStateFlow(
+        buildInitialSmartConnectPairingQr()
+    )
+    override val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?> =
+        _smartConnectPairingQr.asStateFlow()
+
+    private fun buildInitialSmartConnectPairingQr(): SmartConnectPairingQr? {
+        val coordinator = hub?.node?.smartConnectCoordinator ?: return null
+        return runCatching {
+            val nowMs = System.currentTimeMillis()
+            val payload = coordinator.buildPairingQrPayload(nowMs)
+            val matrix = coordinator.buildPairingQrMatrix(nowMs)
+            SmartConnectPairingQr(
+                payload = payload,
+                size = matrix.size,
+                modules = matrix.toRowMajorList(),
+                wsPort = smartConnectWsPort ?: coordinator.boundPort,
+                deviceName = coordinator.deviceName,
+            )
+        }.getOrNull()
+    }
+
     // Honest capability flags: the continuity service attaches via the tray
     // path; receiver + sync slices land in later PRs.
-    override val smartConnectPairingQr: StateFlow<ec0.ui.models.SmartConnectPairingQr?> =
-        kotlinx.coroutines.flow.MutableStateFlow(smartConnectQrSupplier?.invoke())
-
     override val capabilities: Capabilities = Capabilities(
         canReceive = true,
         clipboardSync = false,
@@ -50,3 +74,4 @@ class DesktopBridge(
         if (fileRef is File) appState.sendFile(fileRef, device)
     }
 }
+
