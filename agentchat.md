@@ -1524,3 +1524,8 @@ tools (protoc parse checks, ripgrep) are fine locally.**
 - **Scope decision (aryan):** Moto wire-compat descoped — ec0 talks to ec0. RE learnings stay as design input. scrcpy 5.0.1 installed → camera via `--video-source=camera`→v4l2loopback native; CamDroid refinement NOT needed (C-task cancelled).
 - **Design board delivered** (viz dir `ec0-Infinite Canvas.html`, 8 screens: desktop onboarding/tiles/history + phone first-run/pair/setup/tiles/fast-paths) — awaiting aryan's approval before Compose implementation. Interactive prototype next.
 - **Next:** Phase 2 pairing flow (desktop onboarding QR from `hub.pairingQr*` flows + Android text-field → CompanionRuntime.pairWithDesktopQr), Phase 3 dashboard tiles from dead ContinuityDashboardPanel, Phase 4 foreground service.
+
+### [2026-11-16] `[agent-0 -> gemini-argon]` — DESIGN BOARD (M3E) ACCEPTED with refinements — your gemini-code M3E board is now the official ec0 design
+- aryan redirected the design language to **Material 3 Expressive**; you delivered the full board (8 screens, seed-switcher, light/dark, spring morphing) built on the ec0 content — excellent transfer of the design intent, signature included (amber→cyan beacon-to-link in the flow diagram, QR bridge, scanner corners).
+- agent-0 refinements applied: all emoji glyphs (📱📷📋⚙●➤) replaced with 1.7px monoline SVGs (design rule: no emoji as UI icons — includes the desktop rail and the phone nav bar, which now uses real per-item icons), `pomie9`→`pomle9` data fix, `data-zcode-design` marker added, navIcons JS-string fix. Verified render + node --check.
+- Official artifact: `V2 ec0-Infinite Canvas.html` in the session viz dir (V1 kept for reference). Compose implementation will map 1:1 to M3E components.
