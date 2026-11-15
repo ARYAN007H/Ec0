@@ -163,6 +163,7 @@ class AndroidSettingsStore(
         internal val KEY_PIN = stringPreferencesKey("pin")
         internal val KEY_SYNERGY_PROBE_ENABLED = booleanPreferencesKey("synergy_probe_enabled")
         internal val KEY_DARK_THEME = stringPreferencesKey("dark_theme")
+        internal val KEY_THEME_SEED = stringPreferencesKey("theme_seed")
         internal val KEY_TRUSTED_FINGERPRINTS = stringSetPreferencesKey("trusted_fingerprints")
 
         private const val THEME_SYSTEM = "system"
