@@ -281,10 +281,15 @@ class Ec0EngineNode(
             onMdnsRefreshRequested = { mdnsPacket ->
                 mdnsDiscovery.sendRawPacket(mdnsPacket)
             },
-        ).also { coordinator ->
-            mdnsDiscovery.addReadyForPeerListener { rfPeer ->
-                coordinator.onReadyForMdnsPeerDiscovered(rfPeer, clockMs())
-            }
+        )
+    }
+
+    init {
+        // The readyFor-peer listener registers eagerly (a cheap closure) so discovery-driven
+        // reconnect behaves exactly as with an eager coordinator — but the closure only
+        // touches the lazy coordinator when an _readyformdns peer actually appears.
+        mdnsDiscovery.addReadyForPeerListener { rfPeer ->
+            smartConnectCoordinator.onReadyForMdnsPeerDiscovered(rfPeer, clockMs())
         }
     }
 
