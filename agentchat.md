@@ -1505,3 +1505,16 @@ tools (protoc parse checks, ripgrep) are fine locally.**
   1. **DataStore Preferences Persistence (`AndroidSettingsStore` + `MainActivity`):** Added AndroidX `DataStore<Preferences>` (`ec0_android_settings`) persisting `alias`, `darkTheme`, `requirePin`, `pin`, `synergyProbeEnabled`, and `trustedFingerprints` (`Set<String>`). Loaded at `MainActivity.onCreate` startup into `AndroidAppState._settings` and written on every `updateSettings` mutation, syncing alias and trusted fingerprints with `AndroidCompanionRuntime`.
   2. **Explicit Android Engine Store Directories (`File(context.filesDir, "ec0")`):** Added `EncryptedIdentityStore.forAppFilesDir(appFilesDir)`, `PersistentPinStore.forAppFilesDir(appFilesDir)`, and `AndroidCompanionRuntime.createWithPersistentStores(...)` so Android never falls back to `user.home/.config` (`/`). Also updated `Ec0EngineNode` Smart Connect storage directory resolution for `ROLE_PHONE` / `ec0` app dirs.
   3. **Same-Commit Unit Tests (`AndroidSettingsStoreTest`):** Verified full `SettingsState` roundtrip (including `trustedFingerprints` set across simulated process restart) and explicit `File(filesDir, "ec0")` `EncryptedIdentityStore` + `PersistentPinStore` persistence under `:android-app:testDebugUnitTest`.
+
+### [2026-11-15] `[gemini-argon]` — DONE: Phone Notification Relay (`feat/argon-notification-relay`)
+- **Files touched:**
+  - `android-app/src/main/AndroidManifest.xml`
+  - `android-app/src/main/kotlin/ec0/android/Ec0NotificationListener.kt`
+  - `android-app/src/main/kotlin/ec0/android/MainActivity.kt`
+  - `android-app/build.gradle.kts`
+  - `android-app/src/test/kotlin/ec0/android/Ec0NotificationRelayTest.kt`
+- **Summary:**
+  1. **`Ec0NotificationListener : NotificationListenerService` + Manifest Binding:** Bound `.Ec0NotificationListener` with `android.permission.BIND_NOTIFICATION_LISTENER_SERVICE` and `NotificationListenerService` intent filter, plus `<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />` in `AndroidManifest.xml`.
+  2. **Notification Relay & Title Sanitization (`NotificationRelayMapper`):** Wired `onNotificationPosted(sbn)` -> `NotificationRelayMapper` -> `AndroidCompanionRuntime.onAndroidNotificationPosted` -> engine `NotificationRelayService`. Strips notification titles of any raw app-package text (both the notification's own `packageName` and reverse-DNS package identifiers like `com.whatsapp` / `org.telegram.messenger`), falling back to a clean humanized app label when needed.
+  3. **`RemoteInput` Inline Reply (`sendInlineReply`) & Listener Access Helper (`NotificationAccessHelper`):** Captures active `RemoteInput` actions per notification (bounded `LinkedHashMap` with manual eviction — no anonymous subclass) and executes inline replies via `RemoteInput.addResultsToIntent` + `PendingIntent.send`. Added `NotificationAccessHelper` to detect listener access (`enabled_notification_listeners` / `NotificationManager`) and deep-link to `Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS`.
+  4. **Same-Commit Unit Tests (`Ec0NotificationRelayTest`):** Verified `StatusBarNotification` -> `NotificationPostInfo` mapping, raw package-text stripping from titles, `onNotificationPosted` -> `AndroidCompanionRuntime` -> `NotificationRelayService` + `sendInlineReply` roundtrip, and `NotificationAccessHelper` listener string parsing.

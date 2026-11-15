@@ -78,13 +78,21 @@ class AndroidAppState(
 
     /**
      * Companion engine runtime wired with explicit `File(context.filesDir, "ec0")` store
-     * directories so Android never falls back to `user.home/.config` (`PersistentEngineStore.kt:161`).
+     * directories so Android never falls back to `user.home/.config` (`PersistentEngineStore.kt:161`),
+     * and bridged to [Ec0NotificationListener] for phone notification relay and [RemoteInput] inline replies.
      */
     val companionRuntime: ec0.core.engine.android.AndroidCompanionRuntime =
         ec0.core.engine.android.AndroidCompanionRuntime.createWithPersistentStores(
             storeDir = ec0StoreDir,
             phoneModelName = _settings.value.alias,
-            callbacks = object : ec0.core.engine.android.AndroidPlatformCallbacks {},
+            callbacks = object : ec0.core.engine.android.AndroidPlatformCallbacks {
+                override fun onExecuteInlineReply(
+                    reply: ec0.core.engine.protocol.NotificationReplyCommand,
+                ): Boolean = Ec0NotificationListener.sendInlineReply(reply, context.applicationContext)
+
+                override fun onDismissSystemNotification(notifId: String): Boolean =
+                    Ec0NotificationListener.dismissSystemNotification(notifId)
+            },
             listenPort = 0,
             downloadDir = File(
                 context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
@@ -109,13 +117,20 @@ class AndroidAppState(
     private val _scanning = MutableStateFlow(false)
     override val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
-    override val capabilities: Capabilities = Capabilities(
-        canReceive = true, // Ktor receiver below
-        clipboardSync = false,
-        notifications = false,
-        photoSync = false,
-        remoteInput = false,
-    )
+    override val capabilities: Capabilities
+        get() = Capabilities(
+            canReceive = true, // Ktor receiver below
+            clipboardSync = false,
+            notifications = isNotificationListenerAccessGranted(),
+            photoSync = false,
+            remoteInput = false,
+        )
+
+    fun isNotificationListenerAccessGranted(): Boolean =
+        NotificationAccessHelper.isNotificationListenerEnabled(context)
+
+    fun requestNotificationListenerAccess(): Boolean =
+        NotificationAccessHelper.openNotificationAccessSettings(context)
 
     override fun isDarkTheme(): Boolean = _settings.value.darkTheme ?: false
 
@@ -199,6 +214,7 @@ class AndroidAppState(
     private val discoveryPeriodMs = 5_000L
 
     init {
+        Ec0NotificationListener.attachRuntime(companionRuntime)
         scope.launch(Dispatchers.IO) {
             val loaded = runCatching { settingsStore.load(defaultSettings) }.getOrDefault(defaultSettings)
             _settings.value = loaded
@@ -340,6 +356,9 @@ class AndroidAppState(
     }
 
     fun release() {
+        if (Ec0NotificationListener.currentRuntime() === companionRuntime) {
+            Ec0NotificationListener.attachRuntime(null)
+        }
         runCatching { companionRuntime.close() }
         multicastLock?.release()
         multicastLock = null
