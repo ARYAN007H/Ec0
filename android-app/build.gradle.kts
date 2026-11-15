@@ -40,8 +40,12 @@ android {
     }
 
     lint {
-        // CI speed/robustness over lint purity for v0.1
+        // CI speed/robustness over lint purity for v0.1.
+        // AGP 8.7.3 lint crashes (IncompatibleClassChangeError in
+        // NonNullableMutableLiveDataDetector) against the newer compose classpath that
+        // material3 1.10.0-alpha pulls in — revisit lint when AGP is bumped.
         abortOnError = false
+        checkReleaseBuilds = false
     }
 
     testOptions {
@@ -52,6 +56,11 @@ android {
 kotlin {
     jvmToolchain(17)
 }
+
+// Lint's analyzer crashes (not reports — crashes) against the material3-alpha classpath
+// with AGP 8.7.3; the lint tool itself needs the next AGP bump. Same-commit unit tests
+// remain the quality gate.
+tasks.named("lint") { enabled = false }
 
 dependencies {
     implementation(project(":core"))
