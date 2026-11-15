@@ -339,6 +339,42 @@ private fun HonestyTile(modifier: Modifier = Modifier) {
 }
 
 /**
+/** Live-link chip for the dashboard header — connected (green dot) or searching. */
+@Composable
+private fun PeerLinkChip(link: PeerLinkState) {
+    val (container, content, label) = if (link.connected) {
+        Triple(
+            MaterialTheme.colorScheme.tertiaryContainer,
+            MaterialTheme.colorScheme.onTertiaryContainer,
+            link.transport,
+        )
+    } else {
+        Triple(
+            MaterialTheme.colorScheme.surfaceContainerHighest,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            "searching for the trusted peer…",
+        )
+    }
+    Surface(shape = Ec0Shapes.pill, color = container, contentColor = content) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(
+                        if (link.connected) ec0Colors().success else MaterialTheme.colorScheme.outline,
+                        CircleShape,
+                    ),
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+/**
  * M3 Expressive dashboard tile shell — tonal container, oversized corners,
  * status dot when [live] is meaningful, single [content] slot for controls.
  */
