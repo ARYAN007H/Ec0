@@ -60,8 +60,12 @@ class MulticastMdnsTransport(
     private val socket: MulticastSocket = MulticastSocket(null).apply {
         reuseAddress = true
         soTimeout = soTimeoutMs
-        bind(InetSocketAddress(port))
-        joinAllMulticastInterfaces(group, port)
+        // Kotlin trap: inside `apply` on MulticastSocket, unqualified `port` resolves to the
+        // RECEIVER's DatagramSocket.port (-1 when unbound), silently shadowing the ctor param —
+        // compiled code binds InetSocketAddress(socket.port) and throws "port out of range:-1".
+        // Qualify explicitly.
+        bind(InetSocketAddress(this@MulticastMdnsTransport.port))
+        joinAllMulticastInterfaces(group, this@MulticastMdnsTransport.port)
     }
     private val closed = AtomicBoolean(false)
 
