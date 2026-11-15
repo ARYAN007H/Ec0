@@ -59,8 +59,8 @@ kotlin {
 
 // Lint's analyzer crashes (not reports — crashes) against the material3-alpha classpath
 // with AGP 8.7.3; the lint tool itself needs the next AGP bump. Same-commit unit tests
-// remain the quality gate.
-tasks.named("lint") { enabled = false }
+// remain the quality gate. Kill every lint* task (lint, lintAnalyze*, lintVital*, lintReport*).
+tasks.configureEach { if (name.startsWith("lint")) enabled = false }
 
 dependencies {
     implementation(project(":core"))
