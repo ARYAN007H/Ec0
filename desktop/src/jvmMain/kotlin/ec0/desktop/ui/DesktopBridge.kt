@@ -5,9 +5,13 @@
  */
 package ec0.desktop.ui
 
+import ec0.core.engine.EngineConnectionState
 import ec0.desktop.continuity.ContinuityHubController
 import ec0.desktop.state.AppState
 import ec0.ui.models.Capabilities
+import ec0.ui.models.NotificationItem
+import ec0.ui.models.PairingQr
+import ec0.ui.models.PeerLinkState
 import ec0.ui.models.SettingsState
 import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.UiBridge
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -51,7 +56,7 @@ class DesktopBridge(
             MutableStateFlow(null)
         } else {
             combine(hub.pairingQrUri, hub.pairingQrMatrix) { uri, matrix ->
-                matrix?.let { ec0.ui.models.PairingQr(uri, it.size, it.toRowMajorList()) }
+                matrix?.let { PairingQr(uri, it.size, it.toRowMajorList()) }
             }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
         }
 
@@ -61,6 +66,90 @@ class DesktopBridge(
         } else {
             hub.pinnedPeers.map { it.size }.stateIn(bridgeScope, SharingStarted.Eagerly, 0)
         }
+
+    // ---- Dashboard (HOME tiles): live hub state, honest OFF defaults ----
+
+    /** scrcpy's running state is a plain getter — poll it; 3 s is plenty for a tile. */
+    private fun mirrorPoll() = flow {
+        while (true) {
+            emit(
+                runCatching { hub?.node?.scrcpyCoordinator?.isMirroring == true }.getOrDefault(false),
+            )
+            delay(3_000L)
+        }
+    }
+
+    override val mirrorRunning: StateFlow<Boolean> = mirrorPoll()
+        .stateIn(bridgeScope, SharingStarted.Eagerly, false)
+
+    override val cameraStateText: StateFlow<String?> =
+        hub?.cameraStatus?.map { st ->
+            val state = st.state.wireName.lowercase()
+            if (state == "idle") "idle" else "$state → ${st.v4l2DevicePath}"
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, null) ?: MutableStateFlow(null)
+
+    override val peerLink: StateFlow<PeerLinkState?> =
+        if (hub == null) {
+            MutableStateFlow(null)
+        } else {
+            combine(hub.usbTunnelStatus, hub.node.connectionStates) { tunnel, states ->
+                val engineConnected = states.values.any { it == EngineConnectionState.CONNECTED }
+                when {
+                    tunnel != null -> PeerLinkState(connected = true, transport = "USB tunnel")
+                    engineConnected -> PeerLinkState(connected = true, transport = "Wi-Fi TLS")
+                    else -> PeerLinkState(connected = false, transport = "searching")
+                }
+            }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
+        }
+
+    override val clipboardSummary: StateFlow<String> =
+        hub?.lastSyncedClipSummary ?: MutableStateFlow("No clipboard items synced yet")
+
+    override val autoSyncClipboard: StateFlow<Boolean> =
+        hub?.autoSyncClipboard ?: MutableStateFlow(true)
+
+    override val relayedNotifications: StateFlow<List<NotificationItem>> =
+        hub?.notifications?.map { list ->
+            list.map {
+                NotificationItem(it.notifId, it.appName, it.title, it.body, it.canReply)
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    /** Mirror/camera target: the trusted peer's mDNS Wi-Fi host, else loopback via the USB tunnel. */
+    private fun mirrorHost(): String {
+        val h = hub ?: return "127.0.0.1"
+        val pinned = h.pinnedPeers.value.map { it.deviceId }
+        val peer = h.node.mdnsDiscovery.peers.value.firstOrNull { it.deviceId in pinned }
+        return peer?.addresses?.firstOrNull() ?: "127.0.0.1"
+    }
+
+    override fun startScreenMirror() {
+        hub?.startScreenMirror(mirrorHost())
+    }
+
+    override fun stopScreenMirror() {
+        hub?.stopScreenMirror()
+    }
+
+    override fun startCamera() {
+        hub?.startContinuityCamera(mirrorHost())
+    }
+
+    override fun stopCamera() {
+        hub?.stopContinuityCamera()
+    }
+
+    override fun setAutoSyncClipboard(enabled: Boolean) {
+        hub?.setAutoSyncClipboard(enabled)
+    }
+
+    override fun sendNotificationReply(id: String, text: String) {
+        hub?.sendNotificationReply(id, text = text)
+    }
+
+    override fun setupV4l2Loopback() {
+        hub?.setupV4l2LoopbackWithPkexec()
+    }
 
     init {
         // The Smart Connect invite token expires after ~180 s — rotate and rebuild so the

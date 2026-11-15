@@ -58,6 +58,22 @@ data class PairingQr(
     val modules: List<Boolean>,
 )
 
+/** Live link state to the trusted peer — drives the dashboard header and tile honesty. */
+data class PeerLinkState(
+    val connected: Boolean,
+    /** e.g. "USB tunnel", "Wi-Fi TLS", "searching". */
+    val transport: String,
+)
+
+/** One phone notification relayed by the engine, shown on the dashboard tile. */
+data class NotificationItem(
+    val id: String,
+    val appName: String,
+    val title: String,
+    val body: String,
+    val canReply: Boolean,
+)
+
 /**
  * Everything the shared UI needs from the host platform. Implementations are
  * thin: desktop wraps [ec0.desktop.state.AppState]-shaped state, Android wraps
@@ -95,6 +111,35 @@ interface UiBridge {
 
     /** Pinned (trusted) engine peers — 0 means this end has never paired. */
     val trustedPeerCount: StateFlow<Int> get() = MutableStateFlow(0)
+
+    // ---- Dashboard tiles (HOME). Desktop maps these from ContinuityHubController;
+    // platforms without the engine keep the defaults — tiles render honest OFF states. ----
+
+    /** Live link state to the trusted peer; null when no peer has ever paired. */
+    val peerLink: StateFlow<PeerLinkState?> get() = MutableStateFlow(null)
+
+    /** scrcpy mirror running? */
+    val mirrorRunning: StateFlow<Boolean> get() = MutableStateFlow(false)
+
+    /** Camera pipeline state line (e.g. "idle" / "streaming → /dev/video10"), or null if unavailable. */
+    val cameraStateText: StateFlow<String?> get() = MutableStateFlow(null)
+
+    /** Last clipboard sync summary line. */
+    val clipboardSummary: StateFlow<String> get() = MutableStateFlow("No clipboard items synced yet")
+
+    /** Whether local clipboard changes auto-sync to the trusted peer. */
+    val autoSyncClipboard: StateFlow<Boolean> get() = MutableStateFlow(true)
+
+    /** Phone notifications relayed by the engine (bounded, newest-first). */
+    val relayedNotifications: StateFlow<List<NotificationItem>> get() = MutableStateFlow(emptyList())
+
+    fun startScreenMirror() {}
+    fun stopScreenMirror() {}
+    fun startCamera() {}
+    fun stopCamera() {}
+    fun setAutoSyncClipboard(enabled: Boolean) {}
+    fun sendNotificationReply(id: String, text: String) {}
+    fun setupV4l2Loopback() {}
 
     /**
      * Incoming transfer awaiting the user's accept/decline decision —

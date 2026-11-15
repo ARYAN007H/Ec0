@@ -98,7 +98,7 @@ fun Ec0App(
                                 compact = true,
                             )
                         } else {
-                            SectionContent(section, bridge, pickFile)
+                            SectionContent(section, bridge, pickFile, compact = true)
                         }
                     }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
@@ -135,7 +135,7 @@ fun Ec0App(
                                 compact = false,
                             )
                         } else {
-                            SectionContent(section, bridge, pickFile)
+                            SectionContent(section, bridge, pickFile, compact = false)
                         }
                     }
                 }
@@ -159,7 +159,12 @@ private fun RailBrand() {
 }
 
 @Composable
-private fun SectionContent(section: Section, bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
+private fun SectionContent(
+    section: Section,
+    bridge: UiBridge,
+    pickFile: (onPicked: (Any?) -> Unit) -> Unit,
+    compact: Boolean,
+) {
     AnimatedContent(
         targetState = section,
         transitionSpec = {
@@ -172,7 +177,7 @@ private fun SectionContent(section: Section, bridge: UiBridge, pickFile: (onPick
         label = "section",
     ) { s ->
         when (s) {
-            Section.HOME -> HomePanel(bridge, pickFile)
+            Section.HOME -> HomePanel(bridge, pickFile, compact)
             Section.TRANSFERS -> TransfersPanel(bridge)
             Section.SHARE -> SharePanel(bridge, pickFile)
             Section.SYNC -> SyncPanel(bridge)

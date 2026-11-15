@@ -1,8 +1,9 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * Home dashboard: this-device hero, nearby device grid, live transfer strip.
- * Everything on this screen is real state — no filler.
+ * Home dashboard — M3 Expressive bento tiles (mirror, camera, files, clipboard,
+ * notifications) over the live hub state, then the nearby-device grid for
+ * LocalSend-wire neighbors. Everything on this screen is real state — no filler.
  */
 package ec0.ui.panels
 
@@ -18,6 +19,7 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,34 +33,48 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SensorDoor
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.Capabilities
+import ec0.ui.models.PeerLinkState
+import ec0.ui.models.TransferState
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice
 import ec0.ui.theme.Ec0Shapes
@@ -70,12 +86,22 @@ import ec0.ui.widgets.SectionHeader
 import ec0.ui.widgets.TransferStrip
 
 @Composable
-fun HomePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
+fun HomePanel(
+    bridge: UiBridge,
+    pickFile: (onPicked: (Any?) -> Unit) -> Unit,
+    compact: Boolean = false,
+) {
     val devices by bridge.devices.collectAsState()
     val transfers by bridge.transfers.collectAsState()
     val scanning by bridge.scanning.collectAsState()
     val settings by bridge.settings.collectAsState()
     val incoming by bridge.incomingRequest.collectAsState()
+    val peerLink by bridge.peerLink.collectAsState()
+    val mirrorRunning by bridge.mirrorRunning.collectAsState()
+    val cameraState by bridge.cameraStateText.collectAsState()
+    val clipSummary by bridge.clipboardSummary.collectAsState()
+    val autoSync by bridge.autoSyncClipboard.collectAsState()
+    val notifications by bridge.relayedNotifications.collectAsState()
 
     Column(
         modifier = Modifier
@@ -92,65 +118,52 @@ fun HomePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
                 onDecline = { bridge.declineIncoming() },
             )
         }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.primaryContainer, Ec0Shapes.hero)
-                .padding(24.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .background(
-                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.12f),
-                            CircleShape,
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = deviceIcon(settings.deviceType),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(34.dp),
-                    )
+
+        // Status header: this device + live link to the trusted peer + scan.
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                settings.alias,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.width(12.dp))
+            peerLink?.let { PeerLinkChip(it) }
+            Spacer(Modifier.weight(1f))
+            FilledTonalButton(
+                onClick = bridge::startScan,
+                enabled = !scanning,
+                shape = Ec0Shapes.pill,
+            ) {
+                if (scanning) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                 }
-                Spacer(Modifier.width(18.dp))
-                Column {
-                    Text(
-                        settings.alias,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                    Text(
-                        "${settings.deviceModel} · ${bridge.capabilities.label()}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                FilledTonalButton(
-                    onClick = bridge::startScan,
-                    enabled = !scanning,
-                    shape = Ec0Shapes.pill,
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        contentColor = MaterialTheme.colorScheme.primaryContainer,
-                    ),
-                ) {
-                    if (scanning) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        )
-                    } else {
-                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (scanning) "Scanning" else "Scan")
-                }
+                Spacer(Modifier.width(8.dp))
+                Text(if (scanning) "Scanning" else "Scan")
+            }
+        }
+
+        // Bento tiles — 3-up on desktop, stacked on the phone.
+        if (compact) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                MirrorTile(bridge, mirrorRunning, Modifier.fillMaxWidth())
+                CameraTile(bridge, cameraState, Modifier.fillMaxWidth())
+                FilesTile(transfers, devices, Modifier.fillMaxWidth())
+                ClipboardTile(bridge, clipSummary, autoSync, Modifier.fillMaxWidth())
+                NotificationsTile(bridge, notifications, Modifier.fillMaxWidth())
+                HonestyTile(Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                MirrorTile(bridge, mirrorRunning, Modifier.weight(1f))
+                CameraTile(bridge, cameraState, Modifier.weight(1f))
+                FilesTile(transfers, devices, Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                ClipboardTile(bridge, clipSummary, autoSync, Modifier.weight(1f))
+                NotificationsTile(bridge, notifications, Modifier.weight(1f))
+                HonestyTile(Modifier.weight(1f))
             }
         }
 
@@ -178,6 +191,241 @@ fun HomePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
             TransferStrip(transfers)
         }
         Spacer(Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun MirrorTile(bridge: UiBridge, running: Boolean, modifier: Modifier = Modifier) {
+    DashboardTile(
+        title = "Mirror the screen",
+        subtitle = if (running) "scrcpy · live · touch enabled" else "scrcpy · wireless adb · tap to start",
+        icon = Icons.Filled.DesktopWindows,
+        iconTint = MaterialTheme.colorScheme.tertiary,
+        live = running,
+        modifier = modifier,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (running) {
+                TileButton("Stop mirror", destructive = true) { bridge.stopScreenMirror() }
+            } else {
+                TileButton("Start mirror") { bridge.startScreenMirror() }
+            }
+            TileButton("Audio off", subtle = true, enabled = false) { }
+        }
+    }
+}
+
+@Composable
+private fun CameraTile(bridge: UiBridge, cameraState: String?, modifier: Modifier = Modifier) {
+    DashboardTile(
+        title = "Phone camera → PC",
+        subtitle = cameraState?.takeIf { it != "idle" } ?: "v4l2loopback · tap to start",
+        icon = Icons.Filled.CameraAlt,
+        iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
+        live = null,
+        modifier = modifier,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TileButton("Start camera") { bridge.startCamera() }
+            TileButton("Stop", subtle = true) { bridge.stopCamera() }
+            TileButton("Load v4l2", subtle = true) { bridge.setupV4l2Loopback() }
+        }
+    }
+}
+
+@Composable
+private fun FilesTile(
+    transfers: List<ec0.ui.models.TransferItem>,
+    devices: List<UiDevice>,
+    modifier: Modifier = Modifier,
+) {
+    val active = transfers.firstOrNull { it.state == TransferState.RUNNING } ?: transfers.firstOrNull()
+    DashboardTile(
+        title = "Send files",
+        subtitle = when {
+            active != null -> "${active.fileName} · ${active.progressPct}%"
+            devices.isEmpty() -> "Discovering neighbors…"
+            else -> "Pick a device below and send"
+        },
+        icon = Icons.Filled.ArrowUpward,
+        iconTint = MaterialTheme.colorScheme.primary,
+        live = devices.isNotEmpty(),
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun ClipboardTile(
+    bridge: UiBridge,
+    summary: String,
+    autoSync: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    DashboardTile(
+        title = "Clipboard",
+        subtitle = summary,
+        icon = Icons.Filled.ContentPaste,
+        iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
+        live = autoSync,
+        clippedSubtitle = true,
+        modifier = modifier,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Auto-sync",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = autoSync, onCheckedChange = { bridge.setAutoSyncClipboard(it) })
+        }
+    }
+}
+
+@Composable
+private fun NotificationsTile(
+    bridge: UiBridge,
+    notifications: List<ec0.ui.models.NotificationItem>,
+    modifier: Modifier = Modifier,
+) {
+    DashboardTile(
+        title = "Notifications",
+        subtitle = notifications.firstOrNull()?.let { "${it.appName}: ${it.body}" }
+            ?: "Relayed phone notifications appear here",
+        icon = Icons.Filled.Notifications,
+        iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
+        live = notifications.isNotEmpty(),
+        clippedSubtitle = true,
+        modifier = modifier,
+    ) {
+        val latest = notifications.firstOrNull { it.canReply }
+        var reply by remember(latest?.id) { mutableStateOf("") }
+        val send = {
+            if (latest != null && reply.isNotBlank()) {
+                bridge.sendNotificationReply(latest.id, reply)
+                reply = ""
+            }
+            Unit
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = reply,
+                onValueChange = { reply = it },
+                placeholder = { Text("Reply…", style = MaterialTheme.typography.bodySmall) },
+                singleLine = true,
+                enabled = latest != null,
+                shape = Ec0Shapes.pill,
+                keyboardActions = KeyboardActions(onSend = { send() }),
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            TileButton("Send", enabled = reply.isNotBlank()) { send() }
+        }
+    }
+}
+
+@Composable
+private fun HonestyTile(modifier: Modifier = Modifier) {
+    DashboardTile(
+        title = "Said plainly",
+        subtitle = "phone→PC clipboard syncs while ec0 is in the foreground — " +
+            "Android 10+ blocks background reads. PC→phone always works.",
+        icon = Icons.Filled.SensorDoor,
+        iconTint = MaterialTheme.colorScheme.primary,
+        live = null,
+        modifier = modifier,
+    )
+}
+
+/**
+ * M3 Expressive dashboard tile shell — tonal container, oversized corners,
+ * status dot when [live] is meaningful, single [content] slot for controls.
+ */
+@Composable
+private fun DashboardTile(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    iconTint: Color,
+    live: Boolean?,
+    modifier: Modifier = Modifier,
+    clippedSubtitle: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit = {},
+) {
+    Surface(
+        shape = RoundedCornerShape(26.dp),
+        color = if (live == true) {
+            MaterialTheme.colorScheme.surfaceContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(9.dp))
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                )
+                if (live != null) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                if (live) ec0Colors().success else MaterialTheme.colorScheme.outlineVariant,
+                                CircleShape,
+                            ),
+                    )
+                }
+            }
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (clippedSubtitle) 1 else 3,
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun TileButton(
+    label: String,
+    destructive: Boolean = false,
+    subtle: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = Ec0Shapes.pill,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = when {
+                destructive -> MaterialTheme.colorScheme.errorContainer
+                subtle -> MaterialTheme.colorScheme.surfaceContainerHighest
+                else -> MaterialTheme.colorScheme.primary
+            },
+            contentColor = when {
+                destructive -> MaterialTheme.colorScheme.onErrorContainer
+                subtle -> MaterialTheme.colorScheme.onSurfaceVariant
+                else -> MaterialTheme.colorScheme.onPrimary
+            },
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            disabledContentColor = MaterialTheme.colorScheme.outline,
+        ),
+    ) {
+        Text(label)
     }
 }
 
@@ -313,7 +561,7 @@ private fun Capabilities.label(): String = buildString {
     if (isEmpty()) append("Discovery + send")
 }
 
-/** Incoming-transfer decision dialog (reference: upstream's ask flow). */
+/** Incoming-transfer decision card (accept / accept & trust / decline → 403). */
 @Composable
 private fun IncomingRequestCard(
     request: ec0.ui.models.IncomingRequest,
