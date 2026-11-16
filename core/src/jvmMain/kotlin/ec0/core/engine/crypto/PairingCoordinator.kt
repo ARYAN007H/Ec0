@@ -155,6 +155,8 @@ class PairingCoordinator(
     val pinStore: PinStore = InMemoryPinStore(),
     private val qrNonceTtlMs: Long = EngineConstants.QR_NONCE_TTL_MS,
 ) {
+    private val pairingLog = java.util.logging.Logger.getLogger("ec0.engine.pairing")
+
     private data class ActiveQrToken(
         val nonce: ByteArray,
         val createdAtMs: Long,
@@ -237,13 +239,17 @@ class PairingCoordinator(
                 )
             // Single-use: consume the QR token immediately
             activeTokens.remove(matchedHex)
-            return pinStore.verifyOrPin(
+            val pinned = pinStore.verifyOrPin(
                 deviceId = clientDeviceId,
                 publicKeyRaw = ikPubRaw32,
                 alias = clientAlias,
                 trustLevel = TrustLevel.TRUSTED_QR,
                 nowMs = nowMs,
             )
+            pairingLog.info(
+                "Paired incoming peer: alias=$clientAlias deviceId=$clientDeviceId trust=TRUSTED_QR",
+            )
+            return pinned
         }
 
         return pinStore.verifyOrPin(

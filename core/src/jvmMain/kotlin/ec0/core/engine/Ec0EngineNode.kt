@@ -311,8 +311,22 @@ class Ec0EngineNode(
         offlineDeduplicator = offlineDeduplicator,
         pingIntervalMs = 0L,
         nowMs = clockMs,
-        onSessionAuthenticated = { session -> attachAuthenticatedSession(session) },
+        onSessionAuthenticated = { session ->
+            engineLog.info(
+                "Session authenticated: peer=${session.peerAlias} id=${session.peerDeviceId}",
+            )
+            attachAuthenticatedSession(session)
+        },
+        // Handshake rejections were invisible before — every server-side failure
+        // (bad pairing proof, timeout, protocol error) must say why.
+        onHandshakeError = { t ->
+            engineLog.warning(
+                "Server handshake failed: ${t.javaClass.simpleName}: ${t.message}",
+            )
+        },
     )
+
+    private val engineLog = java.util.logging.Logger.getLogger("ec0.engine.node")
 
     private val sessionsByPeer = ConcurrentHashMap<String, Ec0Session>()
     private val batchSeqByPeer = ConcurrentHashMap<String, AtomicLong>()
