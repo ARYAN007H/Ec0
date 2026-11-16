@@ -14,10 +14,12 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -92,6 +94,7 @@ fun HomePanel(
     pickFile: (onPicked: (Any?) -> Unit) -> Unit,
     compact: Boolean = false,
 ) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val devices by bridge.devices.collectAsState()
     val transfers by bridge.transfers.collectAsState()
     val scanning by bridge.scanning.collectAsState()
@@ -103,6 +106,9 @@ fun HomePanel(
     val clipSummary by bridge.clipboardSummary.collectAsState()
     val autoSync by bridge.autoSyncClipboard.collectAsState()
     val notifications by bridge.relayedNotifications.collectAsState()
+
+    // Adaptive bento: 3-up on wide windows, 2-up when squeezed, 1-up on the phone.
+    val tileColumns = if (compact) 1 else if (maxWidth >= 940.dp) 3 else 2
 
     Column(
         modifier = Modifier
@@ -145,26 +151,22 @@ fun HomePanel(
             }
         }
 
-        // Bento tiles — 3-up on desktop, stacked on the phone.
-        if (compact) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                MirrorTile(bridge, mirrorRunning, Modifier.fillMaxWidth())
-                CameraTile(bridge, cameraState, Modifier.fillMaxWidth())
-                FilesTile(transfers, devices, Modifier.fillMaxWidth())
-                ClipboardTile(bridge, clipSummary, autoSync, Modifier.fillMaxWidth())
-                NotificationsTile(bridge, notifications, Modifier.fillMaxWidth())
-                HonestyTile(Modifier.fillMaxWidth())
-            }
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                MirrorTile(bridge, mirrorRunning, Modifier.weight(1f))
-                CameraTile(bridge, cameraState, Modifier.weight(1f))
-                FilesTile(transfers, devices, Modifier.weight(1f))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                ClipboardTile(bridge, clipSummary, autoSync, Modifier.weight(1f))
-                NotificationsTile(bridge, notifications, Modifier.weight(1f))
-                HonestyTile(Modifier.weight(1f))
+        // Bento tiles — chunked to the adaptive column count, equal widths per row.
+        val tileFactories: List<@Composable (Modifier) -> Unit> = listOf(
+            { m -> MirrorTile(bridge, mirrorRunning, m) },
+            { m -> CameraTile(bridge, cameraState, m) },
+            { m -> FilesTile(transfers, devices, m) },
+            { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
+            { m -> NotificationsTile(bridge, notifications, m) },
+            { m -> HonestyTile(m) },
+        )
+        tileFactories.chunked(tileColumns).forEach { rowTiles ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                rowTiles.forEach { tile -> tile(Modifier.weight(1f).height(190.dp)) }
+                repeat(tileColumns - rowTiles.size) { Spacer(Modifier.weight(1f)) }
             }
         }
 
@@ -205,7 +207,10 @@ private fun MirrorTile(bridge: UiBridge, running: Boolean, modifier: Modifier = 
         live = running,
         modifier = modifier,
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
             if (running) {
                 TileButton("Stop mirror", destructive = true) { bridge.stopScreenMirror() }
             } else {
@@ -226,7 +231,10 @@ private fun CameraTile(bridge: UiBridge, cameraState: String?, modifier: Modifie
         live = null,
         modifier = modifier,
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
             TileButton("Start camera") { bridge.startCamera() }
             TileButton("Stop", subtle = true) { bridge.stopCamera() }
             TileButton("Load v4l2", subtle = true) { bridge.setupV4l2Loopback() }
@@ -461,7 +469,7 @@ private fun TileButton(
             disabledContentColor = MaterialTheme.colorScheme.outline,
         ),
     ) {
-        Text(label)
+        Text(label, maxLines = 1, softWrap = false)
     }
 }
 

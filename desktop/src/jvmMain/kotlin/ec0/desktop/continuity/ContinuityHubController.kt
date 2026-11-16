@@ -324,12 +324,23 @@ class ContinuityHubController(
                 pinnedIds().forEach { deviceId ->
                     if (node.activeSessionFor(deviceId) == null) {
                         runCatching { node.connectToPeer(deviceId) }
+                            .onSuccess {
+                                supervisorLog.info("Reconnected to trusted peer $deviceId")
+                            }
+                            .onFailure { e ->
+                                supervisorLog.warning(
+                                    "Reconnect to $deviceId failed: ${e.message} " +
+                                        "(candidates will be retried next cycle)",
+                                )
+                            }
                     }
                 }
                 delay(15_000L)
             }
         }
     }
+
+    private val supervisorLog = java.util.logging.Logger.getLogger("ec0.hub.reconnect")
 
     fun setAutoSyncClipboard(enabled: Boolean) {
         _autoSyncClipboard.value = enabled
