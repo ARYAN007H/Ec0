@@ -17,6 +17,7 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
+import ec0.core.engine.EngineEncoding.toHex
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.kdeconnect.Sha256
