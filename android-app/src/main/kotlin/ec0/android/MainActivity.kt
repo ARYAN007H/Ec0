@@ -1,65 +1,75 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * ec0 Android client — renders the shared full-suite UI (:ui) through the
- * AndroidBridge. Protocol behavior (LocalSend discovery + send) is the exact
- * same core stack the desktop runs.
+ * ec0 Android client:
+ *   - Starts and binds to [Ec0CompanionService] (`connectedDevice` foreground
+ *     service hosting [AndroidCompanionRuntime], the engine server with mDNS,
+ *     the Ktor CIO LocalSend receiver, and the UDP discovery ticker + MulticastLock
+ *     so all background services survive Activity destruction).
+ *   - When `trustedPeerCount == 0`, renders the M3 Expressive [AndroidOnboardingScreen]
+ *     ("Connect to PC" -> paste `ec0pair://…` URI -> one-time ColorOS battery &
+ *     notification listener setup cards); once trusted, enters the full-suite [Ec0App].
  */
 package ec0.android
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import ec0.core.engine.android.AndroidCompanionRuntime
+import ec0.core.engine.android.PairingStepState
+import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.LocalsendV2
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.client.LocalsendHttp
-import ec0.core.localsend.client.LocalsendUdpDiscovery
-import ec0.core.localsend.server.LocalsendReceiverConfig
-import ec0.core.localsend.server.LocalsendReceiverKtor
-import ec0.core.localsend.server.ReceiverAcceptance
 import ec0.core.localsend.dto.FileDto
-import ec0.core.localsend.dto.PrepareUploadRequestDtoV2
 import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.ui.Ec0App
 import ec0.ui.models.Capabilities
+import ec0.ui.models.IncomingRequest
 import ec0.ui.models.SettingsState
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
 import ec0.ui.models.TransferState
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice
+import ec0.ui.theme.Ec0Seed
+import ec0.ui.theme.Ec0Theme
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Android-side app state — implements the shared [UiBridge] seam. */
+/** Android-side app state — implements the shared [UiBridge] seam over [Ec0CompanionService]. */
 class AndroidAppState(
     private val context: Context,
     private val scope: CoroutineScope,
     private val settingsStore: AndroidSettingsStore = AndroidSettingsStore(context.applicationContext),
     private val ec0StoreDir: File = File(context.filesDir, "ec0"),
+    serviceHostOverride: CompanionServiceHost? = null,
 ) : UiBridge {
 
     private val defaultSettings = SettingsState(
@@ -77,50 +87,43 @@ class AndroidAppState(
     override val settings: StateFlow<SettingsState> = _settings.asStateFlow()
 
     /**
-     * Companion engine runtime wired with explicit `File(context.filesDir, "ec0")` store
-     * directories so Android never falls back to `user.home/.config` (`PersistentEngineStore.kt:161`),
-     * and bridged to [Ec0NotificationListener] for phone notification relay and [RemoteInput] inline replies.
+     * Foreground-service-hosted coordinator owning [AndroidCompanionRuntime], the
+     * engine server (`startServer(startMdns = true)`), the Ktor LocalSend receiver,
+     * and the continuous `MulticastLock` + discovery ticker.
      */
-    val companionRuntime: ec0.core.engine.android.AndroidCompanionRuntime =
-        ec0.core.engine.android.AndroidCompanionRuntime.createWithPersistentStores(
-            storeDir = ec0StoreDir,
-            phoneModelName = _settings.value.alias,
-            callbacks = object : ec0.core.engine.android.AndroidPlatformCallbacks {
-                override fun onExecuteInlineReply(
-                    reply: ec0.core.engine.protocol.NotificationReplyCommand,
-                ): Boolean = Ec0NotificationListener.sendInlineReply(reply, context.applicationContext)
-
-                override fun onDismissSystemNotification(notifId: String): Boolean =
-                    Ec0NotificationListener.dismissSystemNotification(notifId)
-            },
-            listenPort = 0,
-            downloadDir = File(
-                context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
-                "ec0",
-            ),
+    val serviceHost: CompanionServiceHost = serviceHostOverride
+        ?: Ec0CompanionService.startServiceAndGetHost(
+            context = context.applicationContext,
+            initialSettings = _settings.value,
+            ec0StoreDir = ec0StoreDir,
         )
 
-    private val discovery = LocalsendUdpDiscovery(
-        settingsProvider = { _settings.value },
-        // HTTP-mode fingerprint semantics — random per process run, mirroring
-        // the desktop client (cert SHA-256 comes with the HTTPS server).
-        ownFingerprint = { OWN_FINGERPRINT },
-        debugLog = { msg -> android.util.Log.d("ec0", msg) },
-    )
+    val companionRuntime: AndroidCompanionRuntime
+        get() = serviceHost.runtime
+
+    val pinnedPeers: StateFlow<List<PinnedPeer>>
+        get() = serviceHost.pinnedPeers
+
+    override val trustedPeerCount: StateFlow<Int>
+        get() = serviceHost.trustedPeerCount
+
+    val pairingState: StateFlow<PairingStepState>
+        get() = serviceHost.pairingState
+
     private val http = LocalsendHttp()
 
-    private val _devices = MutableStateFlow<List<UiDevice>>(emptyList())
-    override val devices: StateFlow<List<UiDevice>> = _devices.asStateFlow()
+    override val devices: StateFlow<List<UiDevice>>
+        get() = serviceHost.devices
 
-    private val _transfers = MutableStateFlow<List<TransferItem>>(emptyList())
+    private val _outgoingTransfers = MutableStateFlow<List<TransferItem>>(emptyList())
 
-    private val _scanning = MutableStateFlow(false)
-    override val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+    override val scanning: StateFlow<Boolean>
+        get() = serviceHost.scanning
 
     override val capabilities: Capabilities
         get() = Capabilities(
-            canReceive = true, // Ktor receiver below
-            clipboardSync = false,
+            canReceive = true,
+            clipboardSync = true,
             notifications = isNotificationListenerAccessGranted(),
             photoSync = false,
             remoteInput = false,
@@ -132,130 +135,64 @@ class AndroidAppState(
     fun requestNotificationListenerAccess(): Boolean =
         NotificationAccessHelper.openNotificationAccessSettings(context)
 
+    fun isBatteryOptimizationIgnored(): Boolean =
+        ColorOsBatteryHelper.isIgnoringBatteryOptimizations(context)
+
+    fun requestBatteryOptimizationExemption(): Boolean =
+        ColorOsBatteryHelper.openBatteryExemptionSettings(context)
+
+    fun openColorOsAutoLaunchSettings(): Boolean =
+        ColorOsBatteryHelper.openAutoLaunchSettings(context)
+
+    /**
+     * Parses a pasted `ec0pair://…` or `ec0://pair?…` URI, pins the desktop peer as
+     * `TRUSTED_QR`, and walks its candidate endpoints on a background coroutine.
+     */
+    fun pairWithUri(
+        rawUri: String,
+        onStep: (PairingStepState) -> Unit = {},
+    ): Job = serviceHost.pairWithUriAsync(rawUri, onStep = onStep)
+
+    fun resetPairingState() {
+        serviceHost.resetPairingState()
+    }
+
     override fun isDarkTheme(): Boolean = _settings.value.darkTheme ?: false
 
-    private var scanJob: Job? = null
     private val cancelled = mutableSetOf<String>()
 
-    private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, kotlinx.coroutines.CompletableDeferred<ReceiverAcceptance>>? = null
-
-    private val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
-        { request, _ ->
-            val fingerprint = request.info.fingerprint
-            if (fingerprint in _settings.value.trustedFingerprints) {
-                ReceiverAcceptance.ACCEPT(request.files.keys)
-            } else {
-                val decision = kotlinx.coroutines.CompletableDeferred<ReceiverAcceptance>()
-                pendingRequestRef = request to decision
-                _incomingRequest.value = ec0.ui.models.IncomingRequest(
-                    senderAlias = request.info.alias,
-                    senderFingerprint = fingerprint,
-                    senderIp = "",
-                    files = request.files.values.map { ec0.ui.models.IncomingFileInfo(it.fileName, it.size) },
-                )
-                try {
-                    decision.await()
-                } finally {
-                    _incomingRequest.value = null
-                    pendingRequestRef = null
-                }
-            }
-        }
-
     override fun acceptIncoming(trust: Boolean) {
-        pendingRequestRef?.let { (request, decision) ->
-            if (trust) updateSettings { s -> s.copy(trustedFingerprints = s.trustedFingerprints + request.info.fingerprint) }
-            decision.complete(ReceiverAcceptance.ACCEPT(request.files.keys))
+        Ec0CompanionService.acceptIncomingTransfer(trust) { trustedFingerprint ->
+            updateSettings { s ->
+                s.copy(trustedFingerprints = s.trustedFingerprints + trustedFingerprint)
+            }
         }
     }
 
     override fun declineIncoming() {
-        pendingRequestRef?.second?.complete(ReceiverAcceptance.DECLINE)
+        Ec0CompanionService.declineIncomingTransfer()
     }
 
-    /**
-     * Android receiver (T14 contract over Ktor CIO). Destination: the app's
-     * external files dir (MediaStore public-Downloads integration is a later
-     * slice). Fingerprint matches the discovery announce.
-     */
-    private val receiver = LocalsendReceiverKtor(
-        config = LocalsendReceiverConfig(
-            alias = _settings.value.alias,
-            deviceModel = _settings.value.deviceModel,
-            deviceType = _settings.value.deviceType,
-            requiredPin = _settings.value.pin.takeIf { _settings.value.requirePin },
-            destination = java.nio.file.Path.of(
-                (context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
-                    ?: context.filesDir).absolutePath,
-            ),
-            acceptPolicy = ec0.core.localsend.server.AcceptPolicy.ASK,
-            fingerprint = OWN_FINGERPRINT,
-        ),
-        decide = decideCallback,
-    )
-
-    /** Combined queue: outgoing sends + incoming receiver transfers. */
+    /** Combined queue: outgoing sends + service-hosted incoming Ktor receiver transfers. */
     override val transfers: StateFlow<List<TransferItem>> =
-        combine(_transfers, receiver.transferQueue) { outgoing, incoming -> outgoing + incoming }
-            .stateIn(scope, SharingStarted.Eagerly, emptyList())
+        combine(_outgoingTransfers, serviceHost.receiverTransfers) { outgoing, incoming ->
+            outgoing + incoming
+        }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    /** Incoming transfer awaiting the user's decision (shared-UI dialog). */
-    private val _incomingRequest = MutableStateFlow<ec0.ui.models.IncomingRequest?>(null)
-    override val incomingRequest: StateFlow<ec0.ui.models.IncomingRequest?> = _incomingRequest.asStateFlow()
-
-
-
-    /**
-     * Android filters multicast at the Wi-Fi driver — a held MulticastLock is
-     * mandatory for UDP :53317 discovery (KDE Connect does the same).
-     */
-    private var multicastLock: WifiManager.MulticastLock? = null
-
-    private val discoveryPeriodMs = 5_000L
+    override val incomingRequest: StateFlow<IncomingRequest?>
+        get() = Ec0CompanionService.incomingRequest
 
     init {
-        Ec0NotificationListener.attachRuntime(companionRuntime)
+        Ec0CompanionService.updateCachedSettings(_settings.value)
         scope.launch(Dispatchers.IO) {
             val loaded = runCatching { settingsStore.load(defaultSettings) }.getOrDefault(defaultSettings)
             _settings.value = loaded
-        }
-        // Multicast reception on Android requires the lock held CONTINUOUSLY —
-        // the discovery ticker runs for the app lifetime, so does the lock.
-        val wifi = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        multicastLock = wifi.createMulticastLock("ec0-discovery").apply {
-            setReferenceCounted(false)
-            acquire()
-        }
-        scope.launch(Dispatchers.IO) {
-            while (isActive) {
-                runCatching { _devices.value = discovery.discoverSweep() }
-                kotlinx.coroutines.delay(discoveryPeriodMs)
-            }
-        }
-        runCatching { receiver.start() }.onFailure {
-            android.util.Log.d("ec0", "receiver failed to start: ${it.message}")
+            Ec0CompanionService.updateCachedSettings(loaded)
         }
     }
 
     override fun startScan() {
-        if (_scanning.value) return
-        if (multicastLock == null) {
-            val wifi = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            multicastLock = wifi.createMulticastLock("ec0-discovery").apply {
-                setReferenceCounted(false)
-                acquire()
-            }
-        }
-        scanJob = scope.launch(Dispatchers.IO) {
-            _scanning.value = true
-            try {
-                _devices.value = discovery.discoverSweep()
-            } catch (t: Throwable) {
-                android.util.Log.d("ec0", "sweep failed: ${t.message}")
-            } finally {
-                _scanning.value = false
-            }
-        }
+        serviceHost.startScan()
     }
 
     override fun cancelTransfer(id: String) {
@@ -270,6 +207,7 @@ class AndroidAppState(
             updatedSnapshot = next
             next
         }
+        Ec0CompanionService.updateCachedSettings(updatedSnapshot)
         scope.launch(Dispatchers.IO) {
             runCatching { settingsStore.save(updatedSnapshot) }
         }
@@ -294,7 +232,7 @@ class AndroidAppState(
                 sizeBytes = 0,
                 state = TransferState.RUNNING,
             )
-            _transfers.update { it + item }
+            _outgoingTransfers.update { it + item }
             try {
                 val staged = File(context.cacheDir, "ec0-out-${System.nanoTime()}-$displayName")
                 val size = resolver.openInputStream(uri)!!.use { input ->
@@ -352,20 +290,19 @@ class AndroidAppState(
     }
 
     private fun updateItem(id: String, transform: (TransferItem) -> TransferItem) {
-        _transfers.update { current -> current.map { if (it.id == id) transform(it) else it } }
+        _outgoingTransfers.update { current -> current.map { if (it.id == id) transform(it) else it } }
     }
 
+    /**
+     * Releases Activity-scoped state while keeping [Ec0CompanionService] (and its
+     * engine server, Ktor receiver, and discovery ticker) alive in the foreground service.
+     */
     fun release() {
-        if (Ec0NotificationListener.currentRuntime() === companionRuntime) {
-            Ec0NotificationListener.attachRuntime(null)
-        }
-        runCatching { companionRuntime.close() }
-        multicastLock?.release()
-        multicastLock = null
+        // Service lifecycle owns CompanionServiceHost; Activity destruction must not kill it.
     }
 
     companion object {
-        val OWN_FINGERPRINT: String = java.util.UUID.randomUUID().toString()
+        val OWN_FINGERPRINT: String get() = Ec0CompanionService.OWN_FINGERPRINT
     }
 }
 
@@ -381,8 +318,14 @@ class MainActivity : ComponentActivity() {
         pendingPick = null
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { _ -> }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestPostNotificationsIfNeeded()
+
         val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         scope = activityScope
         val settingsStore = AndroidSettingsStore(applicationContext.ec0SettingsDataStore)
@@ -395,14 +338,47 @@ class MainActivity : ComponentActivity() {
         )
         appState = state
         setContent {
-            Ec0App(
-                bridge = state,
-                pickFile = { onPicked ->
-                    pendingPick = onPicked
-                    pickFileLauncher.launch(arrayOf("*/*"))
-                },
-                compact = true,
-            )
+            val settings by state.settings.collectAsState()
+            val trustedPeerCount by state.trustedPeerCount.collectAsState()
+            val systemDark = isSystemInDarkTheme()
+            var onboardingCompleted by rememberSaveable { mutableStateOf(false) }
+
+            val showPhoneOnboarding = trustedPeerCount == 0 && !onboardingCompleted
+
+            if (showPhoneOnboarding) {
+                Ec0Theme(
+                    dark = settings.darkTheme ?: systemDark,
+                    seed = Ec0Seed.fromId(settings.themeSeed),
+                ) {
+                    AndroidOnboardingScreen(
+                        state = state,
+                        onContinueToApp = { onboardingCompleted = true },
+                    )
+                }
+            } else {
+                Ec0App(
+                    bridge = state,
+                    pickFile = { onPicked ->
+                        pendingPick = onPicked
+                        pickFileLauncher.launch(arrayOf("*/*"))
+                    },
+                    compact = true,
+                )
+            }
+        }
+    }
+
+    private fun requestPostNotificationsIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = runCatching {
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(true)
+            if (!granted) {
+                runCatching {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
         }
     }
 
