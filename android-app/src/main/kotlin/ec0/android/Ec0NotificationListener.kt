@@ -532,6 +532,19 @@ class Ec0NotificationListener : NotificationListenerService() {
             Thread(r, "ec0-notification-relay").apply { isDaemon = true }
         }
 
+        /**
+         * Test seam: when non-null, relay dispatch runs the block inline on the caller's
+         * thread so unit tests can assert relay side effects synchronously. Production
+         * always leaves this null (real executor, off-main).
+         */
+        @Volatile
+        internal var relayDispatcherOverride: ((block: () -> Unit) -> Unit)? = null
+
+        private fun dispatchRelay(block: () -> Unit) {
+            val override = relayDispatcherOverride
+            if (override != null) override(block) else relayExecutor.execute(block)
+        }
+
         @Volatile
         private var attachedRuntime: AndroidCompanionRuntime? = null
 
@@ -563,7 +576,7 @@ class Ec0NotificationListener : NotificationListenerService() {
             }
 
             if (runtime != null) {
-                relayExecutor.execute {
+                dispatchRelay {
                 // Record locally in engine's NotificationRelayService feed and relay to paired desktops
                 val localEnvelope = EnvelopeSigner.signEnvelope(
                     identity = runtime.phoneIdentity,

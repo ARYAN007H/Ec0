@@ -18,6 +18,7 @@ import ec0.core.engine.protocol.NotificationReplyCommand
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,8 +28,16 @@ import kotlin.test.assertTrue
 
 class Ec0NotificationRelayTest {
 
+    @BeforeTest
+    fun wireInlineRelayDispatch() {
+        // Relay dispatch must be synchronous here: the assertions below inspect the
+        // local feed + outbox immediately after handleExtractedNotificationPosted.
+        Ec0NotificationListener.relayDispatcherOverride = { block -> block() }
+    }
+
     @AfterTest
     fun tearDown() {
+        Ec0NotificationListener.relayDispatcherOverride = null
         Ec0NotificationListener.attachRuntime(null)
         Ec0NotificationListener.clearReplyActionsForTest()
     }
