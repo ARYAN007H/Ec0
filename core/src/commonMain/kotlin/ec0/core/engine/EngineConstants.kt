@@ -20,6 +20,14 @@ object EngineConstants {
     const val MDNS_DEFAULT_TTL_SECONDS: Int = 120
     val MDNS_BURST_DELAYS_MS: List<Long> = listOf(100L, 500L, 2_000L)
 
+    /**
+     * Startup bursts alone leave peers that join (or restart) later permanently blind —
+     * hotspot client-isolation often drops our queries too. Re-announce on this cadence
+     * so late joiners always catch an announce; LocalSend's discovery "just works" on
+     * exactly this principle.
+     */
+    const val MDNS_PERIODIC_ANNOUNCE_MS: Long = 30_000L
+
     // Peer roles advertised in mDNS TXT (`role=...`)
     const val ROLE_PHONE: String = "phone"
     const val ROLE_DESKTOP: String = "desktop"

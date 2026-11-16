@@ -178,6 +178,7 @@ class Ec0MdnsDiscovery(
     private var scope: CoroutineScope? = null
     private var receiveJob: Job? = null
     private var burstJob: Job? = null
+    private var periodicJob: Job? = null
 
     fun addPeerListener(listener: (PeerInfo) -> Unit) {
         listeners.add(listener)
@@ -204,7 +205,10 @@ class Ec0MdnsDiscovery(
      * Starts the mDNS listener and schedules the RFC 6762 startup burst
      * (`100ms, 500ms, 2000ms`).
      */
-    fun start(burstDelaysMs: List<Long> = EngineConstants.MDNS_BURST_DELAYS_MS) {
+    fun start(
+        burstDelaysMs: List<Long> = EngineConstants.MDNS_BURST_DELAYS_MS,
+        periodicAnnounceIntervalMs: Long = EngineConstants.MDNS_PERIODIC_ANNOUNCE_MS,
+    ) {
         if (!running.compareAndSet(false, true)) return
         val activeTransport = transportFactory()
         transport = activeTransport
@@ -231,6 +235,22 @@ class Ec0MdnsDiscovery(
                 runCatching {
                     announceNow()
                     queryNow()
+                }
+            }
+        }
+
+        // Peers that join (or restart) AFTER our startup bursts would never hear us —
+        // and our own startup query may be dropped by hotspot client-isolation. The
+        // LocalSend wire re-announces constantly and that's why its discovery "just
+        // works"; mirror the cadence so late joiners always catch an announce.
+        if (periodicAnnounceIntervalMs > 0L) {
+            periodicJob = activeScope.launch {
+                while (isActive && running.get()) {
+                    delay(periodicAnnounceIntervalMs)
+                    runCatching {
+                        announceNow()
+                        queryNow()
+                    }
                 }
             }
         }
@@ -408,6 +428,7 @@ class Ec0MdnsDiscovery(
         if (running.compareAndSet(true, false)) {
             sendGoodbye()
             burstJob?.cancel()
+            periodicJob?.cancel()
             receiveJob?.cancel()
             scope?.cancel()
             runCatching { transport?.close() }
