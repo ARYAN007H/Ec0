@@ -194,6 +194,7 @@ fun HomePanel(
             TransferStrip(transfers)
         }
         Spacer(Modifier.height(12.dp))
+        }
     }
 }
 
