@@ -329,6 +329,13 @@ class Ec0EngineNode(
     private val engineLog = java.util.logging.Logger.getLogger("ec0.engine.node")
 
     private val sessionsByPeer = ConcurrentHashMap<String, Ec0Session>()
+
+    /**
+     * Last IP each peer authenticated from — captured on the wire in
+     * [attachAuthenticatedSession]. Powers the reconnect ladder's last-known tier when
+     * mDNS multicast is filtered (hotspot client isolation drops it routinely).
+     */
+    private val lastKnownPeerIps = ConcurrentHashMap<String, String>()
     private val batchSeqByPeer = ConcurrentHashMap<String, AtomicLong>()
     private val sessionExecutor = Executors.newCachedThreadPool { r ->
         Thread(r, "ec0-node-session-${localIdentity.deviceId.take(8)}").apply { isDaemon = true }
@@ -423,6 +430,40 @@ class Ec0EngineNode(
         } catch (e: Exception) {
             setConnectionState(peerDeviceId, EngineConnectionState.BACKOFF)
             throw e
+        }
+    }
+
+    /**
+     * Reconnect ladder for trusted peers: normal mDNS resolution first, then — when
+     * multicast is filtered and no candidates exist — blind dials to the peer's
+     * last-known IP across the standard port tier (both ec0 ends bind the tier since
+     * the port-walk change, so `ip × DEFAULT_PORT_LIST` reaches a restarted peer even
+     * with zero mDNS). Testable via the injected [fallbackPorts].
+     */
+    fun reconnectToPeer(
+        peerDeviceId: String,
+        fallbackHosts: List<String> = listOfNotNull(lastKnownPeerIps[peerDeviceId.lowercase()]),
+        fallbackPorts: List<Int> = EngineConstants.DEFAULT_PORT_LIST,
+    ): Ec0Session {
+        return try {
+            connectToPeer(peerDeviceId)
+        } catch (discoveryFailed: Exception) {
+            var lastError = discoveryFailed
+            for (host in fallbackHosts) {
+                for (port in fallbackPorts) {
+                    try {
+                        return connectToPeer(
+                            peerDeviceId,
+                            explicitHost = host,
+                            explicitPort = port,
+                        )
+                    } catch (e: Exception) {
+                        lastError = e
+                    }
+                }
+            }
+            setConnectionState(peerDeviceId, EngineConnectionState.BACKOFF)
+            throw lastError
         }
     }
 
@@ -562,6 +603,7 @@ class Ec0EngineNode(
         if (previous != null && previous !== session) {
             runCatching { previous.close() }
         }
+        session.peerRemoteIp?.let { lastKnownPeerIps[peerId] = it }
         refreshPinnedPeers()
         setConnectionState(peerId, EngineConnectionState.CONNECTED)
 

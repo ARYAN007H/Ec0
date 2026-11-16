@@ -41,6 +41,7 @@ import android.os.PersistableBundle
 import android.os.PowerManager
 import android.provider.Settings
 import ec0.core.engine.EngineCapability
+import ec0.core.engine.EngineConstants
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.AndroidPlatformCallbacks
 import ec0.core.engine.android.PairingStepState
@@ -623,7 +624,7 @@ class Ec0CompanionService : Service() {
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
                     callbacks = AndroidHonestPlatformCallbacks(appContext, clipboardEchoGuard),
-                    listenPort = 0,
+                    listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
                 )
                 val clipboardWatcher = AndroidClipboardWatcher(

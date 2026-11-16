@@ -26,6 +26,7 @@ import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -52,6 +53,16 @@ class Ec0Session internal constructor(
     val peerPublicKeyRaw: ByteArray get() = handshakeSession.peerPublicKeyRaw
     val peerAlias: String get() = handshakeSession.peerAlias
     val sessionIdHex: String get() = handshakeSession.sessionIdHex
+
+    /**
+     * The peer's IP as seen on the wire (client dialed host, or server-accepted remote
+     * address). Feeds the reconnect ladder's last-known-endpoint tier — the port is
+     * deliberately NOT captured (client source ports aren't listening ports).
+     */
+    val peerRemoteIp: String?
+        get() = runCatching {
+            (socket.remoteSocketAddress as? InetSocketAddress)?.address?.hostAddress
+        }.getOrNull()
 
     private val writeLock = ReentrantLock()
     private val closed = AtomicBoolean(false)

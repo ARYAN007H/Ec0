@@ -89,7 +89,11 @@ object NotificationRelayMapper {
         """^(?:[\s:\-–—|•·/\\]+)|(?:[\s:\-–—|•·/\\]+)$"""
     )
 
-    private val EMPTY_BRACKETS_REGEX = Regex("""\(\s*\)|\[\s*]|\{\s*}""")
+    // NOTE: closing brackets MUST be escaped — Android's ICU regex rejects a bare `]`
+    // outside a character class (desktop JVM tolerates it, so JVM-only tests stay green
+    // while every on-device notification crash-loops the process with a
+    // PatternSyntaxException-in-<clinit>). This exact bug shipped once: keep the `\]`/`\}`.
+    private val EMPTY_BRACKETS_REGEX = Regex("""\(\s*\)|\[\s*\]|\{\s*\}""")
     private val MULTI_SPACE_REGEX = Regex("""\s{2,}""")
 
     /**

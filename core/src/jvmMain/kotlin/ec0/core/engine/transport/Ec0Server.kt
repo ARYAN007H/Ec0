@@ -46,7 +46,7 @@ class Ec0Server(
         if (!running.compareAndSet(false, true)) return
         val ss = ServerSocket()
         ss.reuseAddress = true
-        ss.bind(InetSocketAddress(bindPort))
+        bindWithTierFallback(ss)
         serverSocket = ss
 
         val pool = Executors.newCachedThreadPool { runnable ->
@@ -67,6 +67,31 @@ class Ec0Server(
                 }
             }
         }
+    }
+
+    /**
+     * Binds [bindPort]; on `BindException` walks the shared high-port fallback tier
+     * (`EngineConstants.DEFAULT_PORT_LIST`) and finally defers to an OS ephemeral port.
+     *
+     * Reconnect ladders dial the standard tier blindly, so a busy 49880 must degrade to
+     * a tier port — not kill startup — and two engine instances on one host stay legal.
+     */
+    private fun bindWithTierFallback(ss: ServerSocket) {
+        val candidates = if (bindPort == 0) {
+            listOf(0)
+        } else {
+            listOf(bindPort) + EngineConstants.DEFAULT_PORT_LIST.filter { it != bindPort } + listOf(0)
+        }
+        var lastError: IOException? = null
+        for (port in candidates) {
+            try {
+                ss.bind(InetSocketAddress(port))
+                return
+            } catch (e: IOException) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IOException("Unable to bind ec0 engine server on any port tier")
     }
 
     private fun handleConnection(socket: Socket) {

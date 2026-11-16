@@ -99,7 +99,7 @@ class ContinuityHubController(
         localIdentity = localIdentity,
         displayName = desktopAlias,
         role = EngineConstants.ROLE_DESKTOP,
-        listenPort = 0,
+        listenPort = EngineConstants.PRIMARY_PORT,
         downloadDir = downloadDir,
         pinStore = pinStore,
         inputEventSink = inputInjectionBridge,
@@ -316,14 +316,14 @@ class ContinuityHubController(
         val pinnedIds = { pinStore.all().map { it.deviceId }.toSet() }
         node.mdnsDiscovery.addPeerListener { peer ->
             if (peer.deviceId in pinnedIds() && node.activeSessionFor(peer.deviceId) == null) {
-                scope.launch { runCatching { node.connectToPeer(peer.deviceId) } }
+                scope.launch { runCatching { node.reconnectToPeer(peer.deviceId) } }
             }
         }
         reconnectJob = scope.launch {
             while (isActive) {
                 pinnedIds().forEach { deviceId ->
                     if (node.activeSessionFor(deviceId) == null) {
-                        runCatching { node.connectToPeer(deviceId) }
+                        runCatching { node.reconnectToPeer(deviceId) }
                             .onSuccess {
                                 supervisorLog.info("Reconnected to trusted peer $deviceId")
                             }
