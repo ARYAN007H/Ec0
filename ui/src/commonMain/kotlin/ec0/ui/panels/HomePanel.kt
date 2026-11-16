@@ -642,15 +642,18 @@ private fun IncomingRequestCard(
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
                 Button(onClick = onAccept, shape = Ec0Shapes.pill) {
-                    Text("Accept")
+                    Text("Accept", maxLines = 1, softWrap = false)
                 }
                 FilledTonalButton(onClick = onAcceptTrust, shape = Ec0Shapes.pill) {
-                    Text("Accept & trust")
+                    Text("Accept & trust", maxLines = 1, softWrap = false)
                 }
                 FilledTonalButton(onClick = onDecline, shape = Ec0Shapes.pill) {
-                    Text("Decline")
+                    Text("Decline", maxLines = 1, softWrap = false)
                 }
             }
             Text(
