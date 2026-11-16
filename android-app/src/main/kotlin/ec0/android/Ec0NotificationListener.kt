@@ -521,6 +521,17 @@ class Ec0NotificationListener : NotificationListenerService() {
         // Note: Standard LinkedHashMap with manual eviction (never subclass LinkedHashMap due to K2 backend bug)
         private val replyActionsByNotifId = LinkedHashMap<String, List<RegisteredReplyAction>>()
 
+        /**
+         * NotificationListenerService callbacks run on the MAIN thread, and the relay
+         * performs a blocking socket write (`sendOrQueueNotification` -> `sendInfo`).
+         * Any send on main throws NetworkOnMainThreadException and kills the process —
+         * serialize every relay send onto this daemon thread instead (also preserves
+         * notification ordering).
+         */
+        private val relayExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "ec0-notification-relay").apply { isDaemon = true }
+        }
+
         @Volatile
         private var attachedRuntime: AndroidCompanionRuntime? = null
 
@@ -552,6 +563,7 @@ class Ec0NotificationListener : NotificationListenerService() {
             }
 
             if (runtime != null) {
+                relayExecutor.execute {
                 // Record locally in engine's NotificationRelayService feed and relay to paired desktops
                 val localEnvelope = EnvelopeSigner.signEnvelope(
                     identity = runtime.phoneIdentity,
@@ -576,6 +588,7 @@ class Ec0NotificationListener : NotificationListenerService() {
                     runtime.onAndroidNotificationPosted(postInfo, targetIds)
                 } else {
                     runtime.onAndroidNotificationPosted(postInfo)
+                }
                 }
             }
 
