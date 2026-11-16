@@ -382,6 +382,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Android 10+ grants clipboard read to the focused app's UID — phone→PC
+        // clipboard pushes (and the focus-gain re-check) only run while resumed.
+        Ec0CompanionService.onMainActivityFocusChanged(focused = true)
+    }
+
+    override fun onPause() {
+        Ec0CompanionService.onMainActivityFocusChanged(focused = false)
+        super.onPause()
+    }
+
     override fun onDestroy() {
         scope?.cancel()
         appState?.release()

@@ -122,6 +122,7 @@ interface CompanionReceiverHandle {
  */
 class AndroidHonestPlatformCallbacks(
     private val appContext: Context,
+    private val clipboardEchoGuard: ClipboardEchoGuard? = null,
 ) : AndroidPlatformCallbacks {
 
     override fun onApplyRemoteClipboard(item: ClipboardItem): Boolean {
@@ -137,6 +138,9 @@ class AndroidHonestPlatformCallbacks(
                 }
             }
             cm.setPrimaryClip(clip)
+            // The apply fires the system clipboard listener — record the sha so
+            // [AndroidClipboardWatcher] suppresses the echo instead of pushing back.
+            clipboardEchoGuard?.lastAppliedFromDesktopSha256 = item.sha256Hex
             true
         }.getOrDefault(false)
     }
@@ -533,6 +537,9 @@ class Ec0CompanionService : Service() {
         private var activeHost: CompanionServiceHost? = null
 
         @Volatile
+        private var activeClipboardWatcher: AndroidClipboardWatcher? = null
+
+        @Volatile
         private var activeServiceScope: CoroutineScope? = null
 
         @Volatile
@@ -611,12 +618,20 @@ class Ec0CompanionService : Service() {
                     "ec0",
                 ).also { it.mkdirs() }
 
+                val clipboardEchoGuard = ClipboardEchoGuard()
                 val runtime = AndroidCompanionRuntime.createWithPersistentStores(
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
-                    callbacks = AndroidHonestPlatformCallbacks(appContext),
+                    callbacks = AndroidHonestPlatformCallbacks(appContext, clipboardEchoGuard),
                     listenPort = 0,
                     downloadDir = downloadDir,
+                )
+                val clipboardWatcher = AndroidClipboardWatcher(
+                    appContext = appContext,
+                    runtime = runtime,
+                    echoGuard = clipboardEchoGuard,
+                    isAppFocused = { isAppFocusedForClipboard },
+                    pushScope = serviceScope,
                 )
 
                 val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
@@ -708,13 +723,31 @@ class Ec0CompanionService : Service() {
                     scope = serviceScope,
                 )
                 activeHost = host
+                activeClipboardWatcher = clipboardWatcher
+                clipboardWatcher.start()
                 host.start()
                 return host
             }
         }
 
+        /**
+         * Android 10+ clipboard contract: phone→PC pushes only while ec0's Activity is
+         * resumed (clipboard read access is granted to the focused app's UID, which the
+         * foreground service shares). Called from [MainActivity] lifecycle callbacks.
+         */
+        @Volatile
+        var isAppFocusedForClipboard: Boolean = false
+            private set
+
+        fun onMainActivityFocusChanged(focused: Boolean) {
+            isAppFocusedForClipboard = focused
+            if (focused) activeClipboardWatcher?.onFocusGained()
+        }
+
         internal fun shutdownActiveHost() {
             synchronized(hostLock) {
+                activeClipboardWatcher?.stop()
+                activeClipboardWatcher = null
                 activeHost?.stop()
                 activeHost = null
                 activeServiceScope?.cancel()
