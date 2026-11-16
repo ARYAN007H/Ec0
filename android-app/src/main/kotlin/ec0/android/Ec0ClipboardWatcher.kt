@@ -22,6 +22,7 @@ import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.kdeconnect.Sha256
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.logging.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -85,6 +86,10 @@ class AndroidClipboardWatcher(
     private val pushScope: CoroutineScope,
 ) : ClipboardManager.OnPrimaryClipChangedListener {
 
+    // java.util.logging routes to logcat on Android — the skip reason is the only
+    // observable trace of the push policy in the field.
+    private val log = Logger.getLogger("ec0.android.clipboard")
+
     private val clipboardManager =
         appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
 
@@ -138,6 +143,7 @@ class AndroidClipboardWatcher(
             lastPushedSha256 = lastPushedSha256,
             candidateSha256 = candidateSha,
         )
+        log.info("Clipboard push decision=${decision.reason} chars=${text?.length ?: 0}")
         if (!decision.push) return
 
         // Claim the slot before the async push so a rapid double event can't send twice.
@@ -145,6 +151,7 @@ class AndroidClipboardWatcher(
         val item = ClipboardItem.text(text)
         pushScope.launch {
             runCatching { runtime.onAndroidClipboardChanged(item) }
+                .onFailure { log.warning("Clipboard push failed: $it") }
         }
     }
 }
