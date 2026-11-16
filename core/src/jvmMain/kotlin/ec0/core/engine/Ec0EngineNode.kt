@@ -17,6 +17,7 @@ import ec0.core.engine.crypto.Ed25519KeyPair
 import ec0.core.engine.crypto.EnvelopeSigner
 import ec0.core.engine.crypto.InMemoryPinStore
 import ec0.core.engine.crypto.PairingCoordinator
+import ec0.core.engine.crypto.PersistentPinStore
 import ec0.core.engine.crypto.PinStore
 import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.discovery.Ec0MdnsDiscovery
@@ -301,6 +302,9 @@ class Ec0EngineNode(
         offlineDeduplicator = offlineDeduplicator,
         pingIntervalMs = 0L,
         nowMs = clockMs,
+        onEndpointLearned = { deviceId, host, port ->
+            (pinStore as? PersistentPinStore)?.recordKnownEndpoint(deviceId, host, port, clockMs())
+        },
     )
 
     private val server = Ec0Server(
@@ -329,6 +333,14 @@ class Ec0EngineNode(
     private val engineLog = java.util.logging.Logger.getLogger("ec0.engine.node")
 
     private val sessionsByPeer = ConcurrentHashMap<String, Ec0Session>()
+
+    init {
+        // Resolver Tier 2 hydration: endpoints persist in the pin store precisely so a
+        // restarted node (in-memory resolver lost) can still dial trusted peers.
+        (pinStore as? PersistentPinStore)?.allKnownEndpoints()?.forEach { (deviceId, endpoint) ->
+            endpointResolver.recordSuccess(deviceId, endpoint.host, endpoint.port, endpoint.updatedAtMs)
+        }
+    }
 
     /**
      * Last IP each peer authenticated from — captured on the wire in
@@ -442,7 +454,10 @@ class Ec0EngineNode(
      */
     fun reconnectToPeer(
         peerDeviceId: String,
-        fallbackHosts: List<String> = listOfNotNull(lastKnownPeerIps[peerDeviceId.lowercase()]),
+        fallbackHosts: List<String> = listOfNotNull(
+            lastKnownPeerIps[peerDeviceId.lowercase()],
+            endpointResolver.lastKnownFor(peerDeviceId)?.host,
+        ).distinct(),
         fallbackPorts: List<Int> = EngineConstants.DEFAULT_PORT_LIST,
     ): Ec0Session {
         return try {
@@ -603,7 +618,17 @@ class Ec0EngineNode(
         if (previous != null && previous !== session) {
             runCatching { previous.close() }
         }
-        session.peerRemoteIp?.let { lastKnownPeerIps[peerId] = it }
+        session.peerRemoteIp?.let { remoteIp ->
+            lastKnownPeerIps[peerId] = remoteIp
+            // The peer dialed US, so our client-side resolver never learned its endpoint —
+            // record it for the reconnect ladder (port is walked across the standard tier).
+            (pinStore as? PersistentPinStore)?.recordKnownEndpoint(
+                peerId,
+                remoteIp,
+                EngineConstants.PRIMARY_PORT,
+                clockMs(),
+            )
+        }
         refreshPinnedPeers()
         setConnectionState(peerId, EngineConnectionState.CONNECTED)
 

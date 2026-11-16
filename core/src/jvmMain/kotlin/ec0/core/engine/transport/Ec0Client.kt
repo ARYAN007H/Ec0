@@ -31,6 +31,7 @@ class Ec0Client(
     private val ioTimeoutMs: Int = 50_000,
     private val pingIntervalMs: Long = 5_000L,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val onEndpointLearned: (deviceId: String, host: String, port: Int) -> Unit = { _, _, _ -> },
 ) {
     /**
      * Connects to [peerDeviceId] by walking candidates from [endpointResolver]
@@ -74,6 +75,7 @@ class Ec0Client(
                     port = candidate.port,
                     nowMs = nowMs(),
                 )
+                onEndpointLearned(session.peerDeviceId, candidate.host, candidate.port)
                 return session
             } catch (e: KeyMismatchException) {
                 // Fail closed immediately on pinned-key mismatch

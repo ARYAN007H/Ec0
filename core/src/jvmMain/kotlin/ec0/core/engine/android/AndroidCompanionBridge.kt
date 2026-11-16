@@ -46,6 +46,8 @@ import java.io.Closeable
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
@@ -161,6 +163,11 @@ class AndroidCompanionRuntime(
         clockMs = clockMs,
     )
 
+    private val runtimeScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+    )
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+
     private val _pinnedPeers = MutableStateFlow<List<PinnedPeer>>(pinStore.all())
     val pinnedPeers: StateFlow<List<PinnedPeer>> = _pinnedPeers.asStateFlow()
 
@@ -176,6 +183,26 @@ class AndroidCompanionRuntime(
     fun start(startMdns: Boolean = false) {
         refreshPinnedPeers()
         node.startServer(startMdns = startMdns)
+        scheduleReconnectToTrustedPeers()
+    }
+
+    /**
+     * One-shot reconnect sweep shortly after engine start: the phone's resolver has the
+     * desktop's last-known endpoint persisted in the pin store (Tier 2, port-walked
+     * across the standard tier), so a restarted app re-dials the desktop even when
+     * mDNS multicast is filtered by the network. Failures are silent — the desktop's
+     * reconnect supervisor is the other half of the ladder.
+     */
+    private fun scheduleReconnectToTrustedPeers() {
+        reconnectJob?.cancel()
+        reconnectJob = runtimeScope.launch {
+            kotlinx.coroutines.delay(RECONNECT_SETTLE_DELAY_MS)
+            for (peer in pinStore.all()) {
+                if (node.activeSessionFor(peer.deviceId) == null) {
+                    runCatching { node.reconnectToPeer(peer.deviceId) }
+                }
+            }
+        }
     }
 
     /**
@@ -386,11 +413,16 @@ class AndroidCompanionRuntime(
     }
 
     override fun close() {
+        reconnectJob?.cancel()
+        runtimeScope.cancel()
         node.close()
     }
 
     companion object {
         private const val ALT_SCHEME_PREFIX = "ec0pair://"
+
+        /** Network settle delay before the one-shot reconnect sweep after engine start. */
+        private const val RECONNECT_SETTLE_DELAY_MS = 4_000L
 
         /**
          * Normalizes user-pasted pairing URIs (`ec0pair://...` or `ec0://pair?...`) into
