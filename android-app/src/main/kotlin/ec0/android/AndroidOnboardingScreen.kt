@@ -33,7 +33,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -210,6 +213,15 @@ fun AndroidOnboardingScreen(
                     singleLine = false,
                     maxLines = 4,
                     shape = Ec0Shapes.tile,
+                    // Pairing URIs are opaque base64url/hex — Gboard's autocorrect
+                    // recomposes long unspaced runs and silently corrupts them
+                    // (observed: `id=<64hex>` collapsed to `id=8pk=8`). No
+                    // capitalization, no autocorrect, URI keyboard layout.
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        keyboardType = KeyboardType.Uri,
+                    ),
                     label = { Text("Pairing URI (ec0pair://…)") },
                     placeholder = {
                         Text(
