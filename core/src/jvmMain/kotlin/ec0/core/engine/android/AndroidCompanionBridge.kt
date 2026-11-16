@@ -3,7 +3,7 @@
  *
  * Android Companion Bridge (`ec0.core.engine.android`):
  *   - Platform-agnostic runtime controller for the `:android-app` companion
- *     service (`Ec0ForegroundService`, `Ec0NotificationListenerService`,
+ *     service (`Ec0CompanionService`, `Ec0NotificationListener`,
  *     `ShareTargetActivity`, `CamDroid` `StreamingController`, `WifiManager`
  *     Instant Hotspot, `TelecomManager` Call Relay, and `MediaSessionManager`).
  *   - Lives in `:core` so its entire state machine, ColorOS wake recovery,
@@ -16,11 +16,13 @@ package ec0.core.engine.android
 
 import ec0.core.engine.Ec0EngineNode
 import ec0.core.engine.EngineCapability
+import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.EngineConstants
 import ec0.core.engine.PairingQrPayload
 import ec0.core.engine.crypto.Ed25519KeyPair
 import ec0.core.engine.crypto.InMemoryPinStore
 import ec0.core.engine.crypto.PinStore
+import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.discovery.MdnsDatagramTransport
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.CallStateInfo
@@ -42,10 +44,13 @@ import ec0.core.engine.services.ClipboardPushOutcome
 import ec0.core.engine.services.InputEventSink
 import java.io.Closeable
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Callbacks implemented by Android OS services in `:android-app`:
- * - `Ec0NotificationListenerService` (for [onExecuteInlineReply] and [onDismissSystemNotification])
+ * - `Ec0NotificationListener` (for [onExecuteInlineReply] and [onDismissSystemNotification])
  * - `ClipboardManager` wrapper (for [onApplyRemoteClipboard])
  * - `AccessibilityService` / `InputMethodService` (for [onInjectKeyEvent], [onInjectPointerEvent], [onCursorHandoff])
  * - `CamDroid` `StreamingController` / `CameraStreamingService` (for [onCameraControlCommand])
@@ -71,6 +76,26 @@ interface AndroidPlatformCallbacks {
         screenOn = true,
         capabilities = EngineCapability.entries.toSet(),
     )
+}
+
+/**
+ * Step-by-step state trace emitted during phone-side QR/URI pairing
+ * (`URI_PARSE -> PIN (TRUSTED_QR) -> CONNECT (DISCOVERING -> CONNECTING -> AUTHENTICATING -> CONNECTED)`).
+ */
+sealed interface PairingStepState {
+    data object Idle : PairingStepState
+    data class Parsing(val rawUri: String) : PairingStepState
+    data class Pinned(val payload: PairingQrPayload) : PairingStepState
+    data class Connecting(
+        val payload: PairingQrPayload,
+        val connectionState: EngineConnectionState,
+    ) : PairingStepState
+    data class Connected(val payload: PairingQrPayload) : PairingStepState
+    data class Failed(
+        val stage: String,
+        val message: String,
+        val pinnedPayload: PairingQrPayload? = null,
+    ) : PairingStepState
 }
 
 /**
@@ -136,12 +161,25 @@ class AndroidCompanionRuntime(
         clockMs = clockMs,
     )
 
+    private val _pinnedPeers = MutableStateFlow<List<PinnedPeer>>(pinStore.all())
+    val pinnedPeers: StateFlow<List<PinnedPeer>> = _pinnedPeers.asStateFlow()
+
+    private val _pairingState = MutableStateFlow<PairingStepState>(PairingStepState.Idle)
+    val pairingState: StateFlow<PairingStepState> = _pairingState.asStateFlow()
+
+    fun refreshPinnedPeers(): List<PinnedPeer> {
+        val current = pinStore.all()
+        _pinnedPeers.value = current
+        return current
+    }
+
     fun start(startMdns: Boolean = false) {
+        refreshPinnedPeers()
         node.startServer(startMdns = startMdns)
     }
 
     /**
-     * Called by Android's `Ec0NotificationListenerService.onNotificationPosted(sbn)`
+     * Called by Android's `Ec0NotificationListener.onNotificationPosted(sbn)`
      * to relay a phone notification to all paired Linux desktops (or queue it in
      * the ColorOS-resilient [Ec0EngineNode.outboxQueue] if the desktop is offline).
      */
@@ -263,7 +301,7 @@ class AndroidCompanionRuntime(
         val beacon = callbacks.queryPhonePresence()
         var count = 0
         for ((peerId, state) in node.connectionStates.value) {
-            if (state == ec0.core.engine.EngineConnectionState.CONNECTED && node.activeSessionFor(peerId) != null) {
+            if (state == EngineConnectionState.CONNECTED && node.activeSessionFor(peerId) != null) {
                 node.sendPresenceBeacon(peerId, beacon)
                 count++
             }
@@ -272,23 +310,79 @@ class AndroidCompanionRuntime(
     }
 
     /**
-     * Connects to a Linux desktop by scanning its `ec0://pair?v=1...` QR code.
+     * Connects to a Linux desktop by scanning or pasting its `ec0://pair?v=1...`
+     * or `ec0pair://...` QR URI.
      */
     fun pairWithDesktopQr(qrUri: String): Boolean {
+        val outcome = pairWithDesktopUriDetailed(qrUri)
+        return outcome is PairingStepState.Connected
+    }
+
+    /**
+     * Full step-reporting pairing pipeline (`URI_PARSE -> PIN (TRUSTED_QR) -> CONNECT`):
+     *   1. Normalizes `ec0pair://...` or `ec0://pair?...` and parses/validates via
+     *      `node.pairingCoordinator.acceptScannedQrUri(normalizedUri, clockMs())`, pinning
+     *      the desktop peer in [pinStore] with `TrustLevel.TRUSTED_QR`.
+     *   2. Updates [pinnedPeers] immediately so `trustedPeerCount` reflects the newly
+     *      pinned desktop.
+     *   3. Walks the desktop's advertised `(host, port)` endpoints via `node.connectToPeer`.
+     */
+    fun pairWithDesktopUriDetailed(
+        rawUri: String,
+        onStep: (PairingStepState) -> Unit = {},
+    ): PairingStepState {
+        fun emit(step: PairingStepState): PairingStepState {
+            _pairingState.value = step
+            onStep(step)
+            return step
+        }
+
+        emit(PairingStepState.Parsing(rawUri))
+        val normalizedUri = normalizePairingUri(rawUri)
+        val payload = try {
+            node.pairingCoordinator.acceptScannedQrUri(normalizedUri, nowMs = clockMs())
+        } catch (e: Exception) {
+            return emit(
+                PairingStepState.Failed(
+                    stage = "URI_PARSE",
+                    message = e.message ?: "Invalid pairing code",
+                    pinnedPayload = null,
+                ),
+            )
+        }
+
+        // Refresh both node and runtime pinnedPeers immediately after TRUSTED_QR pin
+        refreshPinnedPeers()
+        emit(PairingStepState.Pinned(payload))
+        emit(PairingStepState.Connecting(payload, EngineConnectionState.DISCOVERING))
+
         return try {
-            node.pairAndConnectWithQrUri(qrUri)
-            true
-        } catch (_: Exception) {
-            false
+            node.pairAndConnectWithQrUri(normalizedUri)
+            refreshPinnedPeers()
+            emit(PairingStepState.Connected(payload))
+        } catch (e: Exception) {
+            refreshPinnedPeers()
+            emit(
+                PairingStepState.Failed(
+                    stage = "CONNECT",
+                    message = e.message ?: "Could not reach ${payload.alias}",
+                    pinnedPayload = payload,
+                ),
+            )
         }
     }
 
+    fun resetPairingState() {
+        _pairingState.value = PairingStepState.Idle
+    }
+
     private fun defaultTargetDesktopIds(): Set<String> {
-        val pinned = node.pinnedPeers.value.map { it.deviceId.lowercase() }
+        val pinnedFromNode = node.pinnedPeers.value.map { it.deviceId.lowercase() }
+        val pinnedFromStore = pinStore.all().map { it.deviceId.lowercase() }
         val connected = node.connectionStates.value
-            .filterValues { it == ec0.core.engine.EngineConnectionState.CONNECTED }
+            .filterValues { it == EngineConnectionState.CONNECTED }
             .keys
-        return (pinned + connected).toSet()
+        return (pinnedFromNode + pinnedFromStore + connected).toSet()
     }
 
     override fun close() {
@@ -296,10 +390,35 @@ class AndroidCompanionRuntime(
     }
 
     companion object {
+        private const val ALT_SCHEME_PREFIX = "ec0pair://"
+
+        /**
+         * Normalizes user-pasted pairing URIs (`ec0pair://...` or `ec0://pair?...`) into
+         * canonical `ec0://pair?<query>` form expected by [PairingQrPayload.parseUri].
+         */
+        fun normalizePairingUri(rawUri: String): String {
+            val trimmed = rawUri.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            if (trimmed.startsWith(PairingQrPayload.SCHEME_PREFIX, ignoreCase = true)) {
+                val queryPart = trimmed.substring(PairingQrPayload.SCHEME_PREFIX.length)
+                return "${PairingQrPayload.SCHEME_PREFIX}$queryPart"
+            }
+            if (trimmed.startsWith(ALT_SCHEME_PREFIX, ignoreCase = true)) {
+                val remainder = trimmed.substring(ALT_SCHEME_PREFIX.length).trimStart('/')
+                val query = when {
+                    remainder.startsWith("pair?", ignoreCase = true) -> remainder.substring("pair?".length)
+                    remainder.startsWith("?") -> remainder.substring(1)
+                    else -> remainder
+                }
+                return "${PairingQrPayload.SCHEME_PREFIX}?$query"
+            }
+            return trimmed
+        }
+
         /**
          * Creates an [AndroidCompanionRuntime] backed by explicit `<appFilesDir>/ec0`
-         * store directories ([EncryptedIdentityStore] and [PersistentPinStore]) rather
-         * than `user.home/.config` (which is invalid on Android).
+         * store directories ([ec0.core.engine.crypto.EncryptedIdentityStore] and
+         * [ec0.core.engine.crypto.PersistentPinStore]) rather than `user.home/.config`
+         * (which is invalid on Android).
          */
         fun createWithPersistentStores(
             storeDir: File,
