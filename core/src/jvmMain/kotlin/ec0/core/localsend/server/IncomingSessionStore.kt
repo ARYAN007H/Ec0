@@ -98,7 +98,13 @@ object FileNameSanitizer {
  * direction. Also owns PIN rate-limit counters and (read-only) download
  * sessions for the /download route.
  */
-class IncomingSessionStore {
+class IncomingSessionStore(
+    /** A sender that never uploads after ACCEPT must release the single slot. */
+    private val pendingTimeoutMs: Long = 60_000L,
+    /** An unanswered prompt holds the slot while the user decides. */
+    private val decidingTimeoutMs: Long = 300_000L,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
+) {
 
     private val _sessions = MutableStateFlow<IncomingSession?>(null)
     val sessions: StateFlow<IncomingSession?> = _sessions.asStateFlow()
@@ -134,8 +140,28 @@ class IncomingSessionStore {
     }
 
     @Synchronized
-    fun hasBlockingSession(): Boolean = _sessions.value?.status.let {
-        it == IncomingSessionStatus.DECIDING || it == IncomingSessionStatus.PENDING
+    fun hasBlockingSession(): Boolean {
+        evictStaleSession()
+        return _sessions.value?.status.let {
+            it == IncomingSessionStatus.DECIDING || it == IncomingSessionStatus.PENDING
+        }
+    }
+
+    /**
+     * A session whose sender walked away (client read-timeout after a deferred
+     * decision, or an ACCEPT whose bytes never arrived) otherwise wedges the single
+     * slot forever: the files stay PENDING, [maybeFinishSession] never fires, and
+     * every later prepare-upload answers 409. Upstream LocalSend expires sessions
+     * the same way; DECIDING gets a longer leash because the human is still deciding.
+     */
+    private fun evictStaleSession() {
+        val session = _sessions.value ?: return
+        val idleMs = clockMs() - session.startedAt
+        val limit = if (session.status == IncomingSessionStatus.DECIDING) decidingTimeoutMs else pendingTimeoutMs
+        if (idleMs > limit) {
+            _sessions.value = null
+            publishQueue(null)
+        }
     }
 
     /**
