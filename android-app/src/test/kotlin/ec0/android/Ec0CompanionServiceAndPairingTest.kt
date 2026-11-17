@@ -341,10 +341,12 @@ class Ec0CompanionServiceAndPairingTest {
 
     @Test
     fun `mapPeerLinkState — Wi-Fi TLS while an engine session is connected or pairing committed`() {
+        // PairingQrPayload validates deviceId against SHA-256(publicKeyRaw).
+        val identity = Ed25519Identity.generate()
         val connected = mapPeerLinkState(
             pairing = PairingStepState.Idle,
             hasPinnedPeers = true,
-            connectionStates = mapOf("desktop-id" to EngineConnectionState.CONNECTED),
+            connectionStates = mapOf(identity.deviceId to EngineConnectionState.CONNECTED),
         )
         assertEquals(true, connected.connected)
         assertEquals("Wi-Fi TLS", connected.transport)
@@ -352,8 +354,8 @@ class Ec0CompanionServiceAndPairingTest {
         val committedPairing = mapPeerLinkState(
             pairing = PairingStepState.Connected(
                 PairingQrPayload(
-                    deviceId = "desktop-id",
-                    publicKeyRaw = ByteArray(32),
+                    deviceId = identity.deviceId,
+                    publicKeyRaw = identity.publicKeyRaw,
                     alias = "Arch",
                     nonce = ByteArray(16),
                     port = 49880,
@@ -369,12 +371,13 @@ class Ec0CompanionServiceAndPairingTest {
 
     @Test
     fun `mapPeerLinkState — searching while unconnected even with pinned peers`() {
+        val identity = Ed25519Identity.generate()
         for (pairing in listOf(
             PairingStepState.Idle,
             PairingStepState.Connecting(
                 PairingQrPayload(
-                    deviceId = "desktop-id",
-                    publicKeyRaw = ByteArray(32),
+                    deviceId = identity.deviceId,
+                    publicKeyRaw = identity.publicKeyRaw,
                     alias = "Arch",
                     nonce = ByteArray(16),
                     port = 49880,
@@ -386,7 +389,7 @@ class Ec0CompanionServiceAndPairingTest {
             val link = mapPeerLinkState(
                 pairing = pairing,
                 hasPinnedPeers = true,
-                connectionStates = mapOf("desktop-id" to EngineConnectionState.DISCONNECTED),
+                connectionStates = mapOf(identity.deviceId to EngineConnectionState.DISCONNECTED),
             )
             assertEquals(false, link.connected)
             assertEquals("searching", link.transport)
