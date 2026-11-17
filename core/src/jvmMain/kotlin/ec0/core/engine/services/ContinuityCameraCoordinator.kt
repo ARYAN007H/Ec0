@@ -738,8 +738,7 @@ fun isScrcpyVersionSupported(
  * ("Camera #0, facing=back …") → "0"; null when none is listed.
  */
 fun parseBackCameraId(listCamerasOutput: String): String? =
-    Regex("Camera #(\\S+),[\\t ]*facing[=: ]*back(?:[,
-]|$)").find(listCamerasOutput)?.groupValues?.get(1)
+    Regex("Camera #(\\S+),[\\t ]*facing[=: ]*back(?:[\r\n,]|$)").find(listCamerasOutput)?.groupValues?.get(1)
 
 /** Outcome of the "Load v4l2" tile pre-flight ([ContinuityCameraCoordinator.v4l2Preflight]). */
 enum class V4l2Outcome { READY, NEEDS_PASSWORD, MODPROBE_FAILED, SCRCPY_UNSUPPORTED }
