@@ -6,7 +6,6 @@
  */
 package ec0.desktop.continuity
 
-import ec0.core.engine.EngineCapability
 import ec0.ui.models.computeTileRegistry
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,33 +17,25 @@ class TileRegistryTest {
     fun intersectionProducesOnlySharedCapabilities() {
         val tiles = computeTileRegistry(
             peerCapabilities = mapOf(
-                "phone-a" to setOf(
-                    EngineCapability.MIRROR, EngineCapability.CAMERA, EngineCapability.BATTERY,
-                    EngineCapability.NOTIFICATION,
-                ),
+                "phone-a" to setOf("mirror", "cam", "battery", "notif"),
             ),
-            localSupport = setOf(EngineCapability.MIRROR, EngineCapability.CAMERA, EngineCapability.FILE),
+            localSupport = setOf("mirror", "cam", "file"),
         )
-        val capabilities = tiles.map { it.capability }
-        assertEquals(
-            listOf(EngineCapability.MIRROR, EngineCapability.CAMERA),
-            capabilities,
-        )
+        val capabilities = tiles.map { it.capabilityId }
+        assertEquals(listOf("mirror", "cam"), capabilities)
         assertTrue(tiles.all { it.deviceId == "phone-a" })
     }
 
     @Test
     fun canonicalOrderAndOneTilePerCapabilityDevicePair() {
         val tiles = computeTileRegistry(
-            peerCapabilities = mapOf(
-                "p1" to setOf(EngineCapability.FILE, EngineCapability.MIRROR, EngineCapability.INPUT),
-            ),
-            localSupport = EngineCapability.entries.toSet(),
+            peerCapabilities = mapOf("p1" to setOf("file", "mirror", "input")),
+            localSupport = setOf("mirror", "cam", "file", "clip", "notif", "input", "battery"),
         )
         // canonical order: MIRROR → FILE → INPUT (design-board bento order)
         assertEquals(
-            listOf(EngineCapability.MIRROR, EngineCapability.FILE, EngineCapability.INPUT),
-            tiles.map { it.capability },
+            listOf("mirror", "file", "input"),
+            tiles.map { it.capabilityId },
         )
         assertTrue(tiles.all { it.deviceId == "p1" })
     }
@@ -52,8 +43,8 @@ class TileRegistryTest {
     @Test
     fun offlinePeerKeepsTilesDisabled() {
         val tiles = computeTileRegistry(
-            peerCapabilities = mapOf("p1" to setOf(EngineCapability.MIRROR)),
-            localSupport = setOf(EngineCapability.MIRROR),
+            peerCapabilities = mapOf("p1" to setOf("mirror")),
+            localSupport = setOf("mirror"),
             onlineByDevice = mapOf("p1" to false),
         )
         assertEquals(listOf(false), tiles.map { it.enabled })
@@ -61,23 +52,23 @@ class TileRegistryTest {
 
     @Test
     fun unknownCapabilitiesSortLast() {
-        val exotic = EngineCapability.entries.last()
+        val exotic = "weird"
         val tiles = computeTileRegistry(
-            peerCapabilities = mapOf("p1" to setOf(exotic, EngineCapability.MIRROR)),
-            localSupport = EngineCapability.entries.toSet(),
+            peerCapabilities = mapOf("p1" to setOf(exotic, "mirror")),
+            localSupport = setOf("mirror", "weird"),
         )
-        assertEquals(EngineCapability.MIRROR, tiles.first().capability)
-        assertEquals(exotic, tiles.last().capability)
+        assertEquals("mirror", tiles.first().capabilityId)
+        assertEquals(exotic, tiles.last().capabilityId)
     }
 
     @Test
     fun multiPeerRegistrySplitsByDevice() {
         val tiles = computeTileRegistry(
             peerCapabilities = mapOf(
-                "p1" to setOf(EngineCapability.MIRROR),
-                "p2" to setOf(EngineCapability.MIRROR),
+                "p1" to setOf("mirror"),
+                "p2" to setOf("mirror"),
             ),
-            localSupport = setOf(EngineCapability.MIRROR),
+            localSupport = setOf("mirror"),
         )
         assertEquals(2, tiles.size)
         assertEquals(listOf("p1", "p2"), tiles.map { it.deviceId })

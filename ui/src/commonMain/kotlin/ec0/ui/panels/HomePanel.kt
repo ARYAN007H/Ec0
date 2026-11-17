@@ -79,7 +79,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import ec0.core.engine.EngineCapability
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.Capabilities
 import ec0.ui.models.PeerLinkState
@@ -196,13 +195,13 @@ fun HomePanel(
         }
 
         val activeTiles = tiles.filter { it.deviceId == activeId }
-        val tileFactories: Map<ec0.core.engine.EngineCapability, @Composable (Modifier) -> Unit> = mapOf(
-            ec0.core.engine.EngineCapability.MIRROR to { m -> MirrorTile(bridge, mirrorRunning, settings, activeId, m) },
-            ec0.core.engine.EngineCapability.CAMERA to { m -> CameraTile(bridge, cameraState, v4l2Preflight, m) },
-            ec0.core.engine.EngineCapability.FILE to { m -> FilesTile(transfers, devices, scanning, m) },
-            ec0.core.engine.EngineCapability.CLIPBOARD to { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
-            ec0.core.engine.EngineCapability.NOTIFICATION to { m -> NotificationsTile(bridge, notifications, m) },
-            ec0.core.engine.EngineCapability.INPUT to { m -> RemoteInputTile(m) },
+        val tileFactories: Map<String, @Composable (Modifier) -> Unit> = mapOf(
+            "mirror" to { m -> MirrorTile(bridge, mirrorRunning, settings, activeId, m) },
+            "cam" to { m -> CameraTile(bridge, cameraState, v4l2Preflight, m) },
+            "file" to { m -> FilesTile(transfers, devices, scanning, m) },
+            "clip" to { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
+            "notif" to { m -> NotificationsTile(bridge, notifications, m) },
+            "input" to { m -> RemoteInputTile(m) },
         )
         activeTiles.chunked(tileColumns).forEach { rowTiles ->
             Row(
@@ -210,7 +209,7 @@ fun HomePanel(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 rowTiles.forEach { tile ->
-                    tileFactories[tile.capability]?.invoke(Modifier.weight(1f).height(190.dp))
+                    tileFactories[tile.capabilityId]?.invoke(Modifier.weight(1f).height(190.dp))
                         ?: Spacer(Modifier.weight(1f))
                 }
                 repeat(tileColumns - rowTiles.size) { Spacer(Modifier.weight(1f)) }

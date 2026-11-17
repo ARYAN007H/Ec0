@@ -10,46 +10,48 @@ package ec0.ui.models
 
 import ec0.core.engine.EngineCapability
 
-/** One registry-produced dashboard tile, scoped to a specific peer. */
-data class CapabilityTile(
-    val capability: EngineCapability,
-    val deviceId: String,
-    val enabled: Boolean,
-) {
-    /** Stable UI key — one tile per (capability, device). */
-    val id: String get() = "${capability.wireName}:${deviceId}"
-}
-
-/**
- * Canonical tile order (the design board's bento layout, left→right).
- * Capabilities outside this list sort last, alphabetically by wireName.
- */
-val CANONICAL_TILE_ORDER: List<EngineCapability> = listOf(
-    EngineCapability.MIRROR,
-    EngineCapability.CAMERA,
-    EngineCapability.FILE,
-    EngineCapability.CLIPBOARD,
-    EngineCapability.NOTIFICATION,
-    EngineCapability.INPUT,
-    EngineCapability.BATTERY,
-)
-
 /**
  * Computes the registry: for every peer, tiles = peer capabilities ∩ local
  * support. Peers with no overlap contribute nothing. [onlineByDevice]
  * disables (but keeps) tiles for offline peers.
  */
+
+/** One registry-produced dashboard tile, scoped to a specific peer. */
+data class CapabilityTile(
+    /** EngineCapability wire name ("mirror", "cam", "file" …) — keeps :ui core-free. */
+    val capabilityId: String,
+    val deviceId: String,
+    val enabled: Boolean,
+) {
+    /** Stable UI key — one tile per (capability, device). */
+    val id: String get() = "$capabilityId:$deviceId"
+}
+
+/**
+ * Canonical tile order (the design board's bento layout, left→right) by
+ * wire name. Unknown ids sort last, alphabetically.
+ */
+val CANONICAL_TILE_ORDER: List<String> = listOf(
+    "mirror",
+    "cam",
+    "file",
+    "clip",
+    "notif",
+    "input",
+    "battery",
+)
+
 fun computeTileRegistry(
-    peerCapabilities: Map<String, Set<EngineCapability>>,
-    localSupport: Set<EngineCapability>,
+    peerCapabilities: Map<String, Set<String>>,
+    localSupport: Set<String>,
     onlineByDevice: Map<String, Boolean> = emptyMap(),
 ): List<CapabilityTile> {
     val tiles = mutableListOf<CapabilityTile>()
     for ((deviceId, peerCaps) in peerCapabilities) {
         val online = onlineByDevice[deviceId] ?: true
-        for (capability in peerCaps.intersect(localSupport)) {
+        for (capabilityId in peerCaps.intersect(localSupport)) {
             tiles += CapabilityTile(
-                capability = capability,
+                capabilityId = capabilityId,
                 deviceId = deviceId,
                 enabled = online,
             )
@@ -57,7 +59,7 @@ fun computeTileRegistry(
     }
     return tiles.sortedWith(
         compareBy({ tile ->
-            CANONICAL_TILE_ORDER.indexOf(tile.capability).let { if (it == -1) CANONICAL_TILE_ORDER.size else it }
-        }, { tile -> tile.capability.wireName }, { tile -> tile.deviceId }),
+            CANONICAL_TILE_ORDER.indexOf(tile.capabilityId).let { if (it == -1) CANONICAL_TILE_ORDER.size else it }
+        }, { tile -> tile.capabilityId }, { tile -> tile.deviceId }),
     )
 }

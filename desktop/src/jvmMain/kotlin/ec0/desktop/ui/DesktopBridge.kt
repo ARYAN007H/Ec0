@@ -176,8 +176,10 @@ class DesktopBridge(
         } else {
             hub.peerPresence.map { presence ->
                 computeTileRegistry(
-                    peerCapabilities = presence.mapValues { it.value.capabilities },
-                    localSupport = localTileSupport,
+                    peerCapabilities = presence.mapValues { (_, beacon) ->
+                        beacon.capabilities.map { it.wireName }.toSet()
+                    },
+                    localSupport = localTileSupport.map { it.wireName }.toSet(),
                     onlineByDevice = presence.keys.associateWith { true },
                 )
             }.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList())
