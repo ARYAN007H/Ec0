@@ -141,6 +141,9 @@ interface UiBridge {
     fun sendNotificationReply(id: String, text: String) {}
     fun setupV4l2Loopback() {}
 
+    /** Honest outcome of the last "Load v4l2" pre-flight (null = never run). */
+    val v4l2PreflightText: StateFlow<String?> get() = MutableStateFlow(null)
+
     /**
      * Incoming transfer awaiting the user's accept/decline decision —
      * non-null while the dialog should show. Platforms without a receiver

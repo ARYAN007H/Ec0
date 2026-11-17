@@ -195,7 +195,23 @@ fun SettingsPanel(bridge: UiBridge) {
                     }
                 }
             }
+            Spacer(modifier = Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Minimize to tray on close", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Closing the window keeps ec0 running in the system tray",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.minimizeToTray,
+                    onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(minimizeToTray = checked) } },
+                )
+            }
         }
+        Spacer(modifier = Modifier.height(14.dp))
 
         SettingsCard("Security") {
             Row(verticalAlignment = Alignment.CenterVertically) {

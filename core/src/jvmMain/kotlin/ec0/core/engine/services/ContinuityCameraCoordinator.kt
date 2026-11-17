@@ -158,6 +158,7 @@ class ContinuityCameraCoordinator(
         fps: Int = 30,
         frontCamera: Boolean = false,
         audio: Boolean = true,
+        cameraId: String? = null,
     ): List<String> {
         val sizeArg = when (resolution.lowercase()) {
             "4k" -> "3840x2160"
@@ -169,7 +170,12 @@ class ContinuityCameraCoordinator(
             add("--serial")
             add("$host:$adbPort")
             add("--video-source=camera")
-            add("--camera-facing=${if (frontCamera) "front" else "back"}")
+            if (cameraId != null) {
+                // scrcpy 2.2+: an explicit id wins over the facing heuristic
+                add("--camera-id=$cameraId")
+            } else {
+                add("--camera-facing=${if (frontCamera) "front" else "back"}")
+            }
             add("--camera-size=$sizeArg")
             add("--camera-fps=$fps")
             add("--v4l2-sink=$v4l2DevicePath")
@@ -626,5 +632,126 @@ class ContinuityCameraCoordinator(
         const val CATEGORY_CAMERA: String = "cam"
         const val CMD_CAMERA_CONTROL: String = "cam_control"
         const val INFO_CAMERA_STATUS: String = "cam_status"
+
+        /** Minimum scrcpy version with `--video-source=camera` support (v2.2+). */
+        const val MIN_SCRCPY_MAJOR: Int = 2
+        const val MIN_SCRCPY_MINOR: Int = 2
+    }
+
+    /**
+     * Builds the passwordless (`sudo -n`) modprobe argv for the "Load v4l2"
+     * tile pre-flight. Mirrors [v4l2SetupCommand] but as argv + `-n` so a
+     * passwordless-sudo probe can run it without an interactive prompt.
+     */
+    fun buildSudoModprobeCommand(
+        v4l2DevicePath: String = CamDroidConstants.DEFAULT_V4L2_DEVICE,
+        cardLabel: String = "ec0 camera",
+    ): List<String> {
+        val videoNr = v4l2DevicePath.removePrefix("/dev/video").toIntOrNull() ?: 10
+        return listOf(
+            "sudo",
+            "-n",
+            "modprobe",
+            "v4l2loopback",
+            "devices=1",
+            "video_nr=$videoNr",
+            "card_label=$cardLabel",
+            "exclusive_caps=1",
+        )
+    }
+
+    fun buildScrcpyVersionCommand(): List<String> = listOf(scrcpyBinaryPath, "--version")
+
+    /**
+     * Pre-flight for the "Load v4l2" tile, fully fake-runner-testable:
+     * 1. `sudo -n modprobe …` — needs-password (exit ≠ 0 + password hint in
+     *    stderr) → honest remediation text instead of a GUI prompt.
+     * 2. `scrcpy --version` — parsed; < 2.2 → unsupported verdict.
+     */
+    fun v4l2Preflight(
+        v4l2DevicePath: String = CamDroidConstants.DEFAULT_V4L2_DEVICE,
+        cardLabel: String = CamDroidConstants.DEFAULT_V4L2_CARD_LABEL,
+        runner: (List<String>) -> CommandExecResult = { argv -> launcher.runBlockingCommand(argv, timeoutMs = 15_000L) },
+    ): V4l2PreflightResult {
+        val modprobeArgv = buildSudoModprobeCommand(v4l2DevicePath, cardLabel)
+        if (v4l2DeviceCheck(v4l2DevicePath)) {
+            // Device node already present and writable — only scrcpy matters now.
+            return scrcpyCheck(runner)
+        }
+        val modprobe = runner(modprobeArgv)
+        if (modprobe.exitCode != 0) {
+            val needsPassword = (modprobe.stderr + modprobe.stdout).let { text ->
+                text.contains("password", ignoreCase = true) || text.contains("sudo: a password is required")
+            }
+            return V4l2PreflightResult(
+                outcome = if (needsPassword) V4l2Outcome.NEEDS_PASSWORD else V4l2Outcome.MODPROBE_FAILED,
+                scrcpyVersionText = null,
+                scrcpySupported = false,
+                remediationCommand = v4l2SetupCommand(v4l2DevicePath, cardLabel),
+            )
+        }
+        return scrcpyCheck(runner)
+    }
+
+    private fun scrcpyCheck(runner: (List<String>) -> CommandExecResult): V4l2PreflightResult {
+        val versionRun = runner(buildScrcpyVersionCommand())
+        val version = parseScrcpyVersion(versionRun.stdout + versionRun.stderr)
+        val supported = isScrcpyVersionSupported(version)
+        return V4l2PreflightResult(
+            outcome = if (supported) V4l2Outcome.READY else V4l2Outcome.SCRCPY_UNSUPPORTED,
+            scrcpyVersionText = version,
+            scrcpySupported = supported,
+            remediationCommand = if (supported) "" else "Install scrcpy >= 2.2 (found: ${version ?: "none"})",
+        )
     }
 }
+
+/**
+ * Parses the scrcpy banner ("scrcpy 5.0.1 …") into a normalized version
+ * string ("5.0.1"); tolerates surrounding noise, returns null when absent.
+ */
+fun parseScrcpyVersion(text: String): String? {
+    val m = Regex("scrcpy[ \t]+(\\d+)\\.(\\d+)(?:\\.(\\d+))?").find(text) ?: return null
+    val patch = m.groupValues[3]
+    return if (patch.isEmpty()) {
+        "${m.groupValues[1]}.${m.groupValues[2]}"
+    } else {
+        "${m.groupValues[1]}.${m.groupValues[2]}.$patch"
+    }
+}
+
+/** True when [version] (from [parseScrcpyVersion]) is >= the --video-source=camera floor (2.2). */
+fun isScrcpyVersionSupported(
+    version: String?,
+    minMajor: Int = ContinuityCameraCoordinator.MIN_SCRCPY_MAJOR,
+    minMinor: Int = ContinuityCameraCoordinator.MIN_SCRCPY_MINOR,
+): Boolean {
+    if (version == null) return false
+    val parts = version.split('.').map { it.toIntOrNull() ?: return false }
+    val major = parts.getOrElse(0) { 0 }
+    val minor = parts.getOrElse(1) { 0 }
+    return major > minMajor || (major == minMajor && minor >= minMinor)
+}
+
+/**
+ * Finds a back-facing camera id from `scrcpy --list-cameras` output
+ * ("Camera #0, facing=back …") → "0"; null when none is listed.
+ */
+fun parseBackCameraId(listCamerasOutput: String): String? =
+    Regex("Camera #(\\S+),[\\t ]*facing[=: ]*back(?:[\r\n,]|$)").find(listCamerasOutput)?.groupValues?.get(1)
+
+/** Outcome of the "Load v4l2" tile pre-flight ([ContinuityCameraCoordinator.v4l2Preflight]). */
+enum class V4l2Outcome { READY, NEEDS_PASSWORD, MODPROBE_FAILED, SCRCPY_UNSUPPORTED }
+
+data class V4l2PreflightResult(
+    val outcome: V4l2Outcome,
+    /** Parsed scrcpy version, e.g. "5.0.1" — null when scrcpy is absent/garbled. */
+    val scrcpyVersionText: String?,
+    val scrcpySupported: Boolean,
+    /**
+     * Honest remediation text for the tile: the exact `sudo modprobe …` command
+     * when a password is required, or an upgrade hint when scrcpy is too old.
+     * Empty when nothing is wrong.
+     */
+    val remediationCommand: String,
+)
