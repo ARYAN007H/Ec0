@@ -59,6 +59,7 @@ import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
 import ec0.core.engine.services.LocalDaemonIpcServer
+import ec0.core.engine.services.resolveMirrorSerial
 import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.services.TransferSpeedSample
 import ec0.core.engine.services.TransferThroughputTracker
@@ -821,18 +822,40 @@ class ContinuityHubController(
         }
     }
 
-    fun startScreenMirror(host: String, adbPort: Int = 5555, maxFps: Int = 60, bitrateKbps: Int = 8_000) {
+    fun startScreenMirror(host: String = "", adbPort: Int = 5555, maxFps: Int = 60, bitrateKbps: Int = 8_000) {
         scope.launch(Dispatchers.IO) {
             try {
+                // Resolve the LIVE adb serial for the pinned phone: wireless-debugging
+                // serials are ip:port and change per re-pairing — the hardcoded :5555
+                // dial could never survive real usage (observed: 'Start mirror' dead).
+                val adbDevices = node.scrcpyCoordinator.adbDevicesList()
+                val peer = node.pinnedPeers.value.firstOrNull()
+                    ?: throw IOException("No paired phone — pair first, then mirror")
+                val peerIp = node.activeSessionFor(peer.deviceId)?.peerRemoteIp
+                val serial = resolveMirrorSerial(adbDevices, peer.alias, peerIp)
+                    ?: run {
+                        // No live serial: last resort, dial the legacy tcpip port.
+                        if (host.isNotBlank() && adbDevices.isNotBlank()) {
+                            null
+                        } else {
+                            throw IOException(
+                                "No adb device matching '${peer.alias}' — enable Wireless debugging on the phone (or plug USB)",
+                            )
+                        }
+                    }
                 val cmd = ScrcpyMirrorStartCommand(
-                    host = host,
+                    host = host.ifBlank { peerIp ?: "127.0.0.1" },
                     adbPort = adbPort,
                     maxFps = maxFps,
                     bitrateKbps = bitrateKbps,
-                    windowTitle = "ec0 Mirror ($host)",
+                    windowTitle = "ec0 Mirror (${peer.alias})",
                 )
-                node.scrcpyCoordinator.launchMirrorSession(cmd)
-                _statusBanner.value = "Mirroring phone screen via scrcpy ($host:$adbPort)"
+                node.scrcpyCoordinator.launchMirrorSession(cmd, directSerial = serial)
+                _statusBanner.value = if (serial != null) {
+                    "Mirroring ${peer.alias} via scrcpy (serial $serial)"
+                } else {
+                    "Mirroring phone screen via scrcpy (${cmd.serial})"
+                }
             } catch (e: Exception) {
                 _statusBanner.value = "Screen mirror failed: ${e.message}"
             }

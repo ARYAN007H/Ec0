@@ -79,6 +79,19 @@ class ScrcpyMirrorCoordinator(
     private val scrcpyBinary: String = "scrcpy",
 ) : Closeable {
 
+    /**
+     * Raw `adb devices -l` output — the live serial registry. Wireless-debugging
+     * serials are `ip:port` and CHANGE on every re-pairing; the live list is the
+     * only durable way to find the phone (a hardcoded :5555 was the original bug).
+     */
+    fun adbDevicesList(): String {
+        val result = launcher.runBlockingCommand(listOf(adbBinary, "devices", "-l"))
+        if (result.exitCode != 0) {
+            throw IOException("adb devices -l failed (exit=${result.exitCode}): ${result.stderr.trim()}")
+        }
+        return result.stdout
+    }
+
     private val lock = ReentrantLock()
     private var activeProcess: RunningProcessHandle? = null
     private var activeSerial: String? = null
@@ -131,22 +144,32 @@ class ScrcpyMirrorCoordinator(
      *   2. Verify exitCode == 0 and stdout contains `"connected to"` (case-insensitive)
      *   3. Spawn `scrcpy --serial <host>:<adb_port> ...`
      */
-    fun launchMirrorSession(cmd: ScrcpyMirrorStartCommand): RunningProcessHandle = lock.withLock {
+    fun launchMirrorSession(cmd: ScrcpyMirrorStartCommand, directSerial: String? = null): RunningProcessHandle = lock.withLock {
         stopLocalMirrorLocked()
 
-        val adbArgs = buildAdbConnectArgs(cmd)
-        val adbResult = launcher.runBlockingCommand(adbArgs)
-        val outLower = adbResult.stdout.lowercase()
-        if (adbResult.exitCode != 0 || !outLower.contains("connected to") || outLower.contains("unable to connect") || outLower.contains("failed to connect")) {
-            throw IOException(
-                "adb connect ${cmd.serial} failed (exit=${adbResult.exitCode}): ${adbResult.stdout.trim()} ${adbResult.stderr.trim()}".trim(),
-            )
+        val serial = directSerial ?: cmd.serial
+        if (directSerial == null) {
+            // Legacy path: dial host:port first (USB-tcpip / explicit adb connect).
+            val adbArgs = buildAdbConnectArgs(cmd)
+            val adbResult = launcher.runBlockingCommand(adbArgs)
+            val outLower = adbResult.stdout.lowercase()
+            if (adbResult.exitCode != 0 || !outLower.contains("connected to") || outLower.contains("unable to connect") || outLower.contains("failed to connect")) {
+                throw IOException(
+                    "adb connect ${cmd.serial} failed (exit=${adbResult.exitCode}): ${adbResult.stdout.trim()} ${adbResult.stderr.trim()}".trim(),
+                )
+            }
         }
 
-        val scrcpyArgs = buildScrcpyArgs(cmd)
+        val scrcpyArgs = buildScrcpyArgs(cmd).let { args ->
+            // Swap the synthesized host:port serial for the LIVE adb serial.
+            if (directSerial != null && serial != cmd.serial) {
+                val idx = args.indexOf(cmd.serial)
+                if (idx >= 0) args.toMutableList().also { it[idx] = serial } else args + listOf("--serial", serial)
+            } else args
+        }
         val handle = launcher.spawnProcess(scrcpyArgs)
         activeProcess = handle
-        activeSerial = cmd.serial
+        activeSerial = serial
         handle
     }
 
@@ -182,4 +205,39 @@ class ScrcpyMirrorCoordinator(
     override fun close() {
         stopLocalMirror()
     }
+}
+
+/**
+ * Picks the adb serial for the phone from `adb devices -l` output — the LIVE serial
+ * registry. Wireless-debugging serials are `ip:port` and change on every re-pairing,
+ * so a hardcoded `host:5555` can never survive real usage; the running adb daemon is
+ * the source of truth.
+ *
+ * Matching order: adb `model:` vs the engine peer alias (normalized `-`/`_`
+ * case-insensitive), then a serial whose `ip:` prefix matches the peer's LAN IP.
+ * Returns null when no connected device matches.
+ */
+fun resolveMirrorSerial(
+    adbDevicesOutput: String,
+    peerAlias: String,
+    peerIp: String?,
+): String? {
+    fun normalize(s: String): String = s.replace("-", "_").lowercase()
+    val wanted = normalize(peerAlias)
+    val deviceLines = adbDevicesOutput.lines().filter { "\tdevice" in it || "\tdevice\r" in it }
+
+    for (line in deviceLines) {
+        val serial = line.substringBefore('\t').trim()
+        val model = Regex("model:(\\S+)").find(line)?.groupValues?.get(1) ?: ""
+        if (wanted.isNotEmpty() && (normalize(model) == wanted || normalize(model).contains(wanted) || wanted.contains(normalize(model)))) {
+            return serial
+        }
+    }
+    if (!peerIp.isNullOrBlank()) {
+        for (line in deviceLines) {
+            val serial = line.substringBefore('\t').trim()
+            if (serial.startsWith("$peerIp:")) return serial
+        }
+    }
+    return null
 }
