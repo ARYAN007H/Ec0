@@ -22,6 +22,7 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 fun runApp() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -51,11 +52,14 @@ fun runApp() {
     // pairing-QR refresh and the trusted-peer reconnect supervisor.
     runCatching { hub.start(startMdns = false) }
     val trayController = ContinuityTrayController(hub)
+    // The tray lives outside the Compose application scope — quit is late-bound
+    // so the tray can still call exitApplication.
+    val quitRef = java.util.concurrent.atomic.AtomicReference<() -> Unit>({})
     val systemTray = ContinuitySystemTray(
         controller = trayController,
         onQuit = {
             runCatching { hub.close() }
-            exitApplication()
+            quitRef.get().invoke()
         },
         // "Send clipboard" guarantees the proven auto-sync pipeline is live —
         // the watch loop (≤1.2 s) then pushes clipboard changes to the phone.
@@ -67,6 +71,10 @@ fun runApp() {
         appState.settings.collect { trayController.setMinimizeToTrayOnClose(it.minimizeToTray) }
     }
     application {
+        quitRef.set {
+            runCatching { hub.close() }
+            exitApplication()
+        }
         val windowState = rememberWindowState(width = 1080.dp, height = 720.dp)
         val bridge = remember { DesktopBridge(appState, hub, smartConnectPort, scope) }
         val windowVisible by trayController.windowVisible.collectAsState()
