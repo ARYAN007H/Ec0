@@ -337,4 +337,67 @@ class Ec0CompanionServiceAndPairingTest {
             tempRoot.deleteRecursively()
         }
     }
+
+
+    @Test
+    fun `mapPeerLinkState — Wi-Fi TLS while an engine session is connected or pairing committed`() {
+        val connected = mapPeerLinkState(
+            pairing = PairingStepState.Idle,
+            hasPinnedPeers = true,
+            connectionStates = mapOf("desktop-id" to EngineConnectionState.CONNECTED),
+        )
+        assertEquals(true, connected.connected)
+        assertEquals("Wi-Fi TLS", connected.transport)
+
+        val committedPairing = mapPeerLinkState(
+            pairing = PairingStepState.Connected(
+                PairingQrPayload(
+                    deviceId = "desktop-id",
+                    publicKeyRaw = ByteArray(32),
+                    alias = "Arch",
+                    nonce = ByteArray(16),
+                    port = 49880,
+                    ips = listOf("192.168.1.10"),
+                ),
+            ),
+            hasPinnedPeers = true,
+            connectionStates = emptyMap(),
+        )
+        assertEquals(true, committedPairing.connected)
+        assertEquals("Wi-Fi TLS", committedPairing.transport)
+    }
+
+    @Test
+    fun `mapPeerLinkState — searching while unconnected even with pinned peers`() {
+        for (pairing in listOf(
+            PairingStepState.Idle,
+            PairingStepState.Connecting(
+                PairingQrPayload(
+                    deviceId = "desktop-id",
+                    publicKeyRaw = ByteArray(32),
+                    alias = "Arch",
+                    nonce = ByteArray(16),
+                    port = 49880,
+                    ips = listOf("192.168.1.10"),
+                ),
+                EngineConnectionState.DISCONNECTED,
+            ),
+        )) {
+            val link = mapPeerLinkState(
+                pairing = pairing,
+                hasPinnedPeers = true,
+                connectionStates = mapOf("desktop-id" to EngineConnectionState.DISCONNECTED),
+            )
+            assertEquals(false, link.connected)
+            assertEquals("searching", link.transport)
+        }
+
+        val unpaired = mapPeerLinkState(
+            pairing = PairingStepState.Idle,
+            hasPinnedPeers = false,
+            connectionStates = emptyMap(),
+        )
+        assertEquals(false, unpaired.connected)
+        assertEquals("searching", unpaired.transport)
+    }
 }

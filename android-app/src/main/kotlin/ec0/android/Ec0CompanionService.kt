@@ -783,6 +783,17 @@ class Ec0CompanionService : Service() {
             if (focused) activeClipboardWatcher?.onFocusGained()
         }
 
+        /**
+         * ColorOS clipboard workaround: the foreground service's clipboard READ can be
+         * denied even while ec0 is focused, but the Activity's own read succeeds (the
+         * focused-app UID grant covers the Activity). MainActivity reads the clip on
+         * focus and hands non-blank text here; the watcher runs the exact same
+         * policy/echo/dedupe tail as the listener path.
+         */
+        fun pushClipboardFromActivity(text: String, isSensitive: Boolean = false) {
+            activeClipboardWatcher?.pushText(text, isSensitive)
+        }
+
         internal fun shutdownActiveHost() {
             synchronized(hostLock) {
                 activeClipboardWatcher?.stop()

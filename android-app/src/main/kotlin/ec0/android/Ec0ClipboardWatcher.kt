@@ -11,6 +11,13 @@ package ec0.android
  * desktop while ec0 is the focused app (Android 10+ only grants clipboard *read*
  * access to the focused app's UID — the engine service shares that UID, so reads
  * succeed exactly while the ec0 Activity is resumed).
+ *
+ * ColorOS reality (verified on the A5x): even with the app focused, clipboard
+ * *reads* from the foreground SERVICE can be denied while the Activity's own read
+ * succeeds. The listener path stays for live change events, but on focus the
+ * Activity reads the clip itself and hands the text over via
+ * [AndroidClipboardWatcher.pushText] — both paths share the policy/echo/dedupe
+ * tail in [ClipboardPushSender].
  */
 
 import android.content.ClipDescription
@@ -69,6 +76,52 @@ object ClipboardPushPolicy {
 }
 
 /**
+ * Policy decision + engine-send tail shared by both push paths:
+ *  - the system-clipboard listener ([AndroidClipboardWatcher.onPrimaryClipChanged]),
+ *  - the Activity-read path ([AndroidClipboardWatcher.pushText], ColorOS workaround).
+ * Unit-testable without android.jar — same-commit tests in [ClipboardPushPolicyTest].
+ */
+class ClipboardPushSender(
+    private val echoGuard: ClipboardEchoGuard,
+    private val isAppFocused: () -> Boolean,
+    private val pushScope: CoroutineScope,
+    private val log: Logger = Logger.getLogger("ec0.android.clipboard"),
+    private val onPush: (ClipboardItem) -> Unit,
+) {
+    /** Content hash of the most recent clip this side pushed (dedupe window). */
+    @Volatile
+    var lastPushedSha256: String? = null
+        private set
+
+    /**
+     * Runs [ClipboardPushPolicy] over a candidate and, on PUSH, claims the dedupe
+     * slot before the async engine send (a rapid double event must not send twice).
+     */
+    fun pushCandidate(text: String, sensitive: Boolean) {
+        if (text.isEmpty()) return
+        val candidateSha = Sha256.digest(text.encodeToByteArray()).toHex()
+
+        val decision = ClipboardPushPolicy.evaluate(
+            text = text,
+            isSensitive = sensitive,
+            appFocused = isAppFocused(),
+            lastAppliedFromDesktopSha256 = echoGuard.lastAppliedFromDesktopSha256,
+            lastPushedSha256 = lastPushedSha256,
+            candidateSha256 = candidateSha,
+        )
+        log.info("Clipboard push decision=${decision.reason} chars=${text.length}")
+        if (!decision.push) return
+
+        lastPushedSha256 = candidateSha
+        val item = ClipboardItem.text(text)
+        pushScope.launch {
+            runCatching { onPush(item) }
+                .onFailure { log.warning("Clipboard push failed: $it") }
+        }
+    }
+}
+
+/**
  * Registers a [ClipboardManager.OnPrimaryClipChangedListener] and pushes text clips
  * to every paired desktop through [AndroidCompanionRuntime.onAndroidClipboardChanged]
  * (offline desktops are handled by the engine outbox — pushes never block on send).
@@ -77,6 +130,10 @@ object ClipboardPushPolicy {
  *  - pushes only while ec0 is the focused app ([isAppFocused]; Android 10+ read grant),
  *  - never transmits `EXTRA_IS_SENSITIVE` clips (password managers),
  *  - never echoes a clip that was just applied from the desktop ([ClipboardEchoGuard]).
+ *
+ * ColorOS note: the listener's own reads can be denied even while focused (see the
+ * file header) — MainActivity reads the clip with the Activity context on focus and
+ * routes the text through [pushText], which shares this class's policy tail.
  */
 class AndroidClipboardWatcher(
     private val appContext: Context,
@@ -93,10 +150,18 @@ class AndroidClipboardWatcher(
     private val clipboardManager =
         appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
 
+    private val sender = ClipboardPushSender(
+        echoGuard = echoGuard,
+        isAppFocused = isAppFocused,
+        pushScope = pushScope,
+        log = log,
+        onPush = { runtime.onAndroidClipboardChanged(it) },
+    )
+
     private val started = AtomicBoolean(false)
 
-    @Volatile
-    private var lastPushedSha256: String? = null
+    /** Exposed for the dashboard honesty card / tests. */
+    val lastPushedSha256: String? get() = sender.lastPushedSha256
 
     /** Idempotent: safe to call alongside [CompanionServiceHost] start. */
     fun start() {
@@ -124,6 +189,16 @@ class AndroidClipboardWatcher(
         checkAndPush()
     }
 
+    /**
+     * Push a clip the **Activity** already read successfully (ColorOS denies service
+     * reads even while focused — the focused-app UID grant covers the Activity's own
+     * read). Shares the exact policy/echo/dedupe/send tail with the listener path;
+     * [isSensitive] keeps the password-manager suppression honest.
+     */
+    fun pushText(text: String, isSensitive: Boolean = false) {
+        sender.pushCandidate(text, isSensitive)
+    }
+
     private fun checkAndPush() {
         val clip = runCatching { clipboardManager?.primaryClip }.getOrNull() ?: return
         if (clip.itemCount == 0) return
@@ -133,25 +208,6 @@ class AndroidClipboardWatcher(
         val text = runCatching {
             clip.getItemAt(0).coerceToText(appContext)?.toString()
         }.getOrNull().orEmpty()
-        val candidateSha = Sha256.digest(text.encodeToByteArray()).toHex()
-
-        val decision = ClipboardPushPolicy.evaluate(
-            text = text,
-            isSensitive = sensitive,
-            appFocused = isAppFocused(),
-            lastAppliedFromDesktopSha256 = echoGuard.lastAppliedFromDesktopSha256,
-            lastPushedSha256 = lastPushedSha256,
-            candidateSha256 = candidateSha,
-        )
-        log.info("Clipboard push decision=${decision.reason} chars=${text?.length ?: 0}")
-        if (!decision.push) return
-
-        // Claim the slot before the async push so a rapid double event can't send twice.
-        lastPushedSha256 = candidateSha
-        val item = ClipboardItem.text(text)
-        pushScope.launch {
-            runCatching { runtime.onAndroidClipboardChanged(item) }
-                .onFailure { log.warning("Clipboard push failed: $it") }
-        }
+        sender.pushCandidate(text, sensitive)
     }
 }
