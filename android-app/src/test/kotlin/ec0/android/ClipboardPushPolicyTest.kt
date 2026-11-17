@@ -7,6 +7,7 @@
  */
 package ec0.android
 
+import ec0.core.engine.protocol.ClipboardItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlin.test.Test
