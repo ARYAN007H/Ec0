@@ -89,8 +89,8 @@ class ContinuityCameraPreflightTest {
     fun backCameraIdFromListCamerasOutput() {
         val output = """
             [scrcpy] INFO: List of cameras:
-                --camera-id=0    (facing=back, video_size=1920x1080)
-                --camera-id=1    (facing=front, video_size=1920x1080)
+                Camera #0, facing back, video_size=1920x1080
+                Camera #1, facing front, video_size=1920x1080
         """.trimIndent()
         assertEquals("0", parseBackCameraId(output))
     }
