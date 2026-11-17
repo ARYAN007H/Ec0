@@ -8,7 +8,6 @@
  */
 package ec0.ui.models
 
-import ec0.core.engine.EngineCapability
 
 /**
  * Computes the registry: for every peer, tiles = peer capabilities ∩ local

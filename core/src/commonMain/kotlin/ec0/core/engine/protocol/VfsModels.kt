@@ -58,16 +58,3 @@ data class VfsErrorReply(
     val message: String,
 )
 
-/** UI-side listing entry (parsed from [VfsEntryDto] replies). */
-data class VfsEntry(
-    val name: String,
-    val isDir: Boolean,
-    val size: Long,
-)
-
-/** VFS browser UI state — parsed listing or an honest error. */
-data class VfsBrowseState(
-    val path: String? = null,
-    val entries: List<VfsEntry> = emptyList(),
-    val error: String? = null,
-)

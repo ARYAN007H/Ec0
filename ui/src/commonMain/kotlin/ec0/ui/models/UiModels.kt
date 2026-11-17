@@ -81,13 +81,27 @@ data class SettingsState(
     /** Pending coordinator support (ScrcpyMirrorCoordinator is protected). */
     val mirrorAudio: Boolean = true,
     val mirrorRotation: String = "auto",
-    /** B4 desktop→phone notification relay policy. */
+    /** B6 VFS browser state — read-only listing from the phone's granted roots. */
     val notifRelayEnabled: Boolean = false,
     val notifRelayDisabledApps: Set<String> = emptySet(),
     val notifQuietHoursEnabled: Boolean = false,
     val notifQuietStartMin: Int = 22 * 60,
     val notifQuietEndMin: Int = 8 * 60,
     val notifTitleOnly: Boolean = false,
+)
+
+/** B6: one phone-side file entry rendered by the VFS browser. */
+data class VfsEntry(
+    val name: String,
+    val isDir: Boolean,
+    val size: Long,
+)
+
+/** B6: VFS browser UI state — parsed listing or an honest error. */
+data class VfsBrowseState(
+    val path: String? = null,
+    val entries: List<VfsEntry> = emptyList(),
+    val error: String? = null,
 )
 
 /**

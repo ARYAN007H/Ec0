@@ -37,7 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ec0.core.engine.protocol.VfsBrowseState
+import ec0.ui.models.VfsBrowseState
 import ec0.ui.models.UiBridge
 import ec0.ui.widgets.SectionHeader
 

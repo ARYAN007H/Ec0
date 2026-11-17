@@ -14,6 +14,8 @@ import ec0.ui.models.PairingQr
 import ec0.ui.models.PeerLinkState
 import ec0.ui.models.CapabilityTile
 import ec0.ui.models.SettingsState
+import ec0.ui.models.VfsBrowseState
+import ec0.ui.models.VfsEntry
 import ec0.ui.models.computeTileRegistry
 import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.UiBridge
@@ -215,8 +217,16 @@ class DesktopBridge(
         ),
     )
 
-    override val vfsBrowseState: StateFlow<ec0.core.engine.services.VfsBrowseState?> =
-        vfsDesktopService.browseState
+    override val vfsBrowseState: StateFlow<VfsBrowseState?> = vfsDesktopService.browseState
+        .map { reply ->
+            reply?.let {
+                VfsBrowseState(
+                    path = it.path,
+                    entries = it.entries.map { dto -> VfsEntry(name = dto.name, isDir = dto.isDir, size = dto.size) },
+                    error = null,
+                )
+            }
+        }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
 
     override fun vfsDownload(path: String) {
         val deviceId = hub?.peerPresence?.value?.keys?.firstOrNull { nodeId ->

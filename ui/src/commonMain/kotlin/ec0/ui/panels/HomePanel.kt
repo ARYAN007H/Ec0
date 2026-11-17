@@ -51,8 +51,6 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SensorDoor
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -181,15 +179,18 @@ fun HomePanel(
 
         if (tilePeers.size > 1) {
             // Device switcher: more than one paired peer drives the dashboard.
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                tilePeers.forEachIndexed { index, deviceId ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                tilePeers.forEach { deviceId ->
                     val alias = devices.firstOrNull { it.id == deviceId }?.alias ?: deviceId.take(8)
-                    SegmentedButton(
-                        selected = activeId == deviceId,
+                    FilledTonalButton(
                         onClick = { activeDeviceId = deviceId },
-                        shape = SegmentedButtonDefaults.itemShape(index = index, count = tilePeers.size),
-                        label = { Text(alias) },
-                    )
+                        shape = Ec0Shapes.pill,
+                    ) {
+                        Text(if (activeId == deviceId) "● $alias" else alias)
+                    }
                 }
             }
         }

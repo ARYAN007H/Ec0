@@ -161,7 +161,7 @@ interface UiBridge {
     val v4l2PreflightText: StateFlow<String?> get() = MutableStateFlow(null)
 
     /** B6 VFS browser: current listing (null = nothing browsed yet). */
-    val vfsBrowseState: StateFlow<ec0.core.engine.protocol.VfsBrowseState?> get() = MutableStateFlow(null)
+    val vfsBrowseState: StateFlow<VfsBrowseState?> get() = MutableStateFlow(null)
 
     /** B6 VFS browser: request a directory listing from the phone. */
     fun vfsBrowse(path: String) {}

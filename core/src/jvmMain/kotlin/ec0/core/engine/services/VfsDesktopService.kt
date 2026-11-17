@@ -13,8 +13,7 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.Ec0Envelope
-import ec0.core.engine.protocol.VfsBrowseState
-import ec0.core.engine.protocol.VfsEntry
+import ec0.core.engine.protocol.VfsDirReply
 import ec0.core.engine.protocol.VfsProtocol
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,8 +33,8 @@ class VfsDesktopService(
     private val json = Json { ignoreUnknownKeys = true }
 
     private val assemblerField = java.util.concurrent.atomic.AtomicReference(DownloadChunkAssembler())
-    private val _browseState = MutableStateFlow(VfsBrowseState())
-    val browseState: StateFlow<VfsBrowseState> = _browseState.asStateFlow()
+    private val _browseState = MutableStateFlow<VfsDirReply?>(null)
+    val browseState: StateFlow<VfsDirReply?> = _browseState.asStateFlow()
 
     private val _downloadBytes = MutableStateFlow<Pair<String, ByteArray>?>(null)
     val downloadBytes: StateFlow<Pair<String, ByteArray>?> = _downloadBytes.asStateFlow()
@@ -53,7 +52,7 @@ class VfsDesktopService(
 
     /** Sends a browse request over the injected sender; writes the pending path. */
     fun browse(sender: (cmdType: String, body: JsonObject) -> Unit, path: String) {
-        _browseState.value = VfsBrowseState(path = path)
+        _browseState.value = null
         sender(VfsProtocol.CMD_VFS_LIST, buildListBody(path))
     }
 
@@ -80,14 +79,14 @@ class VfsDesktopService(
                 val path = (body["path"] as? JsonPrimitive)?.content ?: return true
                 val entries = (body["entries"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { entry ->
                     val obj = entry as? JsonObject ?: return@mapNotNull null
-                    VfsEntry(
+                    ec0.core.engine.protocol.VfsEntryDto(
                         name = (obj["name"] as? JsonPrimitive)?.content ?: return@mapNotNull null,
                         isDir = (obj["is_dir"] as? JsonPrimitive)?.content == "true" ||
                             (obj["is_dir"] as? JsonPrimitive)?.content == "1",
                         size = (obj["size"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0,
                     )
                 } ?: emptyList()
-                _browseState.value = VfsBrowseState(path = path, entries = entries)
+                _browseState.value = ec0.core.engine.protocol.VfsDirReply(path = path, entries = entries)
                 true
             }
             VfsProtocol.INFO_VFS_CHUNK -> {
