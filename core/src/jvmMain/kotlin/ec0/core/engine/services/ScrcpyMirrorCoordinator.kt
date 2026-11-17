@@ -224,20 +224,18 @@ fun resolveMirrorSerial(
 ): String? {
     fun normalize(s: String): String = s.replace("-", "_").lowercase()
     val wanted = normalize(peerAlias)
-    val deviceLines = adbDevicesOutput.lines().filter { "\tdevice" in it || "\tdevice\r" in it }
-
-    for (line in deviceLines) {
-        val serial = line.substringBefore('\t').trim()
-        val model = Regex("model:(\\S+)").find(line)?.groupValues?.get(1) ?: ""
+    // Whitespace-agnostic: adb's separator between the serial and the status varies
+    // (tabs over USB, spaces observed over mDNS connect via ProcessBuilder capture) —
+    // parse TOKENS: serial, status("device"), then key:value fields.
+    for (rawLine in adbDevicesOutput.lines()) {
+        val tokens = rawLine.trim().split(Regex("\\s+"))
+        if (tokens.size < 2 || tokens[1] != "device") continue
+        val serial = tokens[0]
+        val model = tokens.firstOrNull { it.startsWith("model:") }?.substringAfter("model:") ?: ""
         if (wanted.isNotEmpty() && (normalize(model) == wanted || normalize(model).contains(wanted) || wanted.contains(normalize(model)))) {
             return serial
         }
-    }
-    if (!peerIp.isNullOrBlank()) {
-        for (line in deviceLines) {
-            val serial = line.substringBefore('\t').trim()
-            if (serial.startsWith("$peerIp:")) return serial
-        }
+        if (!peerIp.isNullOrBlank() && serial.startsWith("$peerIp:")) return serial
     }
     return null
 }
