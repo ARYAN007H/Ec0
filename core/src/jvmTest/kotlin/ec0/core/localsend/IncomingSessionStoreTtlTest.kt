@@ -12,8 +12,8 @@ import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.core.localsend.server.IncomingSessionStatus
 import ec0.core.localsend.server.IncomingSessionStore
-import ec0.ui.models.DeviceType
-import ec0.ui.models.ProtocolType
+import ec0.core.localsend.DeviceType
+import ec0.core.localsend.ProtocolType
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFalse
