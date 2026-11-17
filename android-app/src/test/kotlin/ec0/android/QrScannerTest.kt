@@ -161,7 +161,7 @@ class QrFrameDecoderTest {
         val buf = ByteArray(w * h) { idx ->
             val x = idx % w
             val y = idx / w
-            if (matrix[x, y]) 0x10 else 0xE8
+            (if (matrix[x, y]) 0x10 else 0xE8).toByte()
         }
         return Triple(buf, w, h)
     }
