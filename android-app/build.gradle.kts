@@ -10,7 +10,10 @@ android {
 
     defaultConfig {
         applicationId = "ec0.android"
-        minSdk = 34 // java.net.http.HttpClient ships on API 34+; A5x runs API 35
+        // Floor is Android 9: the engine client rides hand-rolled sockets + RFC 6455
+        // and Ktor CIO — no java.net.http.HttpClient anywhere (the old API-34 floor
+        // was stale). Samsung A03 (API 33) and the A5x (35) both supported.
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
