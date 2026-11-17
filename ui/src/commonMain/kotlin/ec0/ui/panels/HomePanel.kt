@@ -44,12 +44,15 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SensorDoor
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -76,6 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import ec0.core.engine.EngineCapability
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.Capabilities
 import ec0.ui.models.PeerLinkState
@@ -170,23 +174,52 @@ fun HomePanel(
             }
         }
 
-        // Bento tiles — chunked to the adaptive column count, equal widths per row.
-        val tileFactories: List<@Composable (Modifier) -> Unit> = listOf(
-            { m -> MirrorTile(bridge, mirrorRunning, m) },
-            { m -> CameraTile(bridge, cameraState, v4l2Preflight, m) },
-            { m -> FilesTile(transfers, devices, scanning, m) },
-            { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
-            { m -> NotificationsTile(bridge, notifications, m) },
-            { m -> HonestyTile(m) },
+        // B3 tile registry — the bento renders peer capabilities ∩ local support.
+        val tiles by bridge.tiles.collectAsState()
+        val tilePeers = tiles.map { it.deviceId }.distinct()
+        var activeDeviceId by remember { mutableStateOf<String?>(null) }
+        val activeId = activeDeviceId ?: tilePeers.firstOrNull()
+
+        if (tilePeers.size > 1) {
+            // Device switcher: more than one paired peer drives the dashboard.
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                tilePeers.forEachIndexed { index, deviceId ->
+                    val alias = devices.firstOrNull { it.id == deviceId }?.alias ?: deviceId.take(8)
+                    SegmentedButton(
+                        selected = activeId == deviceId,
+                        onClick = { activeDeviceId = deviceId },
+                        shape = SegmentedButtonDefaults.itemShape(index = index, count = tilePeers.size),
+                        label = { Text(alias) },
+                    )
+                }
+            }
+        }
+
+        val activeTiles = tiles.filter { it.deviceId == activeId }
+        val tileFactories: Map<ec0.core.engine.EngineCapability, @Composable (Modifier) -> Unit> = mapOf(
+            ec0.core.engine.EngineCapability.MIRROR to { m -> MirrorTile(bridge, mirrorRunning, settings, activeId, m) },
+            ec0.core.engine.EngineCapability.CAMERA to { m -> CameraTile(bridge, cameraState, v4l2Preflight, m) },
+            ec0.core.engine.EngineCapability.FILE to { m -> FilesTile(transfers, devices, scanning, m) },
+            ec0.core.engine.EngineCapability.CLIPBOARD to { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
+            ec0.core.engine.EngineCapability.NOTIFICATION to { m -> NotificationsTile(bridge, notifications, m) },
+            ec0.core.engine.EngineCapability.INPUT to { m -> RemoteInputTile(m) },
         )
-        tileFactories.chunked(tileColumns).forEach { rowTiles ->
+        activeTiles.chunked(tileColumns).forEach { rowTiles ->
             Row(
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                rowTiles.forEach { tile -> tile(Modifier.weight(1f).height(190.dp)) }
+                rowTiles.forEach { tile ->
+                    tileFactories[tile.capability]?.invoke(Modifier.weight(1f).height(190.dp))
+                        ?: Spacer(Modifier.weight(1f))
+                }
                 repeat(tileColumns - rowTiles.size) { Spacer(Modifier.weight(1f)) }
             }
+        }
+        // The honesty card is not capability-driven — always rendered last.
+        Row(modifier = Modifier.fillMaxWidth()) {
+            HonestyTile(Modifier.weight(1f).height(190.dp))
+            repeat((tileColumns - 1).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
         }
 
         SectionHeader("Nearby devices", badge = devices.size.toString())
@@ -218,7 +251,13 @@ fun HomePanel(
 }
 
 @Composable
-private fun MirrorTile(bridge: UiBridge, running: Boolean, modifier: Modifier = Modifier) {
+private fun MirrorTile(
+    bridge: UiBridge,
+    running: Boolean,
+    settings: SettingsState,
+    activeDeviceId: String?,
+    modifier: Modifier = Modifier,
+) {
     DashboardTile(
         title = "Mirror the screen",
         subtitle = if (running) "scrcpy · live · touch enabled" else "scrcpy · wireless adb · tap to start",
@@ -234,10 +273,33 @@ private fun MirrorTile(bridge: UiBridge, running: Boolean, modifier: Modifier = 
             if (running) {
                 TileButton("Stop mirror", destructive = true) { bridge.stopScreenMirror() }
             } else {
-                TileButton("Start mirror") { bridge.startScreenMirror() }
+                TileButton("Start mirror") { bridge.startMirrorFor(deviceId = activeDeviceId ?: "") }
             }
-            TileButton("Audio off", subtle = true, enabled = false) { }
         }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("fps", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            listOf(30, 60).forEach { fps ->
+                TileButton(
+                    "$fps",
+                    subtle = settings.mirrorMaxFps != fps,
+                ) { bridge.updateSettings { it.copy(mirrorMaxFps = fps) } }
+            }
+            Text("Mbps", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            listOf(4, 8, 16).forEach { mbps ->
+                TileButton(
+                    "$mbps",
+                    subtle = settings.mirrorBitrateMbps != mbps,
+                ) { bridge.updateSettings { it.copy(mirrorBitrateMbps = mbps) } }
+            }
+        }
+        Text(
+            if (settings.mirrorAudio) "audio · pending coordinator support" else "audio off · pending coordinator support",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

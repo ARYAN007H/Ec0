@@ -12,7 +12,9 @@ import ec0.ui.models.Capabilities
 import ec0.ui.models.NotificationItem
 import ec0.ui.models.PairingQr
 import ec0.ui.models.PeerLinkState
+import ec0.ui.models.CapabilityTile
 import ec0.ui.models.SettingsState
+import ec0.ui.models.computeTileRegistry
 import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice
@@ -156,6 +158,89 @@ class DesktopBridge(
 
     private val _v4l2Preflight = MutableStateFlow<String?>(null)
     override val v4l2PreflightText: StateFlow<String?> = _v4l2Preflight.asStateFlow()
+
+    // B3 tile registry: peer capabilities ∩ desktop support (MIRROR, CAMERA,
+    // FILE, CLIPBOARD, NOTIFICATION, INPUT) — BATTERY renders in the header.
+    private val localTileSupport: Set<ec0.core.engine.EngineCapability> = setOf(
+        ec0.core.engine.EngineCapability.MIRROR,
+        ec0.core.engine.EngineCapability.CAMERA,
+        ec0.core.engine.EngineCapability.FILE,
+        ec0.core.engine.EngineCapability.CLIPBOARD,
+        ec0.core.engine.EngineCapability.NOTIFICATION,
+        ec0.core.engine.EngineCapability.INPUT,
+    )
+
+    override val tiles: StateFlow<List<CapabilityTile>> =
+        if (hub == null) {
+            MutableStateFlow(emptyList())
+        } else {
+            hub.peerPresence.map { presence ->
+                computeTileRegistry(
+                    peerCapabilities = presence.mapValues { it.value.capabilities },
+                    localSupport = localTileSupport,
+                    onlineByDevice = presence.keys.associateWith { true },
+                )
+            }.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList())
+        }
+
+    private fun mirrorHostFor(deviceId: String): String {
+        val h = hub ?: return "127.0.0.1"
+        val exact = h.node.mdnsDiscovery.peers.value
+            .firstOrNull { it.deviceId == deviceId }?.addresses?.firstOrNull()
+        return exact ?: mirrorHost() // falls back to the live-session resolver
+    }
+
+    override fun startMirrorFor(deviceId: String) {
+        val settings = appState.settings.value
+        hub?.startScreenMirror(
+            mirrorHostFor(deviceId),
+            maxFps = settings.mirrorMaxFps,
+            bitrateKbps = settings.mirrorBitrateMbps * 1_000,
+        )
+    }
+
+    override fun startCameraFor(deviceId: String) {
+        hub?.startContinuityCamera(mirrorHostFor(deviceId))
+    }
+
+    // B6 VFS browser — requests ride the live engine session; replies arrive
+    // through vfsDesktopService.handleControlEnvelope (node dispatch = the
+    // documented agent-0 one-liner handoff).
+    private val vfsDesktopService = ec0.core.engine.services.VfsDesktopService(
+        destinationDir = java.nio.file.Path.of(
+            appState.settings.value.downloadDir.takeIf { it.isNotBlank() }
+                ?: (System.getProperty("user.home") + "/Downloads"),
+        ),
+    )
+
+    override val vfsBrowseState: StateFlow<ec0.core.engine.services.VfsBrowseState?> =
+        vfsDesktopService.browseState
+
+    override fun vfsDownload(path: String) {
+        val deviceId = hub?.peerPresence?.value?.keys?.firstOrNull { nodeId ->
+            hub.node.activeSessionFor(nodeId) != null
+        } ?: return
+        val session = hub.node.activeSessionFor(deviceId) ?: return
+        vfsDesktopService.download(
+            sender = { cmdType, body ->
+                session.sendCmd(cmdType = cmdType, cmdBody = body, category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS)
+            },
+            path = path,
+        )
+    }
+
+    override fun vfsBrowse(path: String) {
+        val deviceId = hub?.peerPresence?.value?.keys?.firstOrNull { nodeId ->
+            hub.node.activeSessionFor(nodeId) != null
+        } ?: return
+        val session = hub.node.activeSessionFor(deviceId) ?: return
+        vfsDesktopService.browse(
+            sender = { cmdType, body ->
+                session.sendCmd(cmdType = cmdType, cmdBody = body, category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS)
+            },
+            path = path,
+        )
+    }
 
     override fun setupV4l2Loopback() {
         val coordinator = hub?.node?.cameraCoordinator ?: run {

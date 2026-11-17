@@ -144,8 +144,30 @@ interface UiBridge {
     fun sendNotificationReply(id: String, text: String) {}
     fun setupV4l2Loopback() {}
 
+    /**
+     * B3 dynamic tile registry — peer capabilities ∩ local support, ordered
+     * canonically, one tile per (capability, deviceId). Default: empty
+     * (registry-less hosts render their own static set).
+     */
+    val tiles: StateFlow<List<CapabilityTile>> get() = MutableStateFlow(emptyList())
+
+    /** DeviceId-scoped mirror start (registry actions). Default: no-op host. */
+    fun startMirrorFor(deviceId: String) {}
+
+    /** DeviceId-scoped camera start (registry actions). Default: no-op host. */
+    fun startCameraFor(deviceId: String) {}
+
     /** Honest outcome of the last "Load v4l2" pre-flight (null = never run). */
     val v4l2PreflightText: StateFlow<String?> get() = MutableStateFlow(null)
+
+    /** B6 VFS browser: current listing (null = nothing browsed yet). */
+    val vfsBrowseState: StateFlow<ec0.core.engine.protocol.VfsBrowseState?> get() = MutableStateFlow(null)
+
+    /** B6 VFS browser: request a directory listing from the phone. */
+    fun vfsBrowse(path: String) {}
+
+    /** B6 VFS browser: stream a file from the phone ("download here"). */
+    fun vfsDownload(path: String) {}
 
     /**
      * Incoming transfer awaiting the user's accept/decline decision —
