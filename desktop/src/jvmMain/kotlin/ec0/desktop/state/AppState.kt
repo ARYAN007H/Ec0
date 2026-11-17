@@ -356,7 +356,9 @@ class AppState(
             version = ec0.core.localsend.LocalsendV2.PROTOCOL_VERSION,
             deviceModel = s.deviceModel,
             deviceType = s.deviceType,
-            fingerprint = RealDeviceSource.OWN_FINGERPRINT,
+            // Same identity as the receiver announces — peers trust ONE id, and a
+            // per-process static here would make their stored trust stale on restart.
+            fingerprint = s.ownFingerprint.ifBlank { RealDeviceSource.OWN_FINGERPRINT },
             port = s.port,
             // We do not host the HTTP server yet — honest announcement.
             protocol = ProtocolType.HTTP,
