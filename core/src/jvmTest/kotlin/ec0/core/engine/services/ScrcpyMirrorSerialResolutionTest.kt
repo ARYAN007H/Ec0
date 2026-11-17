@@ -7,6 +7,7 @@
  */
 package ec0.core.engine.services
 
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
