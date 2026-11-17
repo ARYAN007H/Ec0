@@ -17,9 +17,11 @@ class RealDeviceSource(
 ) : DeviceSource {
     private val localsend = LocalsendUdpDiscovery(
         settingsProvider = settingsProvider,
-        // HTTP-mode fingerprint semantics (protocol): a random string per
-        // process run. Replaced by cert SHA-256 when the HTTPS server lands.
-        ownFingerprint = { OWN_FINGERPRINT },
+        // Peers trust THIS id — it must be stable across restarts. The platform
+        // bridge persists SettingsState.ownFingerprint; the per-process static is
+        // only the never-configured fallback (replaced by cert SHA-256 when the
+        // HTTPS server lands).
+        ownFingerprint = { settingsProvider().ownFingerprint.ifBlank { OWN_FINGERPRINT } },
         downloadProvider = { announceDownload },
     )
 

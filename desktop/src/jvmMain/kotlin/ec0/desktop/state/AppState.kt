@@ -65,7 +65,15 @@ class AppState(
     private fun loadPersistedSettings(): SettingsState = runCatching {
         val file = File(ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(), "settings.json")
         if (file.isFile) Json.decodeFromString<SettingsState>(file.readText()) else SettingsState()
-    }.getOrDefault(SettingsState())
+    }.getOrDefault(SettingsState()).let { state ->
+        // Peers trust OUR fingerprint — generate once, persist immediately so the
+        // identity is stable across restarts (receiver + discovery announce share it).
+        if (state.ownFingerprint.isBlank()) {
+            state.copy(ownFingerprint = java.util.UUID.randomUUID().toString()).also(::persistSettings)
+        } else {
+            state
+        }
+    }
 
     private fun persistSettings(state: SettingsState) {
         runCatching {
@@ -164,7 +172,7 @@ class AppState(
                 },
             ),
             acceptPolicy = AcceptPolicy.ASK,
-            fingerprint = RealDeviceSource.OWN_FINGERPRINT,
+            fingerprint = _settings.value.ownFingerprint.ifBlank { RealDeviceSource.OWN_FINGERPRINT },
         ),
         decide = decideCallback,
     )
