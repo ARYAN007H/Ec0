@@ -37,7 +37,9 @@ android {
     namespace = "ec0.ui"
     compileSdk = 35
     defaultConfig {
-        minSdk = 34
+        // Pure Compose UI + serialization — no API-34-only calls; follows the
+        // app's Android 9 floor.
+        minSdk = 28
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
