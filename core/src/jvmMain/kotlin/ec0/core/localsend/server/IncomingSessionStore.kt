@@ -183,6 +183,9 @@ class IncomingSessionStore(
             senderIp = senderIp,
             sender = sender,
             status = status,
+            // Stamp with the INJECTED clock, not the data-class default — the TTL
+            // eviction compares this against clockMs(), and tests advance a virtual clock.
+            startedAt = clockMs(),
             files = files.entries.associate { (fileId, dto) ->
                 fileId to IncomingFile(
                     fileId = fileId,
