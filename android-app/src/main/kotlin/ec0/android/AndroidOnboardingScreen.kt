@@ -280,6 +280,19 @@ fun AndroidOnboardingScreen(
                     }
                 }
 
+                // Feature 2: in-app QR scanner — decode the desktop's pairing QR
+                // straight into the URI field and start pairing (paste stays as
+                // the fallback above).
+                QrScannerCard(
+                    onDecoded = { uri ->
+                        uriInput = uri
+                        if (pairingState is PairingStepState.Failed) {
+                            state.resetPairingState()
+                        }
+                        state.pairWithUri(uri)
+                    },
+                )
+
                 // Live Pairing State feedback banner
                 PairingStatusBanner(
                     pairingState = pairingState,

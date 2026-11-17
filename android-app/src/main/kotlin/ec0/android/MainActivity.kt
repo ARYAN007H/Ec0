@@ -13,6 +13,8 @@
 package ec0.android
 
 import android.Manifest
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -28,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.PairingStepState
 import ec0.core.engine.crypto.PinnedPeer
@@ -40,6 +43,7 @@ import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.ui.Ec0App
 import ec0.ui.models.Capabilities
 import ec0.ui.models.IncomingRequest
+import ec0.ui.models.PeerLinkState
 import ec0.ui.models.SettingsState
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
@@ -62,6 +66,26 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+/**
+ * Pure peerLink mapping (same-commit tested, mirrors DesktopBridge): "Wi-Fi TLS"
+ * while an engine session is CONNECTED (or the pairing pipeline has committed),
+ * "searching" otherwise. The Android side has no USB tunnel leg (scrcpy runs
+ * from the desktop), so the chip is two-state. [hasPinnedPeers] is carried for
+ * the dashboard's honesty card (peers exist, ladder reconnecting) — both
+ * non-connected outcomes render "searching" today; a distinct "reconnecting"
+ * label would be a UI-only change.
+ */
+fun mapPeerLinkState(
+    pairing: PairingStepState,
+    hasPinnedPeers: Boolean,
+    connectionStates: Map<String, EngineConnectionState>,
+): PeerLinkState = when {
+    connectionStates.values.any { it == EngineConnectionState.CONNECTED } ||
+        pairing is PairingStepState.Connected ->
+        PeerLinkState(connected = true, transport = "Wi-Fi TLS")
+    else -> PeerLinkState(connected = false, transport = "searching")
+}
 
 /** Android-side app state — implements the shared [UiBridge] seam over [Ec0CompanionService]. */
 class AndroidAppState(
@@ -128,6 +152,20 @@ class AndroidAppState(
             photoSync = false,
             remoteInput = false,
         )
+
+    /**
+     * Dashboard header chip — mirrors [ec0.desktop.ui.DesktopBridge.peerLink]:
+     * "Wi-Fi TLS" while an engine session is CONNECTED (or the pairing pipeline
+     * reached Connected), "searching" otherwise. Pure mapping is
+     * [mapPeerLinkState] (same-commit tested).
+     */
+    override val peerLink: StateFlow<PeerLinkState?> = combine(
+        serviceHost.pairingState,
+        serviceHost.pinnedPeers,
+        serviceHost.runtime.node.connectionStates,
+    ) { pairing, pinned, states ->
+        mapPeerLinkState(pairing, pinned.isNotEmpty(), states)
+    }.stateIn(scope, SharingStarted.Eagerly, null)
 
     fun isNotificationListenerAccessGranted(): Boolean =
         NotificationAccessHelper.isNotificationListenerEnabled(context)
@@ -387,6 +425,29 @@ class MainActivity : ComponentActivity() {
         // Android 10+ grants clipboard read to the focused app's UID — phone→PC
         // clipboard pushes (and the focus-gain re-check) only run while resumed.
         Ec0CompanionService.onMainActivityFocusChanged(focused = true)
+        readClipboardFromActivityAndPush()
+    }
+
+    /**
+     * ColorOS reality (A5x): the foreground service's clipboard READ is denied even
+     * while ec0 is focused — only the focused Activity's own read succeeds (the
+     * PC→phone SET direction works fine from the service). So on focus, read here
+     * with the Activity context and hand text to the watcher's shared policy tail.
+     * The service-side listener stays registered for live change events.
+     */
+    private fun readClipboardFromActivityAndPush() {
+        val clip = runCatching {
+            (getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip
+        }.getOrNull() ?: return
+        if (clip.itemCount == 0) return
+        val sensitive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            clip.description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
+        val text = runCatching {
+            clip.getItemAt(0).coerceToText(this)?.toString()
+        }.getOrNull().orEmpty()
+        if (text.isNotBlank()) {
+            Ec0CompanionService.pushClipboardFromActivity(text, sensitive)
+        }
     }
 
     override fun onPause() {
