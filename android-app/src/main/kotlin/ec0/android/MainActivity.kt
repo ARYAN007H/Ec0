@@ -425,7 +425,14 @@ class MainActivity : ComponentActivity() {
         // Android 10+ grants clipboard read to the focused app's UID — phone→PC
         // clipboard pushes (and the focus-gain re-check) only run while resumed.
         Ec0CompanionService.onMainActivityFocusChanged(focused = true)
-        readClipboardFromActivityAndPush()
+        // NOTE: the clipboard READ itself waits for WINDOW focus — onResume fires
+        // before the window is focusable, and ClipboardService denies the read
+        // ("application is not in focus") if it happens here. See onWindowFocusChanged.
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) readClipboardFromActivityAndPush()
     }
 
     /**
