@@ -833,9 +833,14 @@ class ContinuityHubController(
                 // dial could never survive real usage (observed: 'Start mirror' dead).
                 val adbDevices = node.scrcpyCoordinator.adbDevicesList()
                 mirrorLog.info("Mirror: adb devices → ${adbDevices.replace("\n", " | ").take(300)}")
-                val peer = node.pinnedPeers.value.firstOrNull()
+                // Multi-device rule: target the peer with a LIVE session (the connected
+                // phone), never firstOrNull — two paired phones made the mirror pick the
+                // offline one alphabetically (observed: OPPO pin shadowed the live A03).
+                val peer = node.pinnedPeers.value
+                    .firstOrNull { node.activeSessionFor(it.deviceId) != null }
+                    ?: node.pinnedPeers.value.firstOrNull()
                     ?: throw IOException("No paired phone — pair first, then mirror")
-                mirrorLog.info("Mirror: peer=${peer.alias}")
+                mirrorLog.info("Mirror: peer=${peer.alias} liveSession=${node.activeSessionFor(peer.deviceId) != null}")
                 val peerIp = node.activeSessionFor(peer.deviceId)?.peerRemoteIp
                 val serial = resolveMirrorSerial(adbDevices, peer.alias, peerIp)
                     ?: run {
