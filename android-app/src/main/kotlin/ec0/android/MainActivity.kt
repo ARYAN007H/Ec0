@@ -25,6 +25,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +48,8 @@ import ec0.ui.Ec0App
 import ec0.ui.models.Capabilities
 import ec0.ui.models.IncomingRequest
 import ec0.ui.models.PeerLinkState
+import ec0.ui.models.PeerManagementBridge
+import ec0.ui.models.RemoteInputBridge
 import ec0.ui.models.SettingsState
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
@@ -63,8 +69,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 /**
@@ -166,6 +174,96 @@ class AndroidAppState(
     ) { pairing, pinned, states ->
         mapPeerLinkState(pairing, pinned.isNotEmpty(), states)
     }.stateIn(scope, SharingStarted.Eagerly, null)
+
+    val showRemoteInput = MutableStateFlow(false)
+    val showDeviceManagement = MutableStateFlow(false)
+
+    /**
+     * Desktop the chip/tiles target: the peer with a LIVE engine session (multi-
+     * device honest targeting — never firstOrNull over pins).
+     */
+    val connectedDesktopDeviceId: StateFlow<String?> =
+        combine(serviceHost.runtime.node.connectionStates, serviceHost.runtime.pinnedPeers) { states, pinned ->
+            val live = states.entries.firstOrNull { it.value == EngineConnectionState.CONNECTED }?.key
+            live ?: pinned.firstOrNull()?.deviceId.takeIf { states.isNotEmpty() }
+        }.stateIn(scope, SharingStarted.Eagerly, null)
+
+    /** The live desktop's negotiated capabilities (dynamic-tile contract, plan §P1). */
+    val desktopCapabilities: StateFlow<Set<EngineCapability>> =
+        combine(connectedDesktopDeviceId, serviceHost.runtime.node.peerPresence) { id, presence ->
+            id?.let { presence[it]?.capabilities } ?: emptySet()
+        }.stateIn(scope, SharingStarted.Eagerly, emptySet())
+
+    private val grantsFlow = settingsStore.deviceCapabilityGrantsFlow()
+
+    /** A5: paired-device surface over the engine pin store + LocalSend trust. */
+    private inner class PeerManagementBridgeImpl : PeerManagementBridge {
+        override val peers: StateFlow<List<PairedPeerInfo>> = combine(
+            serviceHost.pinnedPeers,
+            serviceHost.runtime.node.connectionStates,
+            grantsFlow,
+        ) { pinned, states, grants ->
+            pinned.map { peer ->
+                PairedPeerInfo(
+                    deviceId = peer.deviceId,
+                    alias = peer.alias,
+                    // Human-verification fingerprint: SHA-256 of the peer's public key.
+                    fingerprintPrefix = ec0.core.kdeconnect.Sha256.digest(peer.publicKeyRaw)
+                        .joinToString("") { "%02x".format(it) }.take(16),
+                    pinnedAtMs = peer.pinnedAtMs,
+                    trustLevel = peer.trustLevel.name,
+                    connected = states[peer.deviceId] == EngineConnectionState.CONNECTED,
+                    grantedCapabilities = grants[peer.deviceId] ?: setOf("remote_input"),
+                )
+            }
+        }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+        override fun unpair(deviceId: String) {
+            // Engine pin revoke (unpairPeer also drops the engine session) —
+            // core-owned call, unchanged.
+            serviceHost.runtime.node.unpairPeer(deviceId)
+            // Best-effort wire notice so the desktop unpins us too (hub coordination:
+            // cmd_type "unpair", category "system" — agent-2's receiver consumes it).
+            serviceHost.runtime.node.activeSessionFor(deviceId)?.let { session ->
+                runCatching {
+                    session.sendCmd(
+                        cmdType = EngineConstants.CMD_UNPAIR,
+                        cmdBody = kotlinx.serialization.json.buildJsonObject {
+                            put("reason", kotlinx.serialization.json.JsonPrimitive("user_unpair"))
+                        },
+                        category = EngineConstants.CATEGORY_SYSTEM,
+                        timestampMs = System.currentTimeMillis(),
+                    )
+                }
+            }
+            // LocalSend trust: the trusted fingerprints set is keyed by LocalSend
+            // fingerprints; a per-peer mapping is not stored yet — the full removal
+            // is a handoff note for argon (receiver trust registry). v1 clears the
+            // pairing state so the tile stops showing the removed peer.
+            serviceHost.resetPairingState()
+        }
+
+        override fun setCapability(deviceId: String, wireName: String, granted: Boolean) {
+            scope.launch(Dispatchers.IO) {
+                runCatching { settingsStore.setDeviceCapability(deviceId, wireName, granted) }
+            }
+        }
+    }
+
+    /** A1: remote-input senders — available while the peer link is live. */
+    private inner class RemoteInputBridgeImpl : RemoteInputBridge {
+        override val available: StateFlow<Boolean> =
+            peerLink.map { link -> link?.connected == true }
+                .stateIn(scope, SharingStarted.Eagerly, false)
+
+        override fun openTouchpad() {
+            showRemoteInput.value = true
+        }
+    }
+
+    override val peerManagement: PeerManagementBridge = PeerManagementBridgeImpl()
+
+    override val remoteInput: RemoteInputBridge = RemoteInputBridgeImpl()
 
     fun isNotificationListenerAccessGranted(): Boolean =
         NotificationAccessHelper.isNotificationListenerEnabled(context)
@@ -380,8 +478,48 @@ class MainActivity : ComponentActivity() {
             val trustedPeerCount by state.trustedPeerCount.collectAsState()
             val systemDark = isSystemInDarkTheme()
             var onboardingCompleted by rememberSaveable { mutableStateOf(false) }
+            val showRemoteInput by state.showRemoteInput.collectAsState()
+            val showDeviceManagement by state.showDeviceManagement.collectAsState()
 
             val showPhoneOnboarding = trustedPeerCount == 0 && !onboardingCompleted
+
+            if (showRemoteInput) {
+                Ec0Theme(dark = settings.darkTheme ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
+                    Column(Modifier.fillMaxSize()) {
+                        Button(
+                            onClick = { state.showRemoteInput.value = false },
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                        ) { Text("Close remote input") }
+                        RemoteInputScreen(
+                            node = state.companionRuntime.node,
+                            connectedPeerId = state.connectedDesktopDeviceId.collectAsState().value,
+                            peerCapabilities = state.desktopCapabilities.collectAsState().value,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                return@setContent
+            }
+            if (showDeviceManagement) {
+                Ec0Theme(dark = settings.darkTheme ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
+                    Column(Modifier.fillMaxSize()) {
+                        Button(
+                            onClick = { state.showDeviceManagement.value = false },
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                        ) { Text("Close") }
+                        PairedDevicesScreen(
+                            peers = state.peerManagement?.peers?.collectAsState()?.value ?: emptyList(),
+                            onUnpair = { state.peerManagement?.unpair(it) },
+                            onSetCapability = { deviceId, wireName, granted ->
+                                state.peerManagement?.setCapability(deviceId, wireName, granted)
+                            },
+                            onClose = { state.showDeviceManagement.value = false },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                return@setContent
+            }
 
             if (showPhoneOnboarding) {
                 Ec0Theme(

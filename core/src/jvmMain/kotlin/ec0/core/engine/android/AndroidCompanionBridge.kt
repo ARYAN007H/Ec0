@@ -37,6 +37,7 @@ import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
 import ec0.core.engine.protocol.MediaControlCommand
 import ec0.core.engine.protocol.MediaSessionInfo
+import ec0.core.engine.protocol.FindMyRingCommand
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
@@ -72,6 +73,8 @@ interface AndroidPlatformCallbacks {
     fun onHotspotControlCommand(command: HotspotControlCommand): HotspotStatusInfo? = null
     fun onCallActionCommand(command: CallActionCommand): Boolean = true
     fun onMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? = null
+    /** Received CMD_FIND_MY_RING (desktop "Find my phone" siren) — ring executor. */
+    fun onFindMyRingCommand(command: FindMyRingCommand) = Unit
     fun queryPhonePresence(): PresenceBeaconInfo = PresenceBeaconInfo(
         batteryPct = 100,
         isCharging = false,
@@ -183,6 +186,14 @@ class AndroidCompanionRuntime(
     fun start(startMdns: Boolean = false) {
         refreshPinnedPeers()
         node.startServer(startMdns = startMdns)
+        // Deep-integration slice A2: route the engine's received CMD_FIND_MY_RING
+        // envelopes (desktop "Find my phone" siren toggle) into the platform
+        // callbacks — the ring executor lives in the app layer (AudioManager +
+        // wake activity). Assigned post-construction; the desktop keeps its own
+        // initiator default.
+        node.handoffAndProximityService.onFindMyRingRequested = { command ->
+            callbacks.onFindMyRingCommand(command)
+        }
         scheduleReconnectToTrustedPeers()
     }
 

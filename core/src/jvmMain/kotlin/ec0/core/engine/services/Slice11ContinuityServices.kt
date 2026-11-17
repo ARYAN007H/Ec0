@@ -256,7 +256,13 @@ class HandoffAndProximityService(
     private val launcher: ExternalProcessLauncher = SystemProcessLauncher,
     private val onHandoffOpenRequested: (HandoffOpenCommand) -> Unit = {},
     private val onWorkstationLockRequested: (WorkstationLockCommand) -> Unit = {},
-    private val onFindMyRingRequested: (FindMyRingCommand) -> Unit = {},
+    /**
+     * Phone-side ring executor hook. `private` on the desktop (the desktop is the
+     * RING INITIATOR — it dials its own siren), but the Android runtime assigns a
+     * post-construction executor here so a received CMD_FIND_MY_RING actually rings
+     * the phone (deep-integration slice A2). Public var by design.
+     */
+    var onFindMyRingRequested: (FindMyRingCommand) -> Unit = {},
 ) {
     private val _remoteHandoffActivity = MutableStateFlow<HandoffActivityInfo?>(null)
     val remoteHandoffActivity: StateFlow<HandoffActivityInfo?> = _remoteHandoffActivity.asStateFlow()

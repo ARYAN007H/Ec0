@@ -194,3 +194,57 @@ class AndroidSettingsStore(
         }
     }
 }
+
+/*
+ * Deep-integration A5: per-device capability grants. Stored as one JSON map
+ * (deviceId → set of capability wire names) under a dedicated DataStore key so
+ * the device-management screen can grant/revoke without touching SettingsState.
+ */
+private val KEY_DEVICE_CAPS = stringPreferencesKey("device_capability_grants")
+
+/** Reads the per-device capability grants: deviceId → set of capability wire names. */
+fun AndroidSettingsStore.deviceCapabilityGrants(): Map<String, Set<String>> = runBlocking {
+    runCatching {
+        val prefs = dataStore.data.first()
+        parseDeviceCaps(prefs[KEY_DEVICE_CAPS])
+    }.getOrDefault(emptyMap())
+}
+
+/** Reactive grants stream (combined into the device-management screen). */
+fun AndroidSettingsStore.deviceCapabilityGrantsFlow(): Flow<Map<String, Set<String>>> =
+    dataStore.data.map { prefs -> parseDeviceCaps(prefs[KEY_DEVICE_CAPS]) }
+
+/** Grants/revokes one capability for [deviceId], persisting atomically. */
+suspend fun AndroidSettingsStore.setDeviceCapability(deviceId: String, wireName: String, granted: Boolean) {
+    dataStore.edit { prefs ->
+        val current = parseDeviceCaps(prefs[KEY_DEVICE_CAPS]).toMutableMap()
+        val caps = current[deviceId]?.toMutableSet() ?: mutableSetOf()
+        if (granted) caps.add(wireName) else caps.remove(wireName)
+        if (caps.isEmpty()) current.remove(deviceId) else current[deviceId] = caps
+        prefs[KEY_DEVICE_CAPS] = serializeDeviceCaps(current)
+    }
+}
+
+internal fun parseDeviceCaps(raw: String?): Map<String, Set<String>> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return runCatching {
+        val obj = kotlinx.serialization.json.Json.parseToJsonElement(raw)
+            as kotlinx.serialization.json.JsonObject
+        obj.entries.associate { (deviceId, element) ->
+            deviceId to ((element as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+                ?.toSet())
+                ?: emptySet()
+        }
+    }.getOrDefault(emptyMap())
+}
+
+internal fun serializeDeviceCaps(grants: Map<String, Set<String>>): String =
+    kotlinx.serialization.json.buildJsonObject {
+        grants.forEach { (deviceId, caps) ->
+            put(
+                deviceId,
+                kotlinx.serialization.json.JsonArray(caps.map { kotlinx.serialization.json.JsonPrimitive(it) }),
+            )
+        }
+    }.toString()

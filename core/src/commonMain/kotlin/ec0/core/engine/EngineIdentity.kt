@@ -20,7 +20,14 @@ enum class EngineCapability(val wireName: String) {
     NOTIFICATION("notif"),
     BATTERY("battery"),
     MIRROR("mirror"),
-    CAMERA("cam");
+    CAMERA("cam"),
+    // Deep-integration slice (plan-production-grade.md P2/P4): capability-negotiated
+    // surfaces. INPUT stays for wire compat with beacons already advertising it;
+    // REMOTE_INPUT is the explicit phone-controls-PC contract (A1 senders).
+    REMOTE_INPUT("remote_input"),
+    MEDIA_CONTROL("media"),
+    FIND_MY("find_my"),
+    VFS_READ("vfs");
 
     companion object {
         val NOTIF: EngineCapability = NOTIFICATION
@@ -36,6 +43,10 @@ enum class EngineCapability(val wireName: String) {
             "battery", "presence" -> BATTERY
             "mirror", "scrcpy" -> MIRROR
             "cam", "camera", "camdroid" -> CAMERA
+            "remote_input", "remoteinput", "input_share" -> REMOTE_INPUT
+            "media", "media_control", "mediacontrol" -> MEDIA_CONTROL
+            "find_my", "findmy", "findmyphone" -> FIND_MY
+            "vfs", "vfs_read", "vfsread" -> VFS_READ
             else -> entries.firstOrNull { it.wireName == token }
         }
 

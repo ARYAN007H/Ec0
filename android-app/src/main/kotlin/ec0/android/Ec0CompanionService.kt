@@ -33,9 +33,14 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.os.Binder
+import android.view.KeyEvent
 import android.os.Build
 import android.os.Environment
+import java.util.logging.Logger
 import android.os.IBinder
 import android.os.PersistableBundle
 import android.os.PowerManager
@@ -47,6 +52,9 @@ import ec0.core.engine.android.AndroidPlatformCallbacks
 import ec0.core.engine.android.PairingStepState
 import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.protocol.CallActionCommand
+import ec0.core.engine.protocol.FindMyRingCommand
+import ec0.core.engine.protocol.WorkstationLockCommand
+import ec0.core.engine.services.ProximitySecurityProtocol
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.ClipboardItem
@@ -124,7 +132,11 @@ interface CompanionReceiverHandle {
 class AndroidHonestPlatformCallbacks(
     private val appContext: Context,
     private val clipboardEchoGuard: ClipboardEchoGuard? = null,
+    /** Service-owned: lives as long as the runtime so the wake activity can stop it. */
+    val ringController: FindMyRingController = FindMyRingController(appContext),
 ) : AndroidPlatformCallbacks {
+
+    private val mediaLog = Logger.getLogger("ec0.android.media")
 
     override fun onApplyRemoteClipboard(item: ClipboardItem): Boolean {
         if (!item.mime.startsWith("text/", ignoreCase = true)) return false
@@ -152,14 +164,85 @@ class AndroidHonestPlatformCallbacks(
     override fun onDismissSystemNotification(notifId: String): Boolean =
         Ec0NotificationListener.dismissSystemNotification(notifId)
 
-    // Honest no-ops for slices not yet active on Android
+    // Desktop→phone injection stays a no-op until an AccessibilityService/IME lands
+    // (the phone is the remote-input SENDER, not the receiver — see RemoteInputScreen).
     override fun onInjectKeyEvent(event: InputKeyEvent): Boolean = false
     override fun onInjectPointerEvent(event: InputPointerEvent): Boolean = false
     override fun onCursorHandoff(command: CursorHandoffCommand): Boolean = false
     override fun onCameraControlCommand(command: CamDroidControlCommand): CameraStatusInfo? = null
     override fun onHotspotControlCommand(command: HotspotControlCommand): HotspotStatusInfo? = null
+
+    /**
+     * v1: decline-only is fine (the A5x call UX is bad from a service; intentional).
+     */
     override fun onCallActionCommand(command: CallActionCommand): Boolean = false
-    override fun onMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? = null
+
+    /**
+     * Feature A2: real media executor. Play/pause/next/previous dispatch
+     * `KEYCODE_MEDIA_*` through [AudioManager.dispatchMediaKeyEvent] — they act on
+     * whatever the active MediaSession is (any player, no per-app integration).
+     * Volume uses the music stream. Returns a best-effort MediaSessionInfo so the
+     * desktop's media tile can render the outcome; null when the player state can't
+     * be observed (MediaSessionManager listing needs the listener grant we already
+     * hold, but a synthesis from the command alone adds no information — null is
+     * honest).
+     */
+    override fun onMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? {
+        val audio = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (audio == null) {
+            mediaLog.warning("media control: no AudioManager")
+            return null
+        }
+        runCatching {
+            when (command.action) {
+                MediaControlCommand.ACTION_PLAY -> dispatchMediaKey(audio, KeyEvent.KEYCODE_MEDIA_PLAY)
+                MediaControlCommand.ACTION_PAUSE -> dispatchMediaKey(audio, KeyEvent.KEYCODE_MEDIA_PAUSE)
+                MediaControlCommand.ACTION_PLAY_PAUSE -> dispatchMediaKey(audio, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+                MediaControlCommand.ACTION_NEXT -> dispatchMediaKey(audio, KeyEvent.KEYCODE_MEDIA_NEXT)
+                MediaControlCommand.ACTION_PREVIOUS -> dispatchMediaKey(audio, KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+                MediaControlCommand.ACTION_SET_VOLUME -> {
+                    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    val target = ((command.volumePct ?: 100) * max) / 100
+                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, target.coerceIn(0, max), 0)
+                }
+                else -> mediaLog.warning("media control: unhandled action ${command.action}")
+            }
+        }.onFailure { mediaLog.warning("media control failed: $it") }
+        return null
+    }
+
+    private fun dispatchMediaKey(audio: AudioManager, keyCode: Int) {
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+    }
+
+    /**
+     * Feature A2: find-my-phone executor — drives [FindMyRingController]. The
+     * desktop's `find_my_ring` quick command (hub dashboard siren toggle) lands
+     * here via the engine's handoff/proximity service.
+     */
+    override fun onFindMyRingCommand(command: FindMyRingCommand) {
+        ringController.onFindMyRing(command)
+    }
+
+    /**
+     * Scoped-storage reality: on Android 11+ (API 30+) MediaStore gives access to
+     * the phone's own media without any grant; full-directory browsing (VFS roots)
+     * needs MANAGE_EXTERNAL_STORAGE. Below 11 the legacy READ_EXTERNAL_STORAGE
+     * grant is the gate. Kept as one predicate so the capability flag and the
+     * future VFS executor agree.
+     */
+    private fun hasVfsReadAccess(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return runCatching { android.os.Environment.isExternalStorageManager() }.getOrDefault(false)
+        }
+        return runCatching {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                appContext,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+    }
 
     override fun queryPhonePresence(): PresenceBeaconInfo {
         val batteryPct = runCatching {
@@ -183,6 +266,17 @@ class AndroidHonestPlatformCallbacks(
             add(EngineCapability.BATTERY)
             if (NotificationAccessHelper.isNotificationListenerEnabled(appContext)) {
                 add(EngineCapability.NOTIFICATION)
+            }
+            // Deep-integration capabilities (plan §P2/P4) — declared only when the
+            // phone genuinely supports them:
+            add(EngineCapability.REMOTE_INPUT) // sender UI ships with the app (A1)
+            add(EngineCapability.MEDIA_CONTROL) // AudioManager media-key dispatch (A2)
+            add(EngineCapability.FIND_MY) // ring executor ships with the app (A2)
+            // VFS_READ requires storage access (scoped MediaStore on 11+ or the
+            // legacy grant below 11) — the desktop file browser only lights up
+            // when files are actually listable.
+            if (hasVfsReadAccess()) {
+                add(EngineCapability.VFS_READ)
             }
         }
 
@@ -658,10 +752,12 @@ class Ec0CompanionService : Service() {
                 ).also { it.mkdirs() }
 
                 val clipboardEchoGuard = ClipboardEchoGuard()
+                val findMyRingController = FindMyRingController(appContext)
+                ringControllerRef = findMyRingController
                 val runtime = AndroidCompanionRuntime.createWithPersistentStores(
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
-                    callbacks = AndroidHonestPlatformCallbacks(appContext, clipboardEchoGuard),
+                    callbacks = AndroidHonestPlatformCallbacks(appContext, clipboardEchoGuard, findMyRingController),
                     listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
                 )
@@ -765,6 +861,36 @@ class Ec0CompanionService : Service() {
                 activeClipboardWatcher = clipboardWatcher
                 clipboardWatcher.start()
                 host.start()
+
+                // A4: QS tile seams — the tiles read/write the live setting and
+                // send the lock command through the active host.
+                val clipboardSettingsStore = AndroidSettingsStore(
+                    appContext.applicationContext.ec0SettingsDataStore,
+                )
+                Ec0TileState.clipboardSyncEnabled = { clipboardWatcher.isStarted }
+                Ec0TileState.setClipboardSyncEnabled = { enabled -> clipboardWatcher.setEnabled(enabled) }
+                Ec0TileState.lockWorkstation = {
+                    val desktopId = host.pinnedPeers.value
+                        .firstOrNull { host.runtime.node.activeSessionFor(it.deviceId) != null }
+                        ?.deviceId
+                    val session = desktopId?.let { host.runtime.node.activeSessionFor(it) }
+                    if (session == null) {
+                        false
+                    } else {
+                        runCatching {
+                            session.sendCmd(
+                                cmdType = EngineConstants.CMD_WORKSTATION_LOCK,
+                                cmdBody = WorkstationLockCommand(
+                                    action = WorkstationLockCommand.ACTION_LOCK,
+                                    reason = "qs_tile",
+                                ).toJsonObject(),
+                                category = ProximitySecurityProtocol.CATEGORY_SECURITY,
+                                timestampMs = System.currentTimeMillis(),
+                            )
+                            true
+                        }.getOrDefault(false)
+                    }
+                }
                 return host
             }
         }

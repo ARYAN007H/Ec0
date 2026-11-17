@@ -58,6 +58,39 @@ data class PairingQr(
     val modules: List<Boolean>,
 )
 
+/**
+ * A phone-side pinned peer for the device-management screen (A5). The ui layer
+ * is core-free — the Android bridge maps `ec0.core.engine.crypto.PinnedPeer` +
+ * live session state into these plain values.
+ */
+data class PairedPeerInfo(
+    val deviceId: String,
+    val alias: String,
+    /** First 16 hex chars of SHA-256(publicKeyRaw) — human verification on BOTH screens. */
+    val fingerprintPrefix: String,
+    val pinnedAtMs: Long,
+    val trustLevel: String,
+    val connected: Boolean,
+    /** Granted capability wire names ("remote_input", "vfs") — per-device grants. */
+    val grantedCapabilities: Set<String>,
+)
+
+/** A5: unpair + per-device capability grants (Android side). */
+interface PeerManagementBridge {
+    val peers: StateFlow<List<PairedPeerInfo>>
+    /** Revokes the pin + LocalSend trust + best-effort wire unpair notice. */
+    fun unpair(deviceId: String)
+    /** Grant/revoke a per-device capability (wire name, e.g. "remote_input"). */
+    fun setCapability(deviceId: String, wireName: String, granted: Boolean)
+}
+
+/** A1: remote-input senders — available only over a live negotiated session. */
+interface RemoteInputBridge {
+    val available: StateFlow<Boolean>
+    /** Platform opens the full-screen touchpad/keyboard/rocker screen. */
+    fun openTouchpad()
+}
+
 /** Live link state to the trusted peer — drives the dashboard header and tile honesty. */
 data class PeerLinkState(
     val connected: Boolean,
@@ -95,6 +128,19 @@ interface UiBridge {
 
     /** Human label for the last raw protocol error on a transfer, or null. */
     fun isDarkTheme(): Boolean = false
+
+    /**
+     * Deep-integration A5: Android-only peer-management surface (pin-store list,
+     * unpair, per-device capability grants). Null on the desktop — its device
+     * management is the desktop-side settings slice (agent-2).
+     */
+    val peerManagement: PeerManagementBridge? get() = null
+
+    /**
+     * Deep-integration A1: Android-only remote-input senders (touchpad/keyboard
+     * for the PC). Null on the desktop — the desktop is the input RECEIVER side.
+     */
+    val remoteInput: RemoteInputBridge? get() = null
 
     /**
      * Smart Connect pairing QR (`motorolardpconnection{...}`) rendered in Settings.
