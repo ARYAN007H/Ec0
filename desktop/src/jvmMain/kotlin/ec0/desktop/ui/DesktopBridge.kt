@@ -67,6 +67,13 @@ class DesktopBridge(
             hub.pinnedPeers.map { it.size }.stateIn(bridgeScope, SharingStarted.Eagerly, 0)
         }
 
+    override val statusBanner: StateFlow<String?> =
+        if (hub == null) {
+            MutableStateFlow(null)
+        } else {
+            hub.statusBanner.map { it as String? }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
+        }
+
     // ---- Dashboard (HOME tiles): live hub state, honest OFF defaults ----
 
     /** scrcpy's running state is a plain getter — poll it; 3 s is plenty for a tile. */

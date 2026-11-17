@@ -824,14 +824,18 @@ class ContinuityHubController(
     }
 
     fun startScreenMirror(host: String = "", adbPort: Int = 5555, maxFps: Int = 60, bitrateKbps: Int = 8_000) {
+        val mirrorLog = java.util.logging.Logger.getLogger("ec0.hub.mirror")
         scope.launch(Dispatchers.IO) {
             try {
+                mirrorLog.info("Mirror: requested (host hint='$host')")
                 // Resolve the LIVE adb serial for the pinned phone: wireless-debugging
                 // serials are ip:port and change per re-pairing — the hardcoded :5555
                 // dial could never survive real usage (observed: 'Start mirror' dead).
                 val adbDevices = node.scrcpyCoordinator.adbDevicesList()
+                mirrorLog.info("Mirror: adb devices → ${adbDevices.replace("\n", " | ").take(300)}")
                 val peer = node.pinnedPeers.value.firstOrNull()
                     ?: throw IOException("No paired phone — pair first, then mirror")
+                mirrorLog.info("Mirror: peer=${peer.alias}")
                 val peerIp = node.activeSessionFor(peer.deviceId)?.peerRemoteIp
                 val serial = resolveMirrorSerial(adbDevices, peer.alias, peerIp)
                     ?: run {
@@ -851,6 +855,7 @@ class ContinuityHubController(
                     bitrateKbps = bitrateKbps,
                     windowTitle = "ec0 Mirror (${peer.alias})",
                 )
+                mirrorLog.info("Mirror: launching scrcpy (serial=${serial ?: "legacy-dial"})")
                 node.scrcpyCoordinator.launchMirrorSession(cmd, directSerial = serial)
                 _statusBanner.value = if (serial != null) {
                     "Mirroring ${peer.alias} via scrcpy (serial $serial)"
@@ -858,6 +863,7 @@ class ContinuityHubController(
                     "Mirroring phone screen via scrcpy (${cmd.serial})"
                 }
             } catch (e: Exception) {
+                mirrorLog.warning("Mirror failed: ${e.javaClass.simpleName}: ${e.message}")
                 _statusBanner.value = "Screen mirror failed: ${e.message}"
             }
         }

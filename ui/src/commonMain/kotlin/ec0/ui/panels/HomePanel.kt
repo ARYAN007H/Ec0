@@ -109,6 +109,7 @@ fun HomePanel(
     val clipSummary by bridge.clipboardSummary.collectAsState()
     val autoSync by bridge.autoSyncClipboard.collectAsState()
     val notifications by bridge.relayedNotifications.collectAsState()
+    val statusBanner by bridge.statusBanner.collectAsState()
 
     // Adaptive bento: 3-up on wide windows, 2-up when squeezed, 1-up on the phone.
     val tileColumns = if (compact) 1 else if (maxWidth >= 940.dp) 3 else 2
@@ -127,6 +128,21 @@ fun HomePanel(
                 onAcceptTrust = { bridge.acceptIncoming(trust = true) },
                 onDecline = { bridge.declineIncoming() },
             )
+        }
+
+        // Honest status strip: mirror/scan failures MUST be visible, never swallowed.
+        statusBanner?.takeIf { it.isNotBlank() && !it.startsWith("Ready —") }?.let { banner ->
+            Surface(
+                shape = Ec0Shapes.pill,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    banner,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
         }
 
         // Status header: this device + live link to the trusted peer + scan.

@@ -118,6 +118,9 @@ interface UiBridge {
     /** Live link state to the trusted peer; null when no peer has ever paired. */
     val peerLink: StateFlow<PeerLinkState?> get() = MutableStateFlow(null)
 
+    /** Transient status/honest-error strip (mirror failures, scan results, …). */
+    val statusBanner: StateFlow<String?> get() = MutableStateFlow(null)
+
     /** scrcpy mirror running? */
     val mirrorRunning: StateFlow<Boolean> get() = MutableStateFlow(false)
 
