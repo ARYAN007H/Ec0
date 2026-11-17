@@ -80,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.Capabilities
 import ec0.ui.models.PeerLinkState
+import ec0.ui.models.SettingsState
 import ec0.ui.models.TransferState
 import ec0.ui.models.UiBridge
 import ec0.ui.models.UiDevice

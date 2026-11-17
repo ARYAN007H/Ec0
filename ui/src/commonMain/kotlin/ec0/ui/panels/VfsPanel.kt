@@ -131,7 +131,7 @@ fun VfsPanel(bridge: UiBridge) {
                             )
                             Spacer(Modifier.width(10.dp))
                             androidx.compose.material3.TextButton(
-                                onClick = { bridge.vfsDownload("${browseState!!.path.trimEnd('/')}/${entry.name}") },
+                                onClick = { val p = browseState!!.path ?: return@onClick; bridge.vfsDownload("${p.trimEnd('/')}/${entry.name}") },
                             ) {
                                 Text("Download here")
                             }
