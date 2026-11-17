@@ -147,8 +147,28 @@ class DesktopBridge(
         hub?.sendNotificationReply(id, text = text)
     }
 
+    private val _v4l2Preflight = MutableStateFlow<String?>(null)
+    override val v4l2PreflightText: StateFlow<String?> = _v4l2Preflight.asStateFlow()
+
     override fun setupV4l2Loopback() {
-        hub?.setupV4l2LoopbackWithPkexec()
+        val coordinator = hub?.node?.cameraCoordinator ?: run {
+            _v4l2Preflight.value = "Engine offline — start the hub first"
+            return
+        }
+        bridgeScope.launch(Dispatchers.IO) {
+            _v4l2Preflight.value = "Running v4l2/scrcpy pre-flight…"
+            val result = coordinator.v4l2Preflight()
+            _v4l2Preflight.value = when (result.outcome) {
+                ec0.core.engine.services.V4l2Outcome.READY ->
+                    "v4l2loopback ready (/dev/video10) · scrcpy ${result.scrcpyVersionText ?: "?"}"
+                ec0.core.engine.services.V4l2Outcome.NEEDS_PASSWORD ->
+                    "Run: ${result.remediationCommand}"
+                ec0.core.engine.services.V4l2Outcome.MODPROBE_FAILED ->
+                    "modprobe failed. Run: ${result.remediationCommand}"
+                ec0.core.engine.services.V4l2Outcome.SCRCPY_UNSUPPORTED ->
+                    "scrcpy ${result.scrcpyVersionText ?: "not found"} — need >= 2.2 with --video-source=camera"
+            }
+        }
     }
 
     init {

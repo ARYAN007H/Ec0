@@ -73,6 +73,8 @@ data class SettingsState(
      * the next service start). Generated once, persisted by the platform bridge.
      */
     val ownFingerprint: String = "",
+    /** Desktop only: closing the window hides it to the tray instead of exiting. */
+    val minimizeToTray: Boolean = true,
 )
 
 /**

@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
@@ -73,6 +74,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.Capabilities
@@ -103,6 +105,7 @@ fun HomePanel(
     val peerLink by bridge.peerLink.collectAsState()
     val mirrorRunning by bridge.mirrorRunning.collectAsState()
     val cameraState by bridge.cameraStateText.collectAsState()
+    val v4l2Preflight by bridge.v4l2PreflightText.collectAsState()
     val clipSummary by bridge.clipboardSummary.collectAsState()
     val autoSync by bridge.autoSyncClipboard.collectAsState()
     val notifications by bridge.relayedNotifications.collectAsState()
@@ -154,8 +157,8 @@ fun HomePanel(
         // Bento tiles — chunked to the adaptive column count, equal widths per row.
         val tileFactories: List<@Composable (Modifier) -> Unit> = listOf(
             { m -> MirrorTile(bridge, mirrorRunning, m) },
-            { m -> CameraTile(bridge, cameraState, m) },
-            { m -> FilesTile(transfers, devices, m) },
+            { m -> CameraTile(bridge, cameraState, v4l2Preflight, m) },
+            { m -> FilesTile(transfers, devices, scanning, m) },
             { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
             { m -> NotificationsTile(bridge, notifications, m) },
             { m -> HonestyTile(m) },
@@ -223,7 +226,12 @@ private fun MirrorTile(bridge: UiBridge, running: Boolean, modifier: Modifier = 
 }
 
 @Composable
-private fun CameraTile(bridge: UiBridge, cameraState: String?, modifier: Modifier = Modifier) {
+private fun CameraTile(
+    bridge: UiBridge,
+    cameraState: String?,
+    v4l2Preflight: String?,
+    modifier: Modifier = Modifier,
+) {
     DashboardTile(
         title = "Phone camera → PC",
         subtitle = cameraState?.takeIf { it != "idle" } ?: "v4l2loopback · tap to start",
@@ -240,6 +248,19 @@ private fun CameraTile(bridge: UiBridge, cameraState: String?, modifier: Modifie
             TileButton("Stop", subtle = true) { bridge.stopCamera() }
             TileButton("Load v4l2", subtle = true) { bridge.setupV4l2Loopback() }
         }
+        if (v4l2Preflight != null) {
+            Text(
+                v4l2Preflight,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (v4l2Preflight.startsWith("Run:")) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -247,21 +268,41 @@ private fun CameraTile(bridge: UiBridge, cameraState: String?, modifier: Modifie
 private fun FilesTile(
     transfers: List<ec0.ui.models.TransferItem>,
     devices: List<UiDevice>,
+    scanning: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val active = transfers.firstOrNull { it.state == TransferState.RUNNING } ?: transfers.firstOrNull()
+    val failed = transfers.firstOrNull { it.state == TransferState.FAILED }
     DashboardTile(
         title = "Send files",
         subtitle = when {
             active != null -> "${active.fileName} · ${active.progressPct}%"
-            devices.isEmpty() -> "Discovering neighbors…"
+            devices.isEmpty() -> "Searching the network… (Bluetooth-free LAN sweep)"
             else -> "Pick a device below and send"
         },
         icon = Icons.Filled.ArrowUpward,
         iconTint = MaterialTheme.colorScheme.primary,
         live = devices.isNotEmpty(),
         modifier = modifier,
-    )
+    ) {
+        if (failed != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(
+                    Icons.Filled.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    "Last send failed: ${failed.error ?: "transfer error"} · ${failed.peerAlias}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
 }
 
 @Composable

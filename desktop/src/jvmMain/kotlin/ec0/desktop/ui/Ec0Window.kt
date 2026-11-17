@@ -6,12 +6,16 @@
  */
 package ec0.desktop.ui
 
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import ec0.desktop.continuity.ContinuityHubController
+import ec0.desktop.continuity.ContinuitySystemTray
+import ec0.desktop.continuity.ContinuityTrayController
 import ec0.desktop.state.AppState
 import ec0.ui.Ec0App
 import java.io.File
@@ -46,14 +50,35 @@ fun runApp() {
     // Wake the hub's loops: clipboard watch, notification forwarding, IPC daemon,
     // pairing-QR refresh and the trusted-peer reconnect supervisor.
     runCatching { hub.start(startMdns = false) }
+    val trayController = ContinuityTrayController(hub)
+    val systemTray = ContinuitySystemTray(
+        controller = trayController,
+        onQuit = {
+            runCatching { hub.close() }
+            exitApplication()
+        },
+        // "Send clipboard" guarantees the proven auto-sync pipeline is live —
+        // the watch loop (≤1.2 s) then pushes clipboard changes to the phone.
+        onSendClipboard = { hub.setAutoSyncClipboard(true) },
+    )
+    systemTray.attach() // silent no-op when SystemTray is unsupported
+    // Keep the tray policy in lockstep with the persisted setting.
+    scope.launch {
+        appState.settings.collect { trayController.setMinimizeToTrayOnClose(it.minimizeToTray) }
+    }
     application {
         val windowState = rememberWindowState(width = 1080.dp, height = 720.dp)
         val bridge = remember { DesktopBridge(appState, hub, smartConnectPort, scope) }
+        val windowVisible by trayController.windowVisible.collectAsState()
         Window(
             onCloseRequest = {
-                runCatching { hub.close() }
-                exitApplication()
+                if (!trayController.onWindowCloseRequested()) {
+                    runCatching { hub.close() }
+                    exitApplication()
+                }
+                // else: hidden to tray — the tray menu brings it back
             },
+            visible = windowVisible,
             title = "ec0 — unified ecosystem",
             state = windowState,
         ) {
