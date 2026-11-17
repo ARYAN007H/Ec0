@@ -645,7 +645,7 @@ class ContinuityCameraCoordinator(
      */
     fun buildSudoModprobeCommand(
         v4l2DevicePath: String = CamDroidConstants.DEFAULT_V4L2_DEVICE,
-        cardLabel: String = CamDroidConstants.DEFAULT_V4L2_CARD_LABEL,
+        cardLabel: String = "ec0 camera",
     ): List<String> {
         val videoNr = v4l2DevicePath.removePrefix("/dev/video").toIntOrNull() ?: 10
         return listOf(
@@ -676,7 +676,7 @@ class ContinuityCameraCoordinator(
         val modprobeArgv = buildSudoModprobeCommand(v4l2DevicePath, cardLabel)
         if (v4l2DeviceCheck(v4l2DevicePath)) {
             // Device node already present and writable — only scrcpy matters now.
-            return scrcpyCheck()
+            return scrcpyCheck(runner)
         }
         val modprobe = runner(modprobeArgv)
         if (modprobe.exitCode != 0) {
@@ -690,11 +690,11 @@ class ContinuityCameraCoordinator(
                 remediationCommand = v4l2SetupCommand(v4l2DevicePath, cardLabel),
             )
         }
-        return scrcpyCheck()
+        return scrcpyCheck(runner)
     }
 
-    private fun scrcpyCheck(): V4l2PreflightResult {
-        val versionRun = launcher.runBlockingCommand(buildScrcpyVersionCommand(), timeoutMs = 10_000L)
+    private fun scrcpyCheck(runner: (List<String>) -> CommandExecResult): V4l2PreflightResult {
+        val versionRun = runner(buildScrcpyVersionCommand())
         val version = parseScrcpyVersion(versionRun.stdout + versionRun.stderr)
         val supported = isScrcpyVersionSupported(version)
         return V4l2PreflightResult(
