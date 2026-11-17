@@ -755,4 +755,3 @@ data class V4l2PreflightResult(
      */
     val remediationCommand: String,
 )
-}
