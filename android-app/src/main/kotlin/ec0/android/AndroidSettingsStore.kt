@@ -74,6 +74,9 @@ class AndroidSettingsStore(
             }
             prefs[KEY_TRUSTED_FINGERPRINTS] = state.trustedFingerprints
             prefs[KEY_THEME_SEED] = state.themeSeed
+            if (state.ownFingerprint.isNotBlank()) {
+                prefs[KEY_OWN_FINGERPRINT] = state.ownFingerprint
+            }
         }
     }
 
@@ -135,6 +138,7 @@ class AndroidSettingsStore(
         val trustedFingerprints = prefs[KEY_TRUSTED_FINGERPRINTS]?.toSet()
             ?: defaultState.trustedFingerprints
         val themeSeed = prefs[KEY_THEME_SEED]?.takeIf { it.isNotBlank() } ?: defaultState.themeSeed
+        val ownFingerprint = prefs[KEY_OWN_FINGERPRINT]?.takeIf { it.isNotBlank() } ?: defaultState.ownFingerprint
 
         return defaultState.copy(
             alias = alias,
@@ -148,6 +152,7 @@ class AndroidSettingsStore(
             synergyProbeEnabled = synergyProbe,
             darkTheme = darkTheme,
             themeSeed = themeSeed,
+            ownFingerprint = ownFingerprint,
             trustedFingerprints = trustedFingerprints,
         )
     }
@@ -165,6 +170,7 @@ class AndroidSettingsStore(
         internal val KEY_DARK_THEME = stringPreferencesKey("dark_theme")
         internal val KEY_THEME_SEED = stringPreferencesKey("theme_seed")
         internal val KEY_TRUSTED_FINGERPRINTS = stringSetPreferencesKey("trusted_fingerprints")
+        internal val KEY_OWN_FINGERPRINT = stringPreferencesKey("own_fingerprint")
 
         private const val THEME_SYSTEM = "system"
         private const val THEME_DARK = "dark"

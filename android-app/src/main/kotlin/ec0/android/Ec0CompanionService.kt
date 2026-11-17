@@ -530,7 +530,44 @@ class Ec0CompanionService : Service() {
         const val NOTIFICATION_CHANNEL_ID = "ec0"
         const val NOTIFICATION_ID = 49880
         const val EXTRA_PAIR_URI = "ec0.android.extra.PAIR_URI"
-        val OWN_FINGERPRINT: String = java.util.UUID.randomUUID().toString()
+        /**
+         * THIS device's LocalSend fingerprint. LocalSend peers trust THIS id — it is
+         * PERSISTED in the settings DataStore (regenerated only if blank). A per-boot
+         * random value made every peer's stored trust stale on the next service start,
+         * silently breaking phone→PC auto-accept.
+         */
+        @Volatile
+        private var cachedOwnFingerprint: String? = null
+
+        @Volatile
+        private var appContextHolder: Context? = null
+
+        val OWN_FINGERPRINT: String
+            get() {
+                cachedOwnFingerprint?.let { return it }
+                val fp = _latestSettings.value.ownFingerprint.ifBlank {
+                    java.util.UUID.randomUUID().toString()
+                }
+                cachedOwnFingerprint = fp
+                if (_latestSettings.value.ownFingerprint.isBlank()) {
+                    persistOwnFingerprint(fp)
+                }
+                return fp
+            }
+
+        private fun persistOwnFingerprint(fp: String) {
+            val context = appContextHolder ?: return
+            val scope = activeServiceScope ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            scope.launch {
+                runCatching {
+                    val store = AndroidSettingsStore(context)
+                    val current = store.load()
+                    if (current.ownFingerprint.isBlank()) {
+                        store.save(current.copy(ownFingerprint = fp))
+                    }
+                }
+            }
+        }
 
         private val hostLock = Any()
 
@@ -589,6 +626,7 @@ class Ec0CompanionService : Service() {
             initialSettings: SettingsState? = null,
             ec0StoreDir: File = File(context.applicationContext.filesDir, "ec0"),
         ): CompanionServiceHost {
+            appContextHolder = context.applicationContext
             if (initialSettings != null) {
                 _latestSettings.value = initialSettings
             }

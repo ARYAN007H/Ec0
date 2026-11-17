@@ -67,6 +67,12 @@ data class SettingsState(
     val themeSeed: String = "amber",
     /** Peers whose incoming transfers are auto-accepted (user trusted them). */
     val trustedFingerprints: Set<String> = emptySet(),
+    /**
+     * THIS device's LocalSend fingerprint. Peers trust THIS id — it must survive
+     * restarts (a per-boot random value makes every peer's stored trust stale on
+     * the next service start). Generated once, persisted by the platform bridge.
+     */
+    val ownFingerprint: String = "",
 )
 
 /**
