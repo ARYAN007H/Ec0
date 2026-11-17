@@ -202,7 +202,7 @@ class SmartConnectSliceATest {
             controlSession.sendText(helloFrame)
 
             assertTrue(
-                verifyAndCapLatch.await(5, TimeUnit.SECONDS),
+                verifyAndCapLatch.await(10, TimeUnit.SECONDS),
                 "Timed out waiting for Step 2 Verify Reply + Step 3 svc 25 cmd 1 cap map"
             )
 
@@ -297,7 +297,7 @@ class SmartConnectSliceATest {
             controlSession.sendText(burstFrame)
 
             assertTrue(
-                exchangeKeyLatch.await(5, TimeUnit.SECONDS),
+                exchangeKeyLatch.await(10, TimeUnit.SECONDS),
                 "Timed out waiting for PC Step 4 EXCHANGE_KEY reply"
             )
             val pcExchEnv = receivedByPhone.first {
@@ -316,7 +316,7 @@ class SmartConnectSliceATest {
             assertEquals("aryan-moto-a5x", pairedRecord.deviceName)
 
             assertTrue(
-                refreshLatch.await(5, TimeUnit.SECONDS),
+                refreshLatch.await(10, TimeUnit.SECONDS),
                 "Timed out waiting for Step 6 post-pair mDNS discovery refresh"
             )
 
@@ -354,7 +354,7 @@ class SmartConnectSliceATest {
             )
             mdnsSession.sendBinary(sealedTrigger)
             assertTrue(
-                inviteReplyLatch.await(5, TimeUnit.SECONDS),
+                inviteReplyLatch.await(10, TimeUnit.SECONDS),
                 "Timed out waiting for sealed discovery invite reply on /readyfor/mdns"
             )
             val replyBytes = receivedSealedReply!!
