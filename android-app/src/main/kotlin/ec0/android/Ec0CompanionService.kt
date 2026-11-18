@@ -46,6 +46,7 @@ import android.os.PersistableBundle
 import android.os.PowerManager
 import android.provider.Settings
 import ec0.core.engine.EngineCapability
+import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.EngineConstants
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.AndroidPlatformCallbacks
@@ -402,12 +403,15 @@ class CompanionServiceHost(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val discoveryPeriodMs: Long = 5_000L,
     private val startMdnsOnServerStart: Boolean = true,
+    private val beaconPeriodMs: Long = 15_000L,
 ) : Closeable {
 
     private val started = AtomicBoolean(false)
     private var discoveryTickerJob: Job? = null
     private var manualScanJob: Job? = null
     private var pairingJob: Job? = null
+    private var presenceBeaconJob: Job? = null
+    private var presenceBeaconConnectedJob: Job? = null
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -481,6 +485,32 @@ class CompanionServiceHost(
                 }
             }
         }
+
+        // Presence-beacon leg (the phone-side mirror of the hub's beacon loop):
+        // the desktop's tile registry renders from the beacons IT RECEIVES, so the
+        // phone must broadcast its own — otherwise the desktop's registry renders
+        // empty even with a live session. Two triggers, matching the hub:
+        //   - reactive: fires the moment a session reaches CONNECTED (StateFlow
+        //     replay covers sessions already live at start — no dead window), and
+        //   - a [beaconPeriodMs] ticker refreshing battery/screen/caps so a
+        //     reconnected session heals within one period.
+        // [AndroidCompanionRuntime.onDeviceWakeOrNetworkValidated] targets every
+        // peer with CONNECTED state AND a live session — no firstOrNull targeting.
+        if (beaconPeriodMs > 0L) {
+            presenceBeaconJob = scope.launch(ioDispatcher) {
+                while (isActive) {
+                    runCatching { runtime.onDeviceWakeOrNetworkValidated() }
+                    delay(beaconPeriodMs)
+                }
+            }
+            presenceBeaconConnectedJob = scope.launch(ioDispatcher) {
+                runtime.node.connectionStates.collect { states ->
+                    if (states.values.any { it == EngineConnectionState.CONNECTED }) {
+                        runCatching { runtime.onDeviceWakeOrNetworkValidated() }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -540,6 +570,10 @@ class CompanionServiceHost(
         manualScanJob = null
         pairingJob?.cancel()
         pairingJob = null
+        presenceBeaconJob?.cancel()
+        presenceBeaconJob = null
+        presenceBeaconConnectedJob?.cancel()
+        presenceBeaconConnectedJob = null
 
         if (Ec0NotificationListener.currentRuntime() === runtime) {
             Ec0NotificationListener.attachRuntime(null)
