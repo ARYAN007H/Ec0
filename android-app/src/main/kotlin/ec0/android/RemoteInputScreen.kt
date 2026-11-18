@@ -306,7 +306,7 @@ fun RemoteInputScreen(
             }
             Text(
                 "Deltas batch ≤8 ms and coalesce — the AEAD session authenticates the burst.",
-                style = MaterialTheme.typography.caption,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }

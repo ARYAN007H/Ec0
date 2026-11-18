@@ -56,14 +56,18 @@ import ec0.ui.widgets.SectionHeader
 fun SettingsPanel(bridge: UiBridge) {
     val peerManagement = bridge.peerManagement
     // Conditional collection is stable here: peerManagement is null only on the
-    // desktop and non-null only on Android (platform-defined, never flips mid-session).
-    val peers: List<PairedPeerInfo> = if (peerManagement != null) {
-        peerManagement.peers.collectAsState().value
+    // desktop and non-null only on Android (platform-defined, never flips mid-
+    // session). Local vals: smart cast is impossible on interface properties with
+    // custom getters.
+    val peerManagementLocal = bridge.peerManagement
+    val peers: List<PairedPeerInfo> = if (peerManagementLocal != null) {
+        peerManagementLocal.peers.collectAsState().value
     } else {
         emptyList()
     }
-    val remoteInputAvailable: Boolean = if (bridge.remoteInput != null) {
-        bridge.remoteInput.available.collectAsState().value
+    val remoteInputLocal = bridge.remoteInput
+    val remoteInputAvailable: Boolean = if (remoteInputLocal != null) {
+        remoteInputLocal.available.collectAsState().value
     } else {
         false
     }
@@ -81,7 +85,7 @@ fun SettingsPanel(bridge: UiBridge) {
         SectionHeader("Settings")
 
         // Deep-integration A5 (Android only): paired-device management.
-        if (peerManagement != null) {
+        if (peerManagementLocal != null) {
             SettingsCard("Paired devices") {
                 if (peers.isEmpty()) {
                     Text(
@@ -97,7 +101,7 @@ fun SettingsPanel(bridge: UiBridge) {
                             Spacer(Modifier.weight(1f))
                             Text(
                                 if (peer.connected) "connected" else "offline",
-                                style = MaterialTheme.typography.caption,
+                                style = MaterialTheme.typography.labelSmall,
                                 color = if (peer.connected) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -109,7 +113,7 @@ fun SettingsPanel(bridge: UiBridge) {
                         )
                         Text(
                             "trust: " + peer.trustLevel,
-                            style = MaterialTheme.typography.caption,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -118,11 +122,11 @@ fun SettingsPanel(bridge: UiBridge) {
                             Switch(
                                 checked = "remote_input" in peer.grantedCapabilities,
                                 onCheckedChange = { granted ->
-                                    peerManagement.setCapability(peer.deviceId, "remote_input", granted)
+                                    peerManagementLocal.setCapability(peer.deviceId, "remote_input", granted)
                                 },
                             )
                         }
-                        Button(onClick = { peerManagement.unpair(peer.deviceId) }) {
+                        Button(onClick = { peerManagementLocal.unpair(peer.deviceId) }) {
                             Text("Unpair")
                         }
                     }
