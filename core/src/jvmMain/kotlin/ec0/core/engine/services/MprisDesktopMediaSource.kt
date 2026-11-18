@@ -19,12 +19,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.isString
 import kotlinx.serialization.json.longOrNull
 
 
@@ -79,7 +79,9 @@ object MprisParser {
         val entries = (root["data"]?.jsonArray?.firstOrNull() as? JsonObject)
             ?: return emptyMap()
         val out = mutableMapOf<String, String>()
-        for ((key, value) in entries) {
+        for (entry in entries) {
+            val key = entry.key
+            val value = entry.value
             val valueObj = value as? JsonObject ?: continue
             val type = valueObj["type"]?.jsonPrimitive?.contentOrNull ?: continue
             val first = (valueObj["data"]?.jsonArray?.firstOrNull()) ?: continue
