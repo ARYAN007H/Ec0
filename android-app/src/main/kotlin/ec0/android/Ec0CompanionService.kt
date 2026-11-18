@@ -54,7 +54,7 @@ import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.FindMyRingCommand
 import ec0.core.engine.protocol.WorkstationLockCommand
-import ec0.core.engine.services.ProximitySecurityProtocol
+import ec0.core.engine.protocol.ProximitySecurityProtocol
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.ClipboardItem
@@ -671,6 +671,11 @@ class Ec0CompanionService : Service() {
         @Volatile
         private var activeClipboardWatcher: AndroidClipboardWatcher? = null
 
+        /** Shared with [FindMyRingActivity]'s stop button — set when the runtime
+         *  callbacks (and their ring controller) are constructed. */
+        @Volatile
+        var ringControllerRef: FindMyRingController? = null
+
         @Volatile
         private var activeServiceScope: CoroutineScope? = null
 
@@ -867,7 +872,7 @@ class Ec0CompanionService : Service() {
                 val clipboardSettingsStore = AndroidSettingsStore(
                     appContext.applicationContext.ec0SettingsDataStore,
                 )
-                Ec0TileState.clipboardSyncEnabled = { clipboardWatcher.isStarted }
+                Ec0TileState.clipboardSyncEnabled = { clipboardWatcher.isStarted() }
                 Ec0TileState.setClipboardSyncEnabled = { enabled -> clipboardWatcher.setEnabled(enabled) }
                 Ec0TileState.lockWorkstation = {
                     val desktopId = host.pinnedPeers.value
@@ -879,7 +884,7 @@ class Ec0CompanionService : Service() {
                     } else {
                         runCatching {
                             session.sendCmd(
-                                cmdType = EngineConstants.CMD_WORKSTATION_LOCK,
+                                cmdType = ProximitySecurityProtocol.CMD_WORKSTATION_LOCK,
                                 cmdBody = WorkstationLockCommand(
                                     action = WorkstationLockCommand.ACTION_LOCK,
                                     reason = "qs_tile",
