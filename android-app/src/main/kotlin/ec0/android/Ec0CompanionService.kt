@@ -142,6 +142,12 @@ class AndroidHonestPlatformCallbacks(
      * what actually makes that true (before, the toggle only paused pushes).
      */
     private val clipboardSyncGate: ClipboardSyncSwitch? = null,
+    /**
+     * Continuity Camera streamer (token-gated CamDroid-compatible server).
+     * Null in tests / non-camera builds: `onCameraControlCommand` stays honest
+     * (`null`) when absent.
+     */
+    val cameraStreamer: Ec0CameraStreamer? = null,
 ) : AndroidPlatformCallbacks {
 
     private val mediaLog = Logger.getLogger("ec0.android.media")
@@ -178,7 +184,15 @@ class AndroidHonestPlatformCallbacks(
     override fun onInjectKeyEvent(event: InputKeyEvent): Boolean = false
     override fun onInjectPointerEvent(event: InputPointerEvent): Boolean = false
     override fun onCursorHandoff(command: CursorHandoffCommand): Boolean = false
-    override fun onCameraControlCommand(command: CamDroidControlCommand): CameraStatusInfo? = null
+
+    /**
+     * Continuity Camera: delegates to [Ec0CameraStreamer] when the service owns
+     * one. The Start command carries the one-shot arm token delivered over the
+     * AEAD-encrypted engine session; without it the camera never arms.
+     */
+    override fun onCameraControlCommand(command: CamDroidControlCommand): CameraStatusInfo? =
+        cameraStreamer?.handleCommand(command)
+
     override fun onHotspotControlCommand(command: HotspotControlCommand): HotspotStatusInfo? = null
 
     /**
@@ -613,13 +627,13 @@ class Ec0CompanionService : Service() {
     override fun onCreate() {
         super.onCreate()
         promoteToForeground()
-        val host = ensureHostStarted(applicationContext)
+        val host = ensureHostStarted(applicationContext, promoteHook = { runCatching { promoteToForeground() } })
         host.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         promoteToForeground()
-        val host = ensureHostStarted(applicationContext)
+        val host = ensureHostStarted(applicationContext, promoteHook = { runCatching { promoteToForeground() } })
         host.start()
 
         val pairUri = intent?.getStringExtra(EXTRA_PAIR_URI)?.takeIf { it.isNotBlank() }
@@ -670,10 +684,25 @@ class Ec0CompanionService : Service() {
                 .build()
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 11+ (R): background camera capture requires the
+                // `camera` FGS type AND the CAMERA grant at promotion time —
+                // include it only when actually granted, otherwise starting the
+                // service would throw. The grant flow re-promotes via
+                // [onArming] / the next onStartCommand.
+                val cameraGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.CAMERA,
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                val serviceType = if (cameraGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                }
                 startForeground(
                     NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                    serviceType,
                 )
             } else {
                 startForeground(NOTIFICATION_ID, notification)
@@ -731,6 +760,10 @@ class Ec0CompanionService : Service() {
 
         @Volatile
         private var activeClipboardWatcher: AndroidClipboardWatcher? = null
+
+        /** Continuity Camera streamer — torn down with the service host. */
+        @Volatile
+        private var activeCameraStreamer: Ec0CameraStreamer? = null
 
         /** Shared with [FindMyRingActivity]'s stop button — set when the runtime
          *  callbacks (and their ring controller) are constructed. */
@@ -802,6 +835,7 @@ class Ec0CompanionService : Service() {
         internal fun ensureHostStarted(
             appContext: Context,
             ec0StoreDir: File = File(appContext.filesDir, "ec0"),
+            promoteHook: (() -> Unit)? = null,
         ): CompanionServiceHost {
             synchronized(hostLock) {
                 activeHost?.let { existing ->
@@ -828,6 +862,13 @@ class Ec0CompanionService : Service() {
                 val clipboardEchoGuard = ClipboardEchoGuard()
                 val findMyRingController = FindMyRingController(appContext)
                 ringControllerRef = findMyRingController
+
+                // Continuity Camera streamer: armed ONLY by a Start command with
+                // a one-shot token delivered over the encrypted engine session.
+                val cameraStreamer = Ec0CameraStreamer(appContext)
+                cameraStreamer.onArming = promoteHook
+                activeCameraStreamer = cameraStreamer
+
                 val runtime = AndroidCompanionRuntime.createWithPersistentStores(
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
@@ -836,6 +877,7 @@ class Ec0CompanionService : Service() {
                         clipboardEchoGuard,
                         findMyRingController,
                         clipboardSyncGate = clipboardSyncSwitch,
+                        cameraStreamer = cameraStreamer,
                     ),
                     listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
@@ -1008,6 +1050,8 @@ class Ec0CompanionService : Service() {
             synchronized(hostLock) {
                 activeClipboardWatcher?.stop()
                 activeClipboardWatcher = null
+                activeCameraStreamer?.shutdown()
+                activeCameraStreamer = null
                 activeHost?.stop()
                 activeHost = null
                 activeServiceScope?.cancel()
