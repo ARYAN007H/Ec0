@@ -9,6 +9,7 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.Ec0Envelope
+import ec0.core.engine.EngineEncoding
 import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CamDroidV1Codec
@@ -95,6 +96,11 @@ class TcpCamDroidControlTransport : CamDroidControlTransport {
 class ContinuityCameraCoordinator(
     private val launcher: ExternalProcessLauncher = SystemProcessLauncher,
     private val camDroidTransportFactory: () -> CamDroidControlTransport = { TcpCamDroidControlTransport() },
+    /**
+     * Builds the in-process media receiver used by the token-authenticated
+     * ec0 phone streamer (`startCameraStream` with a non-null [streamToken]).
+     */
+    private val camDroidReceiverFactory: () -> CamDroidStreamReceiver = { CamDroidStreamReceiver() },
     private val v4l2DeviceCheck: (String) -> Boolean = { path ->
         val file = File(path)
         file.exists() && file.canWrite()
@@ -103,10 +109,12 @@ class ContinuityCameraCoordinator(
     private val camdroidBinaryPath: String = "camdroid",
     private val adbBinaryPath: String = "adb",
     private val scrcpyBinaryPath: String = "scrcpy",
+    private val ffmpegBinary: String = "ffmpeg",
 ) : Closeable {
     private val lock = Any()
     private var activeProcess: RunningProcessHandle? = null
     private var activeTransport: CamDroidControlTransport? = null
+    private var activeReceiver: CamDroidStreamReceiver? = null
 
     private val _status = MutableStateFlow(
         CameraStatusInfo(
@@ -266,6 +274,13 @@ class ContinuityCameraCoordinator(
         frontCamera: Boolean = false,
         requireV4l2Device: Boolean = false,
         spawnDesktopReceiver: Boolean = true,
+        /**
+         * Non-null switches [CameraBackend.CAMDROID_NATIVE] to ec0's OWN phone
+         * streamer: the token-authenticated, in-process [CamDroidStreamReceiver]
+         * path (token was armed over the encrypted engine session). Null keeps
+         * the legacy external-`camdroid`-binary behavior.
+         */
+        streamToken: String? = null,
     ): CameraStatusInfo = synchronized(lock) {
         stopActiveLocked()
 
@@ -288,17 +303,28 @@ class ContinuityCameraCoordinator(
         }
 
         return when (backend) {
-            CameraBackend.CAMDROID_NATIVE -> startCamDroidNativeLocked(
-                host = host,
-                port = port,
-                v4l2DevicePath = v4l2DevicePath,
-                codec = codec,
-                resolution = resolution,
-                fps = fps,
-                audio = audio,
-                frontCamera = frontCamera,
-                spawnDesktopReceiver = spawnDesktopReceiver,
-            )
+            CameraBackend.CAMDROID_NATIVE -> if (streamToken != null) {
+                startCamDroidReceiverLocked(
+                    host = host,
+                    port = port,
+                    streamToken = streamToken,
+                    v4l2DevicePath = v4l2DevicePath,
+                    fps = fps,
+                    frontCamera = frontCamera,
+                )
+            } else {
+                startCamDroidNativeLocked(
+                    host = host,
+                    port = port,
+                    v4l2DevicePath = v4l2DevicePath,
+                    codec = codec,
+                    resolution = resolution,
+                    fps = fps,
+                    audio = audio,
+                    frontCamera = frontCamera,
+                    spawnDesktopReceiver = spawnDesktopReceiver,
+                )
+            }
             CameraBackend.SCRCPY_V4L2_FALLBACK -> startScrcpyCameraFallbackLocked(
                 host = host,
                 adbPort = port,
@@ -309,6 +335,55 @@ class ContinuityCameraCoordinator(
                 frontCamera = frontCamera,
             )
         }
+    }
+
+    /**
+     * ec0-native phone streamer path: connect the token-authenticated media
+     * receiver, honor the phone's ACTUAL capture config in the status, and
+     * surface every failure honestly.
+     */
+    private fun startCamDroidReceiverLocked(
+        host: String,
+        port: Int,
+        streamToken: String,
+        v4l2DevicePath: String,
+        fps: Int,
+        frontCamera: Boolean,
+    ): CameraStatusInfo {
+        val receiver = camDroidReceiverFactory()
+        val snapshot = receiver.start(host = host, port = port, streamToken = streamToken, requestedFps = fps)
+        if (snapshot.state != CamDroidReceiverState.STREAMING) {
+            runCatching { receiver.close() }
+            return updateStatusLocked(
+                CameraStatusInfo(
+                    state = CameraStreamState.ERROR,
+                    backend = CameraBackend.CAMDROID_NATIVE,
+                    host = host,
+                    port = port,
+                    v4l2DevicePath = v4l2DevicePath,
+                    reason = snapshot.reason ?: "Camera stream failed before streaming",
+                ),
+            )
+        }
+        activeReceiver = receiver
+        if (frontCamera) {
+            receiver.sendControl(CamDroidControlCommand.SwitchCamera)
+        }
+        val config = snapshot.config
+        return updateStatusLocked(
+            CameraStatusInfo(
+                state = CameraStreamState.STREAMING,
+                backend = CameraBackend.CAMDROID_NATIVE,
+                host = host,
+                port = port,
+                v4l2DevicePath = v4l2DevicePath,
+                codec = config?.codec ?: "mjpeg",
+                resolution = config?.let { "${it.width}x${it.height}" } ?: "640x480",
+                fps = config?.fps ?: fps,
+                audioEnabled = false,
+                frontCamera = frontCamera,
+            ),
+        )
     }
 
     private fun startCamDroidNativeLocked(
@@ -508,6 +583,15 @@ class ContinuityCameraCoordinator(
         session: Ec0Session? = null,
         timestampMs: Long = System.currentTimeMillis(),
     ): Ec0Envelope? = synchronized(lock) {
+        val receiver = activeReceiver
+        if (receiver != null && !receiver.sendControl(command)) {
+            updateStatusLocked(
+                _status.value.copy(
+                    state = CameraStreamState.ERROR,
+                    reason = "Camera control channel lost — receiver socket closed",
+                ),
+            )
+        }
         activeTransport?.sendPacket(CamDroidV1Codec.controlCommandPacket(command))
         applyCommandToStatusLocked(command)
         return session?.sendCmd(
@@ -562,6 +646,11 @@ class ContinuityCameraCoordinator(
     }
 
     fun stopCameraStream(session: Ec0Session? = null): CameraStatusInfo = synchronized(lock) {
+        // Network-independent stop first: the receiver tears down its socket and
+        // the ffmpeg sink synchronously — it MUST work even if the peer vanished.
+        runCatching { activeReceiver?.sendControl(CamDroidControlCommand.Stop) }
+        runCatching { activeReceiver?.close() }
+        activeReceiver = null
         activeTransport?.sendPacket(CamDroidV1Codec.controlCommandPacket(CamDroidControlCommand.Stop))
         session?.sendCmd(
             cmdType = CMD_CAMERA_CONTROL,
@@ -612,6 +701,11 @@ class ContinuityCameraCoordinator(
 
     private fun stopActiveLocked() {
         try {
+            activeReceiver?.close()
+        } catch (_: Exception) {
+        }
+        activeReceiver = null
+        try {
             activeTransport?.close()
         } catch (_: Exception) {
         }
@@ -636,6 +730,20 @@ class ContinuityCameraCoordinator(
         /** Minimum scrcpy version with `--video-source=camera` support (v2.2+). */
         const val MIN_SCRCPY_MAJOR: Int = 2
         const val MIN_SCRCPY_MINOR: Int = 2
+
+        private val streamTokenRandom = java.security.SecureRandom()
+
+        /**
+         * One-shot 128-bit stream arm token (32 lowercase hex chars). The
+         * desktop generates it per start attempt, arms the phone's stream
+         * server with it via the AEAD-encrypted engine session, and echoes it
+         * in the TCP handshake. Lifetime: a single arm window.
+         */
+        fun newStreamToken(): String {
+            val bytes = ByteArray(16)
+            streamTokenRandom.nextBytes(bytes)
+            return EngineEncoding.encodeHex(bytes)
+        }
     }
 
     /**
@@ -704,6 +812,37 @@ class ContinuityCameraCoordinator(
             remediationCommand = if (supported) "" else "Install scrcpy >= 2.2 (found: ${version ?: "none"})",
         )
     }
+
+    /**
+     * Full pre-flight for an ec0-native camera stream start, run BEFORE the
+     * phone's camera is armed: live session, phone's `cam` capability, writable
+     * v4l2loopback node, and an ffmpeg binary for the v4l2 sink. Nothing here
+     * touches the phone's camera — it only checks the desktop-side readiness
+     * and the advertised beacon.
+     */
+    fun streamPreflight(
+        sessionConnected: Boolean,
+        phoneCameraAdvertised: Boolean,
+        v4l2DevicePath: String = CamDroidConstants.DEFAULT_V4L2_DEVICE,
+        runner: (List<String>) -> CommandExecResult = { argv ->
+            launcher.runBlockingCommand(argv, timeoutMs = 10_000L)
+        },
+    ): CameraStreamPreflight {
+        val v4l2Ready = v4l2DeviceCheck(v4l2DevicePath)
+        val ffmpegReady = try {
+            val res = runner(listOf(ffmpegBinary, "-version"))
+            res.exitCode == 0 && res.stdout.contains("ffmpeg", ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+        return CameraStreamPreflight(
+            sessionConnected = sessionConnected,
+            phoneCameraAdvertised = phoneCameraAdvertised,
+            v4l2Ready = v4l2Ready,
+            v4l2Remediation = v4l2SetupCommand(v4l2DevicePath),
+            ffmpegReady = ffmpegReady,
+        )
+    }
 }
 
 /**
@@ -742,6 +881,33 @@ fun parseBackCameraId(listCamerasOutput: String): String? =
 
 /** Outcome of the "Load v4l2" tile pre-flight ([ContinuityCameraCoordinator.v4l2Preflight]). */
 enum class V4l2Outcome { READY, NEEDS_PASSWORD, MODPROBE_FAILED, SCRCPY_UNSUPPORTED }
+
+/**
+ * Structured pre-flight for a Continuity Camera stream start: every check the
+ * tile needs BEFORE arming the phone's camera, each with an honest remediation.
+ */
+data class CameraStreamPreflight(
+    val sessionConnected: Boolean,
+    val phoneCameraAdvertised: Boolean,
+    val v4l2Ready: Boolean,
+    val v4l2Remediation: String,
+    val ffmpegReady: Boolean,
+) {
+    val allClear: Boolean
+        get() = sessionConnected && phoneCameraAdvertised && v4l2Ready && ffmpegReady
+
+    /** Missing preconditions as one honest banner line; empty when all clear. */
+    fun bannerText(): String {
+        if (allClear) return ""
+        val missing = buildList {
+            if (!sessionConnected) add("phone session not connected (pair the phone first)")
+            if (!phoneCameraAdvertised) add("phone has not advertised `cam` — grant the CAMERA permission on the phone")
+            if (!v4l2Ready) add("v4l2loopback not writable — $v4l2Remediation")
+            if (!ffmpegReady) add("ffmpeg not found on PATH (scrcpy dependency)")
+        }
+        return "Continuity Camera cannot start: " + missing.joinToString("; ")
+    }
+}
 
 data class V4l2PreflightResult(
     val outcome: V4l2Outcome,

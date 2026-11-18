@@ -44,6 +44,7 @@ import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraBackend
 import ec0.core.engine.protocol.CameraStatusInfo
+import ec0.core.engine.protocol.CameraStreamState
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.engine.protocol.ContinuitySketchPoint
 import ec0.core.engine.protocol.ContinuitySketchStroke
@@ -61,6 +62,7 @@ import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
 import ec0.core.engine.services.LocalDaemonIpcServer
+import ec0.core.engine.services.ContinuityCameraCoordinator
 import ec0.core.engine.services.MprisDesktopMediaSource
 import ec0.core.engine.services.resolveMirrorSerial
 import ec0.core.engine.services.TransferProgressSnapshot
@@ -980,11 +982,49 @@ class ContinuityHubController(
         backend: CameraBackend = CameraBackend.CAMDROID_NATIVE,
         resolution: String = "1080p",
         fps: Int = 30,
-        codec: String = "h264",
+        codec: String = "mjpeg",
         frontCamera: Boolean = false,
-        audio: Boolean = true,
+        audio: Boolean = false,
     ) {
         scope.launch(Dispatchers.IO) {
+            val session = activeSessionOrNull()
+            val camAdvertised = node.peerPresence.value.values.any { beacon ->
+                EngineCapability.CAMERA in beacon.capabilities
+            }
+            // Preflight BEFORE anything touches the phone's camera: every
+            // missing precondition is surfaced honestly through the banner.
+            val preflight = node.cameraCoordinator.streamPreflight(
+                sessionConnected = session != null,
+                phoneCameraAdvertised = camAdvertised,
+                v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
+            )
+            if (!preflight.allClear) {
+                _statusBanner.value = preflight.bannerText()
+                return@launch
+            }
+
+            // Arm the phone's stream server over the AEAD-encrypted session:
+            // the Start envelope carries a fresh one-shot token the desktop
+            // will echo in its TCP handshake. No envelope, no stream.
+            val streamToken = ContinuityCameraCoordinator.newStreamToken()
+            val armCommand = CamDroidControlCommand.Start(
+                codec = codec,
+                resolution = resolution,
+                fps = fps.coerceIn(30, 60),
+                audio = audio,
+                token = streamToken,
+            )
+            try {
+                session?.sendCmd(
+                    cmdType = ContinuityCameraCoordinator.CMD_CAMERA_CONTROL,
+                    cmdBody = armCommand.toJsonObject(),
+                    category = ContinuityCameraCoordinator.CATEGORY_CAMERA,
+                )
+            } catch (e: Exception) {
+                _statusBanner.value = "Camera arm command failed on the engine session: ${e.message}"
+                return@launch
+            }
+
             val effectiveHost = if (usbTunnelStatus.value != null) "127.0.0.1" else host
             val status = node.cameraCoordinator.startCameraStream(
                 host = effectiveHost,
@@ -996,9 +1036,15 @@ class ContinuityHubController(
                 fps = fps,
                 audio = audio,
                 frontCamera = frontCamera,
+                streamToken = streamToken,
             )
-            _statusBanner.value = status.reason
-                ?: "Continuity Camera ${status.state.wireName} ($effectiveHost:$port -> ${status.v4l2DevicePath})"
+            _statusBanner.value = when (status.state) {
+                CameraStreamState.STREAMING ->
+                    "Continuity Camera live: ${status.resolution}@${status.fps} ${status.codec} " +
+                        "($effectiveHost:$port -> ${status.v4l2DevicePath})"
+                else -> status.reason
+                    ?: "Continuity Camera ${status.state.wireName} ($effectiveHost:$port -> ${status.v4l2DevicePath})"
+            }
         }
     }
 
