@@ -133,14 +133,16 @@ class RemoteInputSenderThreadingTest {
         // 3. THE REGRESSION: the send dispatch ran on the injected IO
         //    dispatcher — never on the caller (Android main) thread. Asserted
         //    through the sender's test seam because StrictMode is Android-only.
+        //    coroutines' rename interceptor appends " @coroutine#N" to the
+        //    thread name while a coroutine occupies it — prefix match.
         val sendDeadline = System.currentTimeMillis() + 5_000L
         while (sender.lastSendThreadName == null && System.currentTimeMillis() < sendDeadline) {
             Thread.sleep(20L)
         }
-        assertEquals(
-            "ec0-remote-input-test",
-            sender.lastSendThreadName,
-            "sends must dispatch on the injected IO dispatcher, not the UI thread",
+        assertTrue(
+            sender.lastSendThreadName.orEmpty().startsWith("ec0-remote-input-test"),
+            "sends must dispatch on the injected IO dispatcher, not the UI thread " +
+                "(was: ${sender.lastSendThreadName})",
         )
     }
 
