@@ -65,6 +65,16 @@ data class PresenceBeaconInfo(
     }
 }
 
+/**
+ * Pure B3 tile-contract mapping: beacon capabilities → canonical wireName set
+ * ("mirror", "cam", "clip", …). Both dashboard tile bridges (desktop
+ * `DesktopBridge.tiles`, phone `AndroidAppState.tiles`) feed this into
+ * [ec0.ui.models.computeTileRegistry] — :ui stays core-free because the
+ * mapping happens here, one hop from the beacon model it consumes.
+ */
+fun beaconCapabilityWireNames(capabilities: Iterable<EngineCapability>): Set<String> =
+    capabilities.map { it.wireName }.toSet()
+
 data class ScrcpyMirrorStartCommand(
     val host: String,
     val adbPort: Int = 5555,

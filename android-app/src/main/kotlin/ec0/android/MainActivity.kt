@@ -43,6 +43,8 @@ import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.PairingStepState
 import ec0.core.engine.crypto.PinnedPeer
+import ec0.core.engine.protocol.PresenceBeaconInfo
+import ec0.core.engine.protocol.beaconCapabilityWireNames
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.LocalsendV2
 import ec0.core.localsend.ProtocolType
@@ -51,6 +53,7 @@ import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.ui.Ec0App
 import ec0.ui.models.Capabilities
+import ec0.ui.models.CapabilityTile
 import ec0.ui.models.IncomingRequest
 import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.PeerLinkState
@@ -61,6 +64,7 @@ import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
 import ec0.ui.models.TransferState
 import ec0.ui.models.UiBridge
+import ec0.ui.models.computeTileRegistry
 import ec0.ui.models.UiDevice
 import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Theme
@@ -100,6 +104,46 @@ fun mapPeerLinkState(
         PeerLinkState(connected = true, transport = "Wi-Fi TLS")
     else -> PeerLinkState(connected = false, transport = "searching")
 }
+
+/**
+ * The phone's honest support set for the B3 tile registry — what a paired
+ * DESKTOP can do through this phone's executors/senders: clipboard sync,
+ * file AirDrop, notification forwarding, remote input senders (A1), media-key
+ * dispatch (A2), Find-My ring (A2). Mirror/cam intentionally absent — the
+ * phone CONSUMES those from the desktop (desktop support set), not the
+ * reverse.
+ */
+val phoneLocalTileSupport: Set<EngineCapability> = setOf(
+    EngineCapability.CLIPBOARD,
+    EngineCapability.FILE,
+    EngineCapability.NOTIFICATION,
+    EngineCapability.INPUT,
+    EngineCapability.MEDIA_CONTROL,
+    EngineCapability.FIND_MY,
+)
+
+/**
+ * Pure tile-registry mapping (same-commit tested, mirrors
+ * `DesktopBridge.tiles`): the phone's dashboard tiles = the DESKTOP's beacon
+ * capabilities ∩ [phoneLocalSupport], one tile per (capability, deviceId),
+ * disabled while the peer's engine session is not CONNECTED. Consumes the
+ * desktop's presence beacons through `node.peerPresence` — those exist only
+ * since the hub's presence-beacon leg (`ContinuityHubController`), without
+ * which this registry rendered permanently empty.
+ */
+fun mapPhoneTileRegistry(
+    peerPresence: Map<String, PresenceBeaconInfo>,
+    connectionStates: Map<String, EngineConnectionState>,
+    phoneLocalSupport: Set<EngineCapability> = phoneLocalTileSupport,
+): List<CapabilityTile> = computeTileRegistry(
+    peerCapabilities = peerPresence.mapValues { (_, beacon) ->
+        beaconCapabilityWireNames(beacon.capabilities)
+    },
+    localSupport = beaconCapabilityWireNames(phoneLocalSupport),
+    onlineByDevice = connectionStates.mapValues { (_, state) ->
+        state == EngineConnectionState.CONNECTED
+    },
+)
 
 /** Android-side app state — implements the shared [UiBridge] seam over [Ec0CompanionService]. */
 class AndroidAppState(
@@ -199,6 +243,21 @@ class AndroidAppState(
         combine(connectedDesktopDeviceId, serviceHost.runtime.node.peerPresence) { id, presence ->
             id?.let { presence[it]?.capabilities } ?: emptySet()
         }.stateIn(scope, SharingStarted.Eagerly, emptySet())
+
+    /**
+     * B3 dynamic tile registry, phone side (dynamic-tile contract, plan §P1):
+     * tiles = the desktop's beacon capabilities ∩ [phoneLocalTileSupport],
+     * consuming the desktop's beacons through `node.peerPresence` and disabling
+     * tiles for peers whose engine session is not CONNECTED. The UiBridge
+     * default (empty) rendered nothing — the registry never had data before
+     * the desktop broadcast its own presence beacon.
+     */
+    override val tiles: StateFlow<List<CapabilityTile>> = combine(
+        serviceHost.runtime.node.peerPresence,
+        serviceHost.runtime.node.connectionStates,
+    ) { presence, states ->
+        mapPhoneTileRegistry(presence, states)
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     private val grantsFlow = settingsStore.deviceCapabilityGrantsFlow()
 

@@ -19,6 +19,8 @@ package ec0.desktop.continuity
 
 import ec0.core.engine.DiscoveredCamDroidService
 import ec0.core.engine.Ec0EngineNode
+import ec0.core.engine.EngineCapability
+import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.EngineConstants
 import ec0.core.engine.EngineIdentity
 import ec0.core.engine.PeerInfo
@@ -59,6 +61,7 @@ import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
 import ec0.core.engine.services.LocalDaemonIpcServer
+import ec0.core.engine.services.MprisDesktopMediaSource
 import ec0.core.engine.services.resolveMirrorSerial
 import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.services.TransferSpeedSample
@@ -82,8 +85,27 @@ data class StudioQuickCommand(
     val title: String,
     val category: String,
     val shortcutHint: String,
-    val action: () -> Unit,
+    action: () -> Unit,
 )
+
+/**
+ * Pure mapping (same-commit tested): the desktop's honest beacon capability
+ * set — what THIS machine genuinely offers a paired phone. FILE (AirDrop
+ * sender + receiver), CLIPBOARD (bidirectional sync + 30s sensitive scrub),
+ * NOTIFICATION (phone notifs relayed onto the desktop), INPUT (uinput
+ * receiver for remote pointer/keyboard), and MEDIA_CONTROL only when the
+ * MPris/playerctl transport-control path can actually target a player
+ * (headless/CI boxes honestly advertise without it).
+ */
+fun desktopBeaconCapabilities(mediaControlSupported: Boolean): Set<EngineCapability> = buildSet {
+    add(EngineCapability.FILE)
+    add(EngineCapability.CLIPBOARD)
+    add(EngineCapability.NOTIFICATION)
+    add(EngineCapability.INPUT)
+    if (mediaControlSupported) {
+        add(EngineCapability.MEDIA_CONTROL)
+    }
+}
 
 class ContinuityHubController(
     private val scope: CoroutineScope,
@@ -121,6 +143,11 @@ class ContinuityHubController(
     private var daemonIpcServer: LocalDaemonIpcServer? = null
     private var pairingQrRefreshJob: Job? = null
     private var reconnectJob: Job? = null
+    private var presenceBeaconJob: Job? = null
+    private var presenceAuthJob: Job? = null
+
+    /** MPris probe for the MEDIA_CONTROL beacon bit (injected launcher, CI-safe). */
+    private val mprisMediaSource = MprisDesktopMediaSource()
 
     private val _isDarkTheme = MutableStateFlow(true)
     val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
@@ -279,6 +306,7 @@ class ContinuityHubController(
         startNotificationForwardLoop()
         startPairingQrRefreshLoop()
         startReconnectSupervisor()
+        startPresenceBeaconLoop()
     }
 
     fun refreshLinuxCapabilities() {
@@ -343,6 +371,73 @@ class ContinuityHubController(
     }
 
     private val supervisorLog = java.util.logging.Logger.getLogger("ec0.hub.reconnect")
+
+    /**
+     * Presence-beacon leg (docs/engine/design.md §6.5): the desktop must
+     * broadcast ITS OWN beacon too — the phone renders its dashboard tiles
+     * from the desktop's beacons (`node.peerPresence` on the phone tracks the
+     * RECEIVED desktop beacons; `hub.peerPresence` here tracks the phone's —
+     * the two directions are independent). Without this leg both tile
+     * registries render empty.
+     *
+     * Two triggers: a reactive leg broadcasts the moment `connectionStates`
+     * reports CONNECTED (StateFlow collect replays the current value, so an
+     * already-live session at hub start is covered too — no 15 s dead window
+     * after pairing), plus a 15 s ticker refreshing caps/battery on the same
+     * cadence as the reconnect supervisor.
+     *
+     * Battery fields are desktop placeholders (no battery on a desktop) — the
+     * phone's tile registry consumes capabilities, not battery, for desktops.
+     */
+    private fun startPresenceBeaconLoop() {
+        presenceBeaconJob?.cancel()
+        presenceAuthJob?.cancel()
+        presenceBeaconJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                broadcastPresenceBeacons()
+                delay(15_000L)
+            }
+        }
+        presenceAuthJob = scope.launch(Dispatchers.IO) {
+            node.connectionStates.collect { states ->
+                for ((deviceId, state) in states) {
+                    if (state == EngineConnectionState.CONNECTED) {
+                        broadcastPresenceBeaconTo(deviceId)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Broadcasts the desktop beacon to every peer with a live engine session. */
+    private fun broadcastPresenceBeacons() {
+        val peerIds = node.pinnedPeers.value.map { it.deviceId } + node.connectionStates.value.keys
+        for (deviceId in peerIds.toSet()) {
+            broadcastPresenceBeaconTo(deviceId)
+        }
+    }
+
+    private fun broadcastPresenceBeaconTo(deviceId: String) {
+        val session = node.activeSessionFor(deviceId) ?: return
+        val beacon = PresenceBeaconInfo(
+            batteryPct = 100,
+            isCharging = true,
+            screenOn = true,
+            capabilities = desktopBeaconCapabilities(mediaControlSupported = hasMprisMediaSupport()),
+        )
+        // A session can close between the check and the send — beacons are
+        // idempotent refreshes, so a lost race is simply skipped.
+        runCatching { node.presenceService.broadcastBeacon(beacon, session) }
+    }
+
+    /**
+     * True when the session bus enumerates at least one MPris player (the
+     * same transport the phone's media-control commands drive). Probe is
+     * CI/headless-safe: no busctl / no session bus → false, honest beacon.
+     */
+    private fun hasMprisMediaSupport(): Boolean = runCatching {
+        mprisMediaSource.firstPlayerOrNull() != null
+    }.getOrDefault(false)
 
     fun setAutoSyncClipboard(enabled: Boolean) {
         _autoSyncClipboard.value = enabled
@@ -988,6 +1083,8 @@ class ContinuityHubController(
     override fun close() {
         pairingQrRefreshJob?.cancel()
         reconnectJob?.cancel()
+        presenceBeaconJob?.cancel()
+        presenceAuthJob?.cancel()
         clipboardWatchJob?.cancel()
         notifForwardJob?.cancel()
         scrubJob?.cancel()
