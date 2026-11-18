@@ -58,6 +58,8 @@ import ec0.ui.models.IncomingRequest
 import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.PeerLinkState
 import ec0.ui.models.PeerManagementBridge
+import ec0.ui.models.PhoneCameraBridge
+import ec0.ui.models.PhoneCameraGrant
 import ec0.ui.models.RemoteInputBridge
 import ec0.ui.models.SettingsState
 import ec0.ui.models.TransferDirection
