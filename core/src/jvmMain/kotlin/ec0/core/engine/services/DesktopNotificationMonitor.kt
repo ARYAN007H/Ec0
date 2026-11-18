@@ -104,7 +104,7 @@ class DesktopNotificationMonitor(
             if (line.isBlank()) {
                 val block = buffer.toString()
                 buffer.clear()
-                val info = DesktopNotificationParser.parseNotifyBlock(block, clock()) ?: return@line
+                val info = DesktopNotificationParser.parseNotifyBlock(block, clock()) ?: return@monitorRunner
                 val policy = policyProvider()
                 val minuteOfDay = java.time.LocalTime.now().let { it.hour * 60 + it.minute }
                 if (DesktopNotificationParser.shouldRelay(info, policy, minuteOfDay)) {

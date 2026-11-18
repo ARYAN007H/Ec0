@@ -121,7 +121,7 @@ object UinputEvdevCodec {
                 else -> return null
             }
         }
-        return base to shifted
+        return base.toShort() to shifted
     }
 }
 
@@ -342,7 +342,7 @@ object UinputSinkSelector {
         ydotooldLive -> InputSinkSelection.Ydotoold(LinuxInputBackend.YDOTOOL_WAYLAND)
         else -> InputSinkSelection.Unavailable(
             "Remote input needs /dev/uinput write access (add yourself to the 'input' group and re-login) " +
-                "or a running ydotoold daemon. Setup: sudo gpasswd -a $USER input && sudo modprobe uinput",
+                "or a running ydotoold daemon. Setup: sudo gpasswd -a \${USER:-\$LOGNAME} input && sudo modprobe uinput",
         )
     }
 }
