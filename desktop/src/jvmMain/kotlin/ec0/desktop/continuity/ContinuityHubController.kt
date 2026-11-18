@@ -85,7 +85,7 @@ data class StudioQuickCommand(
     val title: String,
     val category: String,
     val shortcutHint: String,
-    action: () -> Unit,
+    val action: () -> Unit,
 )
 
 /**
