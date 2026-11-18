@@ -180,6 +180,16 @@ class Ec0EngineNode(
     private val onRemoteHotspotCommand: (HotspotControlCommand) -> HotspotStatusInfo? = { null },
     private val onRemoteCallAction: (CallActionCommand) -> Boolean = { false },
     private val onRemoteMediaControl: (MediaControlCommand) -> MediaSessionInfo? = { null },
+    /**
+     * RFC 6455 PING heartbeat for BOTH roles' sessions. Never run this at 0:
+     * both transports enforce a [sessionIoTimeoutMs] read timeout, and with a
+     * silent peer (no clipboard/notification/beacon traffic) every session dies
+     * at exactly that timeout — observed live as a ~60 s session churn where the
+     * reconnect supervisor kept masking the outage by re-dialing.
+     */
+    private val sessionPingIntervalMs: Long = 5_000L,
+    /** Read timeout for both roles' sessions; pings refresh it 10× per interval. */
+    private val sessionIoTimeoutMs: Int = 50_000,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) : Closeable {
 
@@ -310,7 +320,8 @@ class Ec0EngineNode(
         pairingCoordinator = pairingCoordinator,
         endpointResolver = endpointResolver,
         offlineDeduplicator = offlineDeduplicator,
-        pingIntervalMs = 0L,
+        ioTimeoutMs = sessionIoTimeoutMs,
+        pingIntervalMs = sessionPingIntervalMs,
         nowMs = clockMs,
         onEndpointLearned = { deviceId, host, port ->
             (pinStore as? PersistentPinStore)?.recordKnownEndpoint(deviceId, host, port, clockMs())
@@ -323,7 +334,8 @@ class Ec0EngineNode(
         pairingCoordinator = pairingCoordinator,
         bindPort = listenPort,
         offlineDeduplicator = offlineDeduplicator,
-        pingIntervalMs = 0L,
+        ioTimeoutMs = sessionIoTimeoutMs,
+        pingIntervalMs = sessionPingIntervalMs,
         nowMs = clockMs,
         onSessionAuthenticated = { session ->
             engineLog.info(
@@ -682,6 +694,11 @@ class Ec0EngineNode(
         } catch (_: Exception) {
             // Connection dropped or closed
         } finally {
+            // Abandoned sessions MUST close their socket: the loop exits on a
+            // read timeout or EOF while the TCP connection lingers, leaking a
+            // CLOSE_WAIT socket on both ends per churn cycle (observed piling
+            // up on the phone's /proc/net/tcp6).
+            runCatching { session.close() }
             if (sessionsByPeer.remove(peerId, session)) {
                 setConnectionState(peerId, EngineConnectionState.DISCONNECTED)
             }
