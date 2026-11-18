@@ -184,11 +184,14 @@ class ClipboardPushSenderTest {
 
         h.sender.pushCandidate("pushed while armed", sensitive = false)
         assertEquals(1, h.pushed.size)
+        val shaAfterArmedPush = h.sender.lastPushedSha256
 
         paused = true
         h.sender.pushCandidate("copied while paused", sensitive = false)
         assertEquals(1, h.pushed.size, "paused sync must push nothing")
-        assertEquals(null, h.sender.lastPushedSha256, "a paused push must not claim the dedupe slot")
+        // The slot still holds the LEGITIMATE armed push — a paused candidate
+        // must not claim (or overwrite) it.
+        assertEquals(shaAfterArmedPush, h.sender.lastPushedSha256, "a paused push must not claim the dedupe slot")
 
         paused = false
         h.sender.pushCandidate("copied after resume", sensitive = false)
