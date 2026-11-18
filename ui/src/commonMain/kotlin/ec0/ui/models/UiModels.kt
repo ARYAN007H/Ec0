@@ -75,6 +75,33 @@ data class SettingsState(
     val ownFingerprint: String = "",
     /** Desktop only: closing the window hides it to the tray instead of exiting. */
     val minimizeToTray: Boolean = true,
+    /** B5 mirror options — fps/bitrate wire through the mirror command today. */
+    val mirrorMaxFps: Int = 60,
+    val mirrorBitrateMbps: Int = 8,
+    /** Pending coordinator support (ScrcpyMirrorCoordinator is protected). */
+    val mirrorAudio: Boolean = true,
+    val mirrorRotation: String = "auto",
+    /** B6 VFS browser state — read-only listing from the phone's granted roots. */
+    val notifRelayEnabled: Boolean = false,
+    val notifRelayDisabledApps: Set<String> = emptySet(),
+    val notifQuietHoursEnabled: Boolean = false,
+    val notifQuietStartMin: Int = 22 * 60,
+    val notifQuietEndMin: Int = 8 * 60,
+    val notifTitleOnly: Boolean = false,
+)
+
+/** B6: one phone-side file entry rendered by the VFS browser. */
+data class VfsEntry(
+    val name: String,
+    val isDir: Boolean,
+    val size: Long,
+)
+
+/** B6: VFS browser UI state — parsed listing or an honest error. */
+data class VfsBrowseState(
+    val path: String? = null,
+    val entries: List<VfsEntry> = emptyList(),
+    val error: String? = null,
 )
 
 /**

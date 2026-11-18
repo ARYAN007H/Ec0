@@ -79,5 +79,8 @@ fun SharePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
                 }
             }
         }
+
+        SectionHeader("Phone files (VFS)")
+        VfsPanel(bridge)
     }
 }
