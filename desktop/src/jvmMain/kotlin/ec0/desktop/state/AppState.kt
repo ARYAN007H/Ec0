@@ -61,6 +61,10 @@ class AppState(
     /**
      * Settings survive restarts: JSON at ~/.config/ec0/settings.json, written atomically
      * (tmp + rename) on every change. Trust decisions, alias, theme and PIN live here.
+     *
+     * Walled-garden hardening (audit M3): persisted through the same 0600-file /
+     * 0700-dir helpers as the identity store — this JSON carries the LocalSend PIN
+     * and the trust registry, so a default-umask 644 file is not acceptable.
      */
     private fun loadPersistedSettings(): SettingsState = runCatching {
         val file = File(ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(), "settings.json")
@@ -78,14 +82,11 @@ class AppState(
     private fun persistSettings(state: SettingsState) {
         runCatching {
             val dir = ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir()
-            dir.mkdirs()
-            val tmp = File(dir, "settings.json.tmp")
-            tmp.writeText(Json.encodeToString(state))
-            val file = File(dir, "settings.json")
-            if (!tmp.renameTo(file)) {
-                file.writeText(tmp.readText())
-                tmp.delete()
-            }
+            ec0.core.engine.crypto.EncryptedIdentityStore.ensureDirectoryPermissions(dir)
+            ec0.core.engine.crypto.EncryptedIdentityStore.atomicWriteText(
+                File(dir, "settings.json"),
+                Json.encodeToString(state),
+            )
         }
     }
 
@@ -208,11 +209,17 @@ class AppState(
 
     init {
         runCatching { receiver.start() }.onFailure {
-            // TEMP diagnostic: the deb launcher swallows stderr, so write the
-            // failure where a user/dev can actually see it.
-            java.io.File("/tmp/ec0-receiver-error.txt").writeText(it.stackTraceToString())
+            // Diagnostic: the deb launcher swallows stderr, so write the failure
+            // where a user/dev can actually see it. (audit M5: never /tmp — a
+            // fixed name in a world-writable dir is a symlink-clobber vector;
+            // the ec0 config dir is 0700 and user-owned.)
+            ec0.core.engine.crypto.EncryptedIdentityStore.atomicWriteText(
+                File(ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(), "receiver-error.txt"),
+                it.stackTraceToString(),
+            )
         }
-        java.io.File("/tmp/ec0-receiver-status.txt").writeText(
+        ec0.core.engine.crypto.EncryptedIdentityStore.atomicWriteText(
+            File(ec0.core.engine.crypto.EncryptedIdentityStore.defaultConfigDir(), "receiver-status.txt"),
             "started=${receiver.boundPort != null} boundPort=${receiver.boundPort} at=${System.currentTimeMillis()}",
         )
         scope.launch {

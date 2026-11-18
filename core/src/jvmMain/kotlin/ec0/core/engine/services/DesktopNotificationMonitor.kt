@@ -33,13 +33,22 @@ data class NotificationRelayPolicy(
 
 object DesktopNotificationParser {
 
+    /** Walled-garden content caps (audit M1): relayed content is bounded. */
+    const val MAX_BLOCK_CHARS: Int = 65_536
+    const val MAX_RELAYS_PER_MINUTE: Long = 60
+    const val RELAY_REFILL_PER_SECOND: Long = 1
+
     /**
      * Parses one `dbus-monitor` Notify method-call block into a
      * [NotificationPostInfo]. Reference Notify signature:
      * `Notify(app_name UINT32 replaces_id icon summary body actions…)` —
      * dbus-monitor prints the body strings in order.
+     *
+     * Oversize blocks (> [MAX_BLOCK_CHARS]) return null — a local app flooding
+     * the session bus cannot balloon the parser or the relay envelope.
      */
     fun parseNotifyBlock(block: String, nowMs: Long): NotificationPostInfo? {
+        if (block.length > MAX_BLOCK_CHARS) return null
         if (!block.contains("member=Notify")) return null
         val stringArgs = Regex("string\\s+\"([^\"]*)\"").findAll(block).map { it.groupValues[1] }.toList()
         // string args: [sender, app_name, icon, summary(title), body, …]
@@ -56,7 +65,7 @@ object DesktopNotificationParser {
             body = body,
             timestampMs = nowMs,
             canReply = false,
-        )
+        ).sanitized()
     }
 
     /** Splits a raw dbus-monitor stream into per-call blocks (method-call … next). */
@@ -91,8 +100,17 @@ class DesktopNotificationMonitor(
     private val monitorRunner: (List<String>, onLine: (String) -> Unit) -> Unit = { _, _ -> },
     private val sender: (NotificationPostInfo) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Relay flood cap (audit M1): a local app cannot saturate the peer link. */
+    private val relayLimiter: ec0.core.engine.TokenBucketRateLimiter = ec0.core.engine.TokenBucketRateLimiter(
+        capacityPerPeer = DesktopNotificationParser.MAX_RELAYS_PER_MINUTE,
+        refillPerSecond = DesktopNotificationParser.RELAY_REFILL_PER_SECOND,
+    ),
 ) {
     private val running = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Honest telemetry: relays dropped by the flood cap. */
+    val rateLimitedRelays: Long get() = rateLimitedRelayCount.get()
+    private val rateLimitedRelayCount = java.util.concurrent.atomic.AtomicLong(0L)
 
     fun isRunning(): Boolean = running.get()
 
@@ -100,6 +118,11 @@ class DesktopNotificationMonitor(
         if (!running.compareAndSet(false, true)) return
         val buffer = StringBuilder()
         monitorRunner(listOf("dbus-monitor", "--session")) { line ->
+            // Block buffer ceiling: a block with no blank line can never grow unbounded.
+            if (buffer.length > DesktopNotificationParser.MAX_BLOCK_CHARS) {
+                buffer.clear()
+                return@monitorRunner
+            }
             buffer.appendLine(line)
             if (line.isBlank()) {
                 val block = buffer.toString()
@@ -108,6 +131,10 @@ class DesktopNotificationMonitor(
                 val policy = policyProvider()
                 val minuteOfDay = java.time.LocalTime.now().let { it.hour * 60 + it.minute }
                 if (DesktopNotificationParser.shouldRelay(info, policy, minuteOfDay)) {
+                    if (!relayLimiter.tryAcquire("desktop-notif-relay")) {
+                        rateLimitedRelayCount.incrementAndGet()
+                        return@monitorRunner
+                    }
                     sender(DesktopNotificationParser.applyPrivacy(info, policy))
                 }
             }

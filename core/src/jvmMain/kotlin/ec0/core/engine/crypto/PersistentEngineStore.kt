@@ -177,7 +177,12 @@ class EncryptedIdentityStore(
         fun forAppFilesDir(appFilesDir: File, secretOverride: ByteArray? = null): EncryptedIdentityStore =
             EncryptedIdentityStore(configDir = File(appFilesDir, "ec0"), secretOverride = secretOverride)
 
-        internal fun ensureDirectoryPermissions(dir: File) {
+        /**
+         * Forces `rwx------` (0700) on [dir]. Public so host applications (the
+         * desktop app persists its LocalSend PIN there — audit M3) reuse the
+         * exact same hygiene as the identity store instead of reinventing it.
+         */
+        fun ensureDirectoryPermissions(dir: File) {
             if (!dir.exists()) {
                 dir.mkdirs()
             }
@@ -192,7 +197,11 @@ class EncryptedIdentityStore(
             }
         }
 
-        internal fun atomicWriteText(target: File, content: String) {
+        /**
+         * Atomic secret-bearing file write: 0600 temp file + rename. Public for
+         * host applications that persist trust material (audit M3/M5).
+         */
+        fun atomicWriteText(target: File, content: String) {
             target.parentFile?.mkdirs()
             val tmp = File(target.parentFile, "${target.name}.tmp")
             tmp.writeText(content)

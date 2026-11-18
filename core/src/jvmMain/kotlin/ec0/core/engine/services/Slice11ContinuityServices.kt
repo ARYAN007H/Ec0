@@ -443,7 +443,14 @@ class LocalDaemonIpcServer(
                 ?: return
             val obj = runCatching { Json.parseToJsonElement(line) as? JsonObject }.getOrNull() ?: return
             val token = (obj["token"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return
-            if (!token.equals(authTokenHex, ignoreCase = true)) {
+            // Constant-time compare (audit L1): the token gates arbitrary file
+            // hand-off to the paired peers, so keep the check tamper-proof.
+            val tokenOk = token.length == authTokenHex.length &&
+                ec0.core.engine.EngineEncoding.constantTimeEquals(
+                    token.encodeToByteArray(),
+                    authTokenHex.encodeToByteArray(),
+                )
+            if (!tokenOk) {
                 writeResponse(sock, ok = false, message = "unauthorized")
                 return
             }
