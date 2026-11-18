@@ -24,6 +24,7 @@ import ec0.core.engine.protocol.CamDroidV1Packet
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.Closeable
@@ -131,7 +132,7 @@ class CamDroidStreamReceiver(
     val snapshot: StateFlow<CamDroidReceiverSnapshot> = _snapshot.asStateFlow()
 
     private fun update(update: (CamDroidReceiverSnapshot) -> CamDroidReceiverSnapshot) {
-        _snapshot.updateAndGet(update)
+        _snapshot.update(update)
     }
 
     /**
