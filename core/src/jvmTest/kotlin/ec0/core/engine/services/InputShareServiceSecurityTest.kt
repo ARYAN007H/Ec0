@@ -256,8 +256,9 @@ class LinuxInputInjectionBridgeClampTest {
             bridge.buildPointerCommand(LinuxInputBackend.YDOTOOL_WAYLAND, hugeMove),
         )
         val hugeScroll = InputPointerEvent(action = InputProtocol.POINTER_ACTION_SCROLL, scrollY = -99_999)
+        // negative scrollY clamps in-range and maps to wheel button 5 (scroll up)
         assertEquals(
-            listOf("xdotool", "click", "4"),
+            listOf("xdotool", "click", "5"),
             bridge.buildPointerCommand(LinuxInputBackend.XDOTOOL_X11, hugeScroll),
         )
     }
