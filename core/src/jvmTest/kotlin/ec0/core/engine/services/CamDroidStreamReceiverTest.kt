@@ -46,9 +46,9 @@ class CamDroidStreamReceiverTest {
     /** Scripted fake phone: validates the handshake, then plays packets. */
     private class FakePhoneServer(
         private val expectedToken: String?,
-        private val script: (FakePhoneSession) -> Unit,
         /** How long the socket stays open after the script finishes. */
         private val holdOpenMs: Long = 400,
+        private val script: (FakePhoneSession) -> Unit,
     ) {
         val server = ServerSocket(0).apply { reuseAddress = true }
         val handshakeSeen = AtomicReference<String?>(null)
