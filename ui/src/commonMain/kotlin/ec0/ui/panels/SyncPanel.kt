@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -58,6 +59,23 @@ fun SyncPanel(bridge: UiBridge) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         SectionHeader("Sync & continuity")
+
+        // Deep-integration A1 (Android only): remote input senders.
+        bridge.remoteInput?.let { remoteInput ->
+            val available = remoteInput.available.collectAsState().value
+            FeatureCard(
+                icon = Icons.Filled.Mouse,
+                accent = ec0Colors().synergy,
+                title = "Remote input",
+                live = available,
+                onToggle = if (available) ({ remoteInput.openTouchpad() }) else null,
+                detail = if (available) {
+                    "Touchpad, keyboard and volume rocker for the paired desktop"
+                } else {
+                    "Connects when the desktop negotiates the remote-input capability"
+                },
+            )
+        }
 
         FeatureCard(
             icon = Icons.Filled.ContentCopy,

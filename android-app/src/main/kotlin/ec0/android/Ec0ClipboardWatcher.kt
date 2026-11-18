@@ -163,9 +163,20 @@ class AndroidClipboardWatcher(
     /** Exposed for the dashboard honesty card / tests. */
     val lastPushedSha256: String? get() = sender.lastPushedSha256
 
+    @Volatile
+    private var enabled = true
+
+    /** QS-tile / dashboard toggle: enables or pauses phone→PC clipboard pushes. */
+    fun setEnabled(value: Boolean) {
+        enabled = value
+        if (value) start() else stop()
+    }
+
+    fun isStarted(): Boolean = started.get() && enabled
+
     /** Idempotent: safe to call alongside [CompanionServiceHost] start. */
     fun start() {
-        if (started.compareAndSet(false, true)) {
+        if (enabled && started.compareAndSet(false, true)) {
             clipboardManager?.addPrimaryClipChangedListener(this)
         }
     }

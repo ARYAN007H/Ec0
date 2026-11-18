@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Button
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -44,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
+import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Shapes
@@ -51,6 +54,23 @@ import ec0.ui.widgets.SectionHeader
 
 @Composable
 fun SettingsPanel(bridge: UiBridge) {
+    val peerManagement = bridge.peerManagement
+    // Conditional collection is stable here: peerManagement is null only on the
+    // desktop and non-null only on Android (platform-defined, never flips mid-
+    // session). Local vals: smart cast is impossible on interface properties with
+    // custom getters.
+    val peerManagementLocal = bridge.peerManagement
+    val peers: List<PairedPeerInfo> = if (peerManagementLocal != null) {
+        peerManagementLocal.peers.collectAsState().value
+    } else {
+        emptyList()
+    }
+    val remoteInputLocal = bridge.remoteInput
+    val remoteInputAvailable: Boolean = if (remoteInputLocal != null) {
+        remoteInputLocal.available.collectAsState().value
+    } else {
+        false
+    }
     val settings by bridge.settings.collectAsState()
     val pairingQr by bridge.smartConnectPairingQr.collectAsState()
     var aliasDraft by remember(settings.alias) { mutableStateOf(settings.alias) }
@@ -63,6 +83,56 @@ fun SettingsPanel(bridge: UiBridge) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         SectionHeader("Settings")
+
+        // Deep-integration A5 (Android only): paired-device management.
+        if (peerManagementLocal != null) {
+            SettingsCard("Paired devices") {
+                if (peers.isEmpty()) {
+                    Text(
+                        "No pinned peers yet",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                peers.forEach { peer ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(peer.alias, style = MaterialTheme.typography.bodyLarge)
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                if (peer.connected) "connected" else "offline",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (peer.connected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "fingerprint: " + peer.fingerprintPrefix,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        Text(
+                            "trust: " + peer.trustLevel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Remote input", style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.weight(1f))
+                            Switch(
+                                checked = "remote_input" in peer.grantedCapabilities,
+                                onCheckedChange = { granted ->
+                                    peerManagementLocal.setCapability(peer.deviceId, "remote_input", granted)
+                                },
+                            )
+                        }
+                        Button(onClick = { peerManagementLocal.unpair(peer.deviceId) }) {
+                            Text("Unpair")
+                        }
+                    }
+                }
+            }
+        }
 
         pairingQr?.let { qr ->
             SettingsCard("Pair — Smart Connect") {

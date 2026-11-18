@@ -25,12 +25,41 @@
             </intent-filter>
         </activity>
 
+        <!-- Find-my-phone wake screen: launched by the foreground service, shows
+             over the lock screen. Never launched externally. -->
+        <activity
+            android:name=".FindMyRingActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".Ec0CompanionService"
             android:label="ec0 Companion Service"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- A4: Quick Settings tiles (TileService is API 24+, minSdk 28). -->
+        <service
+            android:name=".ClipboardSyncTileService"
+            android:label="Clipboard sync"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".FindMyPcTileService"
+            android:label="Lock my PC"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".Ec0NotificationListener"

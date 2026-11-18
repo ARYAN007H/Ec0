@@ -112,6 +112,31 @@ class AndroidSettingsStore(
         return result
     }
 
+    /**
+     * Deep-integration A5: per-device capability grants (device-management
+     * screen). Stored as one JSON map (deviceId → set of capability wire names)
+     * under a dedicated DataStore key — separate from SettingsState on purpose.
+     */
+    fun deviceCapabilityGrants(): Map<String, Set<String>> = kotlinx.coroutines.runBlocking {
+        runCatching {
+            val prefs = dataStore.data.first()
+            parseDeviceCaps(prefs[KEY_DEVICE_CAPS])
+        }.getOrDefault(emptyMap())
+    }
+
+    fun deviceCapabilityGrantsFlow(): Flow<Map<String, Set<String>>> =
+        dataStore.data.map { prefs -> parseDeviceCaps(prefs[KEY_DEVICE_CAPS]) }
+
+    suspend fun setDeviceCapability(deviceId: String, wireName: String, granted: Boolean) {
+        dataStore.edit { prefs ->
+            val current = parseDeviceCaps(prefs[KEY_DEVICE_CAPS]).toMutableMap()
+            val caps = current[deviceId]?.toMutableSet() ?: mutableSetOf()
+            if (granted) caps.add(wireName) else caps.remove(wireName)
+            if (caps.isEmpty()) current.remove(deviceId) else current[deviceId] = caps
+            prefs[KEY_DEVICE_CAPS] = serializeDeviceCaps(current)
+        }
+    }
+
     private fun mapPreferencesToSettings(
         prefs: Preferences,
         defaultState: SettingsState,
@@ -171,6 +196,7 @@ class AndroidSettingsStore(
         internal val KEY_THEME_SEED = stringPreferencesKey("theme_seed")
         internal val KEY_TRUSTED_FINGERPRINTS = stringSetPreferencesKey("trusted_fingerprints")
         internal val KEY_OWN_FINGERPRINT = stringPreferencesKey("own_fingerprint")
+        internal val KEY_DEVICE_CAPS = stringPreferencesKey("device_capability_grants")
 
         private const val THEME_SYSTEM = "system"
         private const val THEME_DARK = "dark"
@@ -194,3 +220,33 @@ class AndroidSettingsStore(
         }
     }
 }
+
+internal fun parseDeviceCaps(raw: String?): Map<String, Set<String>> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    val fallback = emptyMap<String, Set<String>>()
+    return runCatching {
+        val obj = kotlinx.serialization.json.Json.parseToJsonElement(raw)
+            as kotlinx.serialization.json.JsonObject
+        val result = mutableMapOf<String, MutableSet<String>>()
+        for ((deviceId, element) in obj) {
+            val array = element as? kotlinx.serialization.json.JsonArray ?: continue
+            val caps = mutableSetOf<String>()
+            for (item in array) {
+                val primitive = item as? kotlinx.serialization.json.JsonPrimitive ?: continue
+                if (primitive.isString) caps.add(primitive.content)
+            }
+            result[deviceId] = caps
+        }
+        result as Map<String, Set<String>>
+    }.getOrDefault(fallback)
+}
+
+internal fun serializeDeviceCaps(grants: Map<String, Set<String>>): String =
+    kotlinx.serialization.json.buildJsonObject {
+        grants.forEach { (deviceId, caps) ->
+            put(
+                deviceId,
+                kotlinx.serialization.json.JsonArray(caps.map { kotlinx.serialization.json.JsonPrimitive(it) }),
+            )
+        }
+    }.toString()

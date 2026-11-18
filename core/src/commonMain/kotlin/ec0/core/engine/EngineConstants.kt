@@ -37,6 +37,15 @@ object EngineConstants {
     const val WS_PATH: String = "/ec0/v1"
 
     /**
+     * Unpair notice (deep-integration slice A5): sent category="system" over a
+     * live session when the peer's pin is revoked from the device-management
+     * screen. Both agents use this exact cmd_type (hub coordination note). The
+     * receiver unpins the SENDER and closes the session.
+     */
+    const val CMD_UNPAIR: String = "unpair"
+    const val CATEGORY_SYSTEM: String = "system"
+
+    /**
      * Dedicated primary listener port for ec0-engine (`49880`), deliberately distinct
      * from O+ Synergy (`8080`/`8792`), LocalSend (`53317`), and KDE Connect (`1716`)
      * so all four protocol stacks can run concurrently on the same host without
