@@ -50,12 +50,12 @@ class VfsDesktopServiceTest {
             })
         }
         assertTrue(service.handleControlEnvelope(envelope(VfsProtocol.INFO_VFS_DIR, body)))
-        val state = service.browseState.value
-        assertEquals("/storage/emulated/0/DCIM", state.path)
-        assertEquals(2, state.entries.size)
-        assertEquals("Camera", state.entries[0].name)
-        assertTrue(state.entries[0].isDir)
-        assertEquals(12345L, state.entries[1].size)
+        val reply = service.browseState.value!!
+        assertEquals("/storage/emulated/0/DCIM", reply.path)
+        assertEquals(2, reply.entries.size)
+        assertEquals("Camera", reply.entries[0].name)
+        assertTrue(reply.entries[0].isDir)
+        assertEquals(12345L, reply.entries[1].size)
     }
 
     @Test
