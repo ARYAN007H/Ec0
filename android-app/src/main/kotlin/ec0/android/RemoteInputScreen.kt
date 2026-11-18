@@ -11,8 +11,10 @@
  *   - volume rocker: PC Volume Up / Down / Mute as key events.
  *
  * Latency contract (plan §P2): pointer deltas are batched ≤8 ms and coalesced —
- * one MOVE per flush, clicks/scrolls ride in the same burst. The AEAD session
- * authenticates the stream; no per-event envelope signing.
+ * one MOVE per flush, clicks/scrolls ride in the same burst. Every burst is a
+ * signed Ec0Envelope inside the AEAD session (sendCmd → Ed25519 + ChaCha20-Poly1305
+ * per flush — the desktop receiver's replay window and rate limiter see the
+ * coalesced stream, so burst cost is one envelope per ≤8 ms).
  *
  * Pure logic ([PointerEventBatcher], [PointerGestures]) is same-commit
  * unit-tested without android.jar.

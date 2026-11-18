@@ -39,6 +39,19 @@ data class NotificationPostInfo(
         require(packageName.isNotBlank()) { "packageName must not be blank" }
     }
 
+    /**
+     * Walled-garden content caps (audit M1): relayed notification content is
+     * bounded on BOTH the send and receive paths — a local app or paired peer
+     * pushing multi-megabyte strings can neither inflate the peer link nor the
+     * receiving feed. `notifId`/`packageName` keep their integrity requirements.
+     */
+    fun sanitized(): NotificationPostInfo = copy(
+        appName = appName.take(MAX_APP_NAME_CHARS),
+        title = title.take(MAX_TITLE_CHARS),
+        body = body.take(MAX_BODY_CHARS),
+        actions = actions.take(MAX_ACTION_COUNT).map { it.take(MAX_ACTION_CHARS) },
+    )
+
     fun toJsonObject(): JsonObject = buildJsonObject {
         put("actions", buildJsonArray { for (a in actions) add(JsonPrimitive(a)) })
         put("app_name", appName)
@@ -51,6 +64,12 @@ data class NotificationPostInfo(
     }
 
     companion object {
+        const val MAX_TITLE_CHARS: Int = 512
+        const val MAX_BODY_CHARS: Int = 4096
+        const val MAX_APP_NAME_CHARS: Int = 128
+        const val MAX_ACTION_COUNT: Int = 8
+        const val MAX_ACTION_CHARS: Int = 128
+
         fun fromJsonObject(obj: JsonObject): NotificationPostInfo {
             val notifId = (obj["notif_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
                 ?: throw IllegalArgumentException("Missing 'notif_id' in notif_post")

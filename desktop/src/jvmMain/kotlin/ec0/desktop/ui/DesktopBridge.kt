@@ -208,14 +208,25 @@ class DesktopBridge(
     }
 
     // B6 VFS browser — requests ride the live engine session; replies arrive
-    // through vfsDesktopService.handleControlEnvelope (node dispatch = the
-    // documented agent-0 one-liner handoff).
+    // through vfsDesktopService.handleControlEnvelope, registered on the node's
+    // walled-garden control-envelope interceptor (the documented handoff). The
+    // hardened service applies the reply rate limit, the 2 GiB assembler cap,
+    // and the canonical containment check before anything lands on disk.
     private val vfsDesktopService = ec0.core.engine.services.VfsDesktopService(
         destinationDir = java.nio.file.Path.of(
             appState.settings.value.downloadDir.takeIf { it.isNotBlank() }
                 ?: (System.getProperty("user.home") + "/Downloads"),
         ),
     )
+
+    init {
+        val hubNode = hub?.node
+        if (hubNode != null) {
+            hubNode.controlEnvelopeInterceptor = { _, envelope ->
+                vfsDesktopService.handleControlEnvelope(envelope)
+            }
+        }
+    }
 
     override val vfsBrowseState: StateFlow<VfsBrowseState?> = vfsDesktopService.browseState
         .map { reply ->

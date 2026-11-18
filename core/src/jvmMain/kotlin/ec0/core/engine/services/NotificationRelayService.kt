@@ -101,7 +101,9 @@ class NotificationRelayService(
         val body = envelope.innerBodyObject ?: return false
         return when (envelope.bodyType) {
             NotificationProtocol.INFO_NOTIF_POST -> {
-                val post = NotificationPostInfo.fromJsonObject(body)
+                // Walled-garden content caps (audit M1): incoming relayed posts are
+                // size-bounded before they touch the bounded feed.
+                val post = NotificationPostInfo.fromJsonObject(body).sanitized()
                 upsertLocal(post)
                 true
             }

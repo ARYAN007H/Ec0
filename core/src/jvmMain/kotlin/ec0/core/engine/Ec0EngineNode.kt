@@ -215,6 +215,16 @@ class Ec0EngineNode(
 
     val inputShareService = InputShareService(
         sink = inputEventSink,
+        // Walled-garden capability gate (audit H1): input injection is scoped to
+        // peers whose VERIFIED presence beacon advertises an input capability.
+        // The lambda defers the read to dispatch time (presenceService is
+        // constructed below) and allows peers that have not sent a beacon yet.
+        capabilityGate = { peerDeviceId ->
+            val beacon = presenceService.peerPresence.value[peerDeviceId]
+            beacon == null ||
+                EngineCapability.INPUT in beacon.capabilities ||
+                EngineCapability.REMOTE_INPUT in beacon.capabilities
+        },
     )
 
     val notificationRelayService = NotificationRelayService(
@@ -331,6 +341,17 @@ class Ec0EngineNode(
     )
 
     private val engineLog = java.util.logging.Logger.getLogger("ec0.engine.node")
+
+    /**
+     * Walled-garden dispatch hook (audit H2): lets the host application route
+     * reply-category envelopes (e.g. B6 VFS `vfs_dir`/`vfs_chunk`) that no core
+     * service owns, WITHOUT widening the engine's own attack surface — the
+     * interceptor runs only after the caller has applied its own rate limits
+     * and containment checks. First interceptor returning `true` consumes the
+     * envelope. Registered by the desktop UI bridge for the VFS reply path.
+     */
+    @Volatile
+    var controlEnvelopeInterceptor: ((peerDeviceId: String, envelope: Ec0Envelope) -> Boolean)? = null
 
     private val sessionsByPeer = ConcurrentHashMap<String, Ec0Session>()
 
@@ -693,9 +714,23 @@ class Ec0EngineNode(
             return
         }
 
+        // Host-registered interceptor (VFS replies) — runs first, consumes the envelope.
+        controlEnvelopeInterceptor?.let { interceptor ->
+            if (interceptor(peerDeviceId, envelope)) return
+        }
+
+        // Walled-garden unpair receiver (audit H3): the wire `unpair` command is
+        // authorized for the sender's OWN pairing only. A device_id field, when
+        // present, must match the authenticated session's peer id — peer A can
+        // never unpair peer B. On success: session closed + engine pin removed.
+        if (envelope.bodyType == EngineConstants.CMD_UNPAIR) {
+            handleUnpairCommand(peerDeviceId, envelope)
+            return
+        }
+
         if (clipboardService.handleControlEnvelope(envelope)) return
         if (fileTransferService.handleControlEnvelope(envelope, fileTransport)) return
-        if (inputShareService.handleControlEnvelope(envelope)) return
+        if (inputShareService.handleControlEnvelope(peerDeviceId, envelope)) return
         if (notificationRelayService.handleControlEnvelope(envelope)) return
         if (presenceService.handleControlEnvelope(peerDeviceId, envelope)) return
         if (scrcpyCoordinator.handleControlEnvelope(envelope)) return
@@ -704,6 +739,31 @@ class Ec0EngineNode(
         if (hotspotAndTelephonyService.handleControlEnvelope(envelope)) return
         if (mediaSessionBridgeService.handleControlEnvelope(envelope)) return
         if (handoffAndProximityService.handleControlEnvelope(envelope)) return
+    }
+
+    /**
+     * Handles a verified `unpair` command (category "system") from [senderDeviceId].
+     * Authorization: the sender may only unpair itself; a `device_id` body field
+     * that names a DIFFERENT peer is rejected (logged, ignored). Completeness:
+     * drops the session and removes the sender's engine pin + recorded endpoint.
+     * LocalSend trusted fingerprints and VFS root grants are separate registries
+     * (see docs/security-audit.md — per-peer mapping is a tracked follow-up).
+     */
+    private fun handleUnpairCommand(senderDeviceId: String, envelope: Ec0Envelope) {
+        val body = envelope.innerBodyObject
+        if (body != null) {
+            val claimedDeviceId = (body["device_id"] as? JsonPrimitive)?.content
+            if (claimedDeviceId != null && !claimedDeviceId.equals(senderDeviceId, ignoreCase = true)) {
+                engineLog.warning(
+                    "Rejected unpair from $senderDeviceId: device_id field names a different peer",
+                )
+                return
+            }
+        }
+        val removed = unpairPeer(senderDeviceId)
+        if (removed) {
+            engineLog.info("Peer $senderDeviceId unpaired itself (wire unpair command)")
+        }
     }
 
     private fun sessionFileTransport(session: Ec0Session): FileTransferService.OutboundTransport =

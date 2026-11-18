@@ -63,6 +63,16 @@ class FileTransferService(
         const val SOFTAP_CHUNK_BYTES: Int = 64 * 1024 // 64 KiB for SoftAP / high-jitter links
 
         /**
+         * Walled-garden caps on incoming offers (audit M4): offers auto-accept
+         * by design, so a compromised paired peer must not be able to exhaust
+         * the state map or fill the disk without bound. Generous enough that
+         * real folder sync is unaffected.
+         */
+        const val MAX_FILES_PER_INCOMING_OFFER: Int = 4_096
+        const val MAX_TOTAL_BYTES_PER_INCOMING_OFFER: Long = 64L * 1024 * 1024 * 1024
+        const val MAX_CONCURRENT_INCOMING_TRANSFERS: Int = 4
+
+        /**
          * Selects an optimal file transfer chunk size (`64 KiB`, `256 KiB`, or `1 MiB`)
          * based on measured link RTT (`rttMs`) and whether the connection traverses a
          * mobile hotspot (`isSoftApLink`).
@@ -275,6 +285,25 @@ class FileTransferService(
     }
 
     private fun handleIncomingOffer(offer: FileOfferCommand, transport: OutboundTransport) {
+        evictTerminalIncomingTransfers()
+        // Walled-garden caps (audit M4): reject oversize offers honestly BEFORE
+        // registering state or writing any part/resume files.
+        if (offer.files.size > MAX_FILES_PER_INCOMING_OFFER ||
+            offer.totalBytes > MAX_TOTAL_BYTES_PER_INCOMING_OFFER ||
+            incomingTransfers.size >= MAX_CONCURRENT_INCOMING_TRANSFERS
+        ) {
+            failIncomingOfferAtGate(
+                offer,
+                reason = when {
+                    offer.files.size > MAX_FILES_PER_INCOMING_OFFER ->
+                        "offer exceeds ${MAX_FILES_PER_INCOMING_OFFER} files per incoming transfer"
+                    offer.totalBytes > MAX_TOTAL_BYTES_PER_INCOMING_OFFER ->
+                        "offer exceeds ${MAX_TOTAL_BYTES_PER_INCOMING_OFFER} total bytes per incoming transfer"
+                    else -> "too many concurrent incoming transfers (max $MAX_CONCURRENT_INCOMING_TRANSFERS)"
+                },
+            )
+            return
+        }
         val filesById = linkedMapOf<String, IncomingFileState>()
         val filesByStreamId = linkedMapOf<Int, IncomingFileState>()
         val resumeMap = linkedMapOf<String, Int>()
@@ -577,6 +606,39 @@ class FileTransferService(
             }
         }
         return true
+    }
+
+    /** Records a FAILED snapshot for an offer rejected at the cap gate (no accept sent). */
+    private fun failIncomingOfferAtGate(offer: FileOfferCommand, reason: String) {
+        updateSnapshot(
+            TransferProgressSnapshot(
+                transferId = offer.transferId,
+                isOutgoing = false,
+                state = FileTransferState.FAILED,
+                totalBytes = offer.totalBytes,
+                transferredBytes = 0L,
+                totalFiles = offer.files.size,
+                completedFiles = 0,
+                failureReason = reason,
+            ),
+        )
+    }
+
+    /**
+     * Drops finished incoming contexts (terminal snapshots) so the concurrency
+     * cap measures ACTIVE transfers and the stream-id routing map cannot grow
+     * without bound across a long-running session.
+     */
+    private fun evictTerminalIncomingTransfers() {
+        val terminalIds = incomingTransfers.keys.filter { id ->
+            _transfers.value[id]?.state?.isTerminal == true
+        }
+        for (id in terminalIds) {
+            val ctx = incomingTransfers.remove(id) ?: continue
+            for (streamId in ctx.filesByStreamId.keys) {
+                streamIdToTransferId.remove(streamId)
+            }
+        }
     }
 
     private fun handleIncomingCancel(cancel: FileCancelCommand) {
