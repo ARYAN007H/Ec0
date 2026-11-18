@@ -38,6 +38,7 @@ class UinputEventSinkTest {
             ringCapacity = 8,
             flushIntervalMs = 8,
             timeSource = { 0L }, // never "due" — tests flush explicitly
+            forceChannel = true,
             openChannel = { channel = capture; capture as java.nio.channels.WritableByteChannel },
         )
         return sink to { channel?.out?.toByteArray() ?: ByteArray(0) }

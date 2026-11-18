@@ -167,6 +167,8 @@ class UinputEventSink(
     private val ringCapacity: Int = 512,
     /** Injectable so tests can drive flushes deterministically. */
     private val timeSource: () -> Long = System::nanoTime,
+    /** Bypass the /dev/uinput writability probe (tests with a fake device). */
+    private val forceChannel: Boolean = false,
     private val openChannel: (String) -> WritableByteChannel = {
         FileChannel.open(
             java.nio.file.Path.of(it),
@@ -185,7 +187,7 @@ class UinputEventSink(
     private val closed = AtomicBoolean(false)
     private val lock = Any()
 
-    val sinkAvailable: Boolean = File(devicePath).canWrite()
+    val sinkAvailable: Boolean = forceChannel || File(devicePath).canWrite()
     private var lastFlushNanos = timeSource()
 
     init {

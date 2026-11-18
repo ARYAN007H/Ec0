@@ -22,15 +22,15 @@ class VfsDesktopServiceTest {
     private val service = VfsDesktopService(destinationDir = Files.createTempDirectory("ec0-vfs"))
 
     private fun envelope(bodyType: String, body: kotlinx.serialization.json.JsonObject) =
-        Json.decodeFromString(
-            ec0.core.engine.Ec0Envelope.serializer(),
-            buildJsonObject {
-                put("msg_type", "info")
-                put("info_type", bodyType)
-                put("info_body", body)
-                put("src_role", "phone")
-                put("timestamp", 0L)
-            }.toString(),
+        ec0.core.engine.Ec0Envelope(
+            msgType = "info",
+            msgBody = body,
+            srcRole = "phone",
+            category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS,
+            timestamp = 0L,
+            seq = 0L,
+            nonce = 0L,
+            sig = "test",
         )
 
     @Test

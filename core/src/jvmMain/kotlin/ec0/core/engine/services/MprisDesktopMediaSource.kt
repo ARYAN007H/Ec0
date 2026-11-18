@@ -90,7 +90,11 @@ object MprisParser {
             val first = (valueObj["data"]?.jsonArray?.firstOrNull()) ?: continue
             when (type) {
                 "s" -> out[key] = first.jsonPrimitive.content
-                "as" -> out[key] = first.jsonArray.joinToString(", ") { it.jsonPrimitive.content }
+                "as" -> out[key] = when (first) {
+                    is kotlinx.serialization.json.JsonArray ->
+                        first.joinToString(", ") { it.jsonPrimitive.content }
+                    else -> first.jsonPrimitive.content
+                }
                 "x" -> out[key] = (first.jsonPrimitive.longOrNull ?: 0L).toString()
             }
         }
