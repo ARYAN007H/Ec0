@@ -79,7 +79,7 @@ class VfsDesktopServiceTest {
         val sender = { cmd: String, body: kotlinx.serialization.json.JsonObject -> sent.add(cmd to body) }
 
         // out-of-order + a duplicate of the second chunk
-        service.download({ _, _ -> }, path = "/pc/readme.txt")
+        service.download(sender = { cmd, body -> sent.add(cmd to body) }, path = "/pc/readme.txt")
         service.handleControlEnvelope(
             envelope(VfsProtocol.INFO_VFS_CHUNK, buildJsonObject {
                 put("path", "/pc/readme.txt"); put("offset", 6L); put("eof", true)
