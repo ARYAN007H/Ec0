@@ -20,7 +20,7 @@ import kotlin.test.assertFalse
 class UinputEventSinkTest {
 
     /** In-memory "device" — captures everything the sink writes. */
-    private class CapturingChannel : FileChannel() {
+    private class CapturingChannel : java.nio.channels.WritableByteChannel {
         val out = ByteArrayOutputStream()
         override fun write(src: ByteBuffer): Int {
             val n = src.remaining()
@@ -28,20 +28,8 @@ class UinputEventSinkTest {
             src.position(src.limit())
             return n
         }
-        override fun write(srcs: Array<out ByteBuffer>, offset: Int, length: Int): Long = srcs.sumOf { write(it).toLong() }.toInt().toLong()
-        override fun force(meta: Boolean) {}
-        override fun position(): Long = out.size().toLong()
-        override fun position(offset: Long): FileChannel = this
-        override fun size(): Long = out.size().toLong()
-        override fun truncate(size: Long): FileChannel = this
-        override fun tryLock(): FileChannel.Lock? = null
-        override fun lock(): FileChannel.Lock? = null
-        override fun map(mode: MapMode, position: Long, size: Long): java.nio.MappedByteBuffer =
-            throw UnsupportedOperationException()
-        override fun read(dst: ByteBuffer): Int = -1
-        override fun read(dsts: Array<out ByteBuffer>, offset: Int, length: Int): Long = -1
-        override fun close() {}
         override fun isOpen(): Boolean = true
+        override fun close() {}
     }
 
     private fun sinkWithCapture(capture: CapturingChannel): Pair<UinputEventSink, () -> ByteArray> {
@@ -50,7 +38,7 @@ class UinputEventSinkTest {
             ringCapacity = 8,
             flushIntervalMs = 8,
             timeSource = { 0L }, // never "due" — tests flush explicitly
-            openChannel = { channel = capture; capture as FileChannel },
+            openChannel = { channel = capture; capture as java.nio.channels.WritableByteChannel },
         )
         return sink to { channel?.out?.toByteArray() ?: ByteArray(0) }
     }

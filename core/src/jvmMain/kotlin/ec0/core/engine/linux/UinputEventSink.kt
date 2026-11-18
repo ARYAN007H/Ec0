@@ -25,7 +25,7 @@ package ec0.core.engine.linux
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
+import java.nio.channels.WritableByteChannel
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
@@ -166,7 +166,7 @@ class UinputEventSink(
     private val ringCapacity: Int = 512,
     /** Injectable so tests can drive flushes deterministically. */
     private val timeSource: () -> Long = System::nanoTime,
-    private val openChannel: (String) -> FileChannel = {
+    private val openChannel: (String) -> WritableByteChannel = {
         FileChannel.open(
             java.nio.file.Path.of(it),
             StandardOpenOption.WRITE,
@@ -180,7 +180,7 @@ class UinputEventSink(
     private var ringSize = 0
     private var usecAccumulator = 0L
     private val buffer = ByteBuffer.allocateDirect(ringCapacity * 24)
-    private var channel: FileChannel? = null
+    private var channel: WritableByteChannel? = null
     private val closed = AtomicBoolean(false)
     private val lock = Any()
 
