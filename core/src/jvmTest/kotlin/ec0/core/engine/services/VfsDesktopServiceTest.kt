@@ -92,7 +92,8 @@ class VfsDesktopServiceTest {
             }),
         )
 
-        assertNull(service.browseState.value.error)
+        // gap at offset 0 — no completion, no error, no landed bytes (honest in-progress state)
+        assertNull(service.error.value)
         val landed = service.downloadBytes.value
         assertEquals("hello world", String(landed!!.second))
         assertTrue(landed.first.endsWith("readme.txt"))
