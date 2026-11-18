@@ -305,6 +305,18 @@ private fun MirrorTile(
 }
 
 @Composable
+private fun RemoteInputTile(modifier: Modifier = Modifier) {
+    DashboardTile(
+        title = "Remote input",
+        subtitle = "Phone as trackpad · uinput direct · batched 8 ms",
+        icon = Icons.Filled.TouchApp,
+        iconTint = MaterialTheme.colorScheme.secondary,
+        live = null,
+        modifier = modifier,
+    )
+}
+
+@Composable
 private fun CameraTile(
     bridge: UiBridge,
     cameraState: String?,
