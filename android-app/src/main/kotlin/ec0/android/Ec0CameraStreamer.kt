@@ -167,6 +167,7 @@ class Ec0CameraStreamer(
         runCatching { onArming?.invoke() }
 
         disarmLocked("re-armed by a new start command")
+        android.util.Log.i("ec0.camera", "arming stream server (token received, fps=${command.fps.coerceAtMost(maxFps)})")
 
         val source = CameraXFrameSource(
             appContext = appContext,
@@ -192,6 +193,7 @@ class Ec0CameraStreamer(
             is CamDroidArmResult.Armed -> {
                 server = newServer
                 liveSource = source
+                android.util.Log.i("ec0.camera", "armed on :${armResult.port} — awaiting token handshake")
                 CameraStatusInfo(
                     state = CameraStreamState.STARTING,
                     backend = CameraBackend.CAMDROID_NATIVE,
@@ -206,6 +208,7 @@ class Ec0CameraStreamer(
                 )
             }
             is CamDroidArmResult.Failed -> {
+                android.util.Log.w("ec0.camera", "arm failed: ${armResult.reason}")
                 runCatching { source.close() }
                 currentStatusLocked(armResult.reason).copy(state = CameraStreamState.ERROR)
             }
@@ -213,6 +216,7 @@ class Ec0CameraStreamer(
     }
 
     private fun disarmLocked(reason: String) {
+        android.util.Log.i("ec0.camera", "disarm: $reason")
         runCatching { server?.disarm() }
         runCatching { server?.close() }
         server = null
@@ -265,6 +269,7 @@ class CameraXFrameSource(
         val cameraProvider = try {
             ProcessCameraProvider.getInstance(appContext).get(5, TimeUnit.SECONDS)
         } catch (e: Exception) {
+            android.util.Log.w("ec0.camera", "provider unavailable: ${e.message}")
             onError("CameraX provider unavailable: ${e.message}")
             return
         }
@@ -300,7 +305,9 @@ class CameraXFrameSource(
             try {
                 lifecycleOwner.driveToResumed()
                 cameraRef.set(cameraProvider.bindToLifecycle(lifecycleOwner, selector, analysis))
+                android.util.Log.i("ec0.camera", "CameraX bound (${width}x${height}@$fps, back=$startBackCamera)")
             } catch (e: Exception) {
+                android.util.Log.w("ec0.camera", "bind failed: ${e.message}")
                 onError("CameraX bind failed: ${e.message}")
             }
         }
@@ -447,8 +454,14 @@ class CameraXFrameSource(
         if (!closed.compareAndSet(false, true)) return
         runCatching {
             mainHandler.post {
-                runCatching { provider?.unbindAll() }
-                lifecycleOwner.destroy()
+                // Never let a lifecycle edge kill the host process: close() can
+                // legitimately run before the bind lambda ever executed.
+                runCatching {
+                    provider?.unbindAll()
+                    lifecycleOwner.destroy()
+                }.onFailure {
+                    android.util.Log.w("ec0.camera", "source teardown: ${it.message}")
+                }
             }
         }
         analyzerExecutor.shutdown()
@@ -461,13 +474,23 @@ class CameraXFrameSource(
         override val lifecycle: Lifecycle get() = registry
 
         fun driveToResumed() {
-            registry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
-            registry.handleLifecycleEvent(Lifecycle.Event.ON_START)
-            registry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+            runCatching {
+                registry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+                registry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+                registry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+            }
         }
 
+        /**
+         * LifecycleRegistry refuses INITIALIZED -> DESTROYED (crashes the app
+         * when close() wins the race against the bind lambda). A source that
+         * never reached CREATED has nothing to destroy.
+         */
         fun destroy() {
-            registry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+            if (registry.currentState != Lifecycle.State.INITIALIZED) {
+                runCatching { registry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY) }
+                    .onFailure { android.util.Log.w("ec0.camera", "lifecycle destroy: ${it.message}") }
+            }
         }
     }
 }
