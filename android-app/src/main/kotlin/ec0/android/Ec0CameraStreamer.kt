@@ -436,7 +436,7 @@ class CameraXFrameSource(
     }
 
     fun setZoom(ratio: Double) {
-        runCatching { cameraRef.get()?.cameraControl?.setZoomRatio(ratio.coerceIn(1.0, 10.0)) }
+        runCatching { cameraRef.get()?.cameraControl?.setZoomRatio(ratio.coerceIn(1.0, 10.0).toFloat()) }
     }
 
     fun setTorch(enabled: Boolean) {
