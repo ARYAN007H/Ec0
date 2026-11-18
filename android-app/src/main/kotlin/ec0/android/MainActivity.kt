@@ -535,12 +535,19 @@ class AndroidAppState(
         }
         // Notification-listener grant can flip while the app sits in the system
         // settings screen — poll gently so the SyncPanel switch never lies. IO
-        // dispatcher: the check is a Settings.Secure binder read.
+        // dispatcher: the check is a Settings.Secure binder read. The CAMERA
+        // grant rides the same loop (the Settings row's "Open settings" routing
+        // and user revokes/re-grants flip it outside the app too); rationale is
+        // only observable from the Activity, so it stays with onResume/results.
         refreshNotificationRelayState()
         scope.launch(Dispatchers.IO) {
             while (true) {
                 delay(2_000)
                 refreshNotificationRelayState()
+                val granted = hasCameraPermission()
+                if (granted != cameraGrantInputs.value.granted) {
+                    cameraGrantInputs.value = cameraGrantInputs.value.copy(granted = granted)
+                }
             }
         }
         // Seed the persisted camera-denial flag (upgrade-only: a fresh process
