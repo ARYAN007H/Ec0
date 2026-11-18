@@ -316,15 +316,36 @@ class DesktopBridge(
         }.getOrNull()
     }
 
-    // Honest capability flags: the continuity service attaches via the tray
-    // path; receiver + sync slices land in later PRs.
-    override val capabilities: Capabilities = Capabilities(
-        canReceive = true,
-        clipboardSync = false,
-        notifications = false,
-        photoSync = false,
-        remoteInput = false,
-    )
+    /**
+     * Live capability flags — the "sync slices land in later PRs" comment went
+     * stale: clipboard sync (watch + 30s sensitive scrub), the notification
+     * relay (LinuxNotificationBridge) and the uinput remote-input receiver all
+     * run in the hub today, so the Sync & continuity panel was reporting OFF
+     * while the features were visibly working on the dashboard tiles. The dots
+     * now track the same flows the toggles drive.
+     */
+    override val capabilities: Capabilities
+        get() = Capabilities(
+            canReceive = true,
+            clipboardSync = clipboardSyncEnabled.value,
+            notifications = notificationRelayEnabled.value,
+            photoSync = false, // photo-sync slice has not shipped — stays honest
+            remoteInput = true, // uinput input receiver attached with the hub
+        )
+
+    override val clipboardSyncEnabled: StateFlow<Boolean>
+        get() = hub?.autoSyncClipboard ?: MutableStateFlow(true)
+
+    override fun setClipboardSyncEnabled(enabled: Boolean) {
+        hub?.setAutoSyncClipboard(enabled)
+    }
+
+    override val notificationRelayEnabled: StateFlow<Boolean>
+        get() = hub?.forwardNotificationsToDesktop ?: MutableStateFlow(true)
+
+    override fun setNotificationRelayEnabled(enabled: Boolean) {
+        hub?.setForwardNotificationsToDesktop(enabled)
+    }
 
     override fun startScan() = appState.startScan()
     override fun cancelTransfer(id: String) = appState.cancelTransfer(id)

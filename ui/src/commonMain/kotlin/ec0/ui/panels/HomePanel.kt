@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -203,7 +204,7 @@ fun HomePanel(
             "file" to { m -> FilesTile(transfers, devices, scanning, m) },
             "clip" to { m -> ClipboardTile(bridge, clipSummary, autoSync, m) },
             "notif" to { m -> NotificationsTile(bridge, notifications, m) },
-            "input" to { m -> RemoteInputTile(m) },
+            "input" to { m -> RemoteInputTile(bridge, m) },
         )
         activeTiles.chunked(tileColumns).forEach { rowTiles ->
             Row(
@@ -305,14 +306,27 @@ private fun MirrorTile(
 }
 
 @Composable
-private fun RemoteInputTile(modifier: Modifier = Modifier) {
+private fun RemoteInputTile(bridge: UiBridge, modifier: Modifier = Modifier) {
+    // The tile is the phone's natural entry point to the trackpad — tapping the
+    // "Remote input" card on HOME must open it, not just display that the
+    // capability exists (the real toggle lives in Sync & continuity too).
+    val remoteInput = bridge.remoteInput
+    val available = remoteInput?.available?.collectAsState()?.value == true
     DashboardTile(
         title = "Remote input",
-        subtitle = "Phone as trackpad · uinput direct · batched 8 ms",
+        subtitle = if (available) {
+            "Phone as trackpad · uinput direct · tap to open"
+        } else {
+            "Phone as trackpad · uinput direct · batched 8 ms"
+        },
         icon = Icons.Filled.TouchApp,
         iconTint = MaterialTheme.colorScheme.secondary,
         live = null,
-        modifier = modifier,
+        modifier = if (available) {
+            modifier.clickable { remoteInput?.openTouchpad() }
+        } else {
+            modifier
+        },
     )
 }
 
