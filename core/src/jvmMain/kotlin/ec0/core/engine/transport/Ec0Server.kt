@@ -39,6 +39,16 @@ class Ec0Server(
     private val running = AtomicBoolean(false)
     private val activeSockets = CopyOnWriteArrayList<Socket>()
 
+    /**
+     * M2 (docs/security-audit.md): bounds concurrent PRE-AUTHENTICATION
+     * handshakes. The accept loop previously spawned an unbounded cached-pool
+     * thread per connection, so a silent LAN peer could park up to the whole
+     * read timeout per socket with no ceiling — the one surface an
+     * unauthenticated peer could exhaust. Past authentication, per-peer
+     * session tracking already scopes everything.
+     */
+    private val handshakePermits = java.util.concurrent.Semaphore(32)
+
     val boundPort: Int
         get() = serverSocket?.localPort ?: bindPort
 
@@ -95,6 +105,13 @@ class Ec0Server(
     }
 
     private fun handleConnection(socket: Socket) {
+        val acquired = handshakePermits.tryAcquire()
+        if (!acquired) {
+            runCatching { socket.close() }
+            activeSockets.remove(socket)
+            onHandshakeError(java.io.IOException("handshake concurrency bound reached; closing connection"))
+            return
+        }
         try {
             socket.tcpNoDelay = true
             socket.soTimeout = ioTimeoutMs
@@ -123,6 +140,10 @@ class Ec0Server(
             runCatching { socket.close() }
             activeSockets.remove(socket)
             onHandshakeError(t)
+        } finally {
+            // Handshake ended: on success the authenticated session owns the
+            // socket from here; on failure it was closed above.
+            handshakePermits.release()
         }
     }
 
