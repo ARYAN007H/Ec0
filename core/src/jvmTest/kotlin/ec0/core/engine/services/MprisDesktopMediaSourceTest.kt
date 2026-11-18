@@ -110,9 +110,9 @@ class MprisDesktopMediaSourceTest {
         assertEquals("vlc", info?.playerName)
         assertEquals("Blue Monday", info?.title)
         assertEquals(42_000L, info?.positionMs)
-        // the wire commands the source actually issued
-        assertTrue(launcher.commands.any { it.take(3) == listOf("busctl", "--user", "list") })
+        // the wire commands the source actually issued (active player set -> property reads only)
         assertTrue(launcher.commands.any { it.contains("PlaybackStatus") })
+        assertTrue(launcher.commands.any { it.contains("Metadata") })
     }
 
     @Test

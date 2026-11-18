@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 
 class VfsDesktopServiceTest {
 
-    private val service = VfsDesktopService(destinationDir = Files.createTempDirectory("ec0-vfs"))
+    private fun freshService() = VfsDesktopService(destinationDir = Files.createTempDirectory("ec0-vfs"))
 
     private fun envelope(bodyType: String, body: kotlinx.serialization.json.JsonObject) =
         ec0.core.engine.Ec0Envelope(
@@ -38,6 +38,7 @@ class VfsDesktopServiceTest {
 
     @Test
     fun dirReplyPopulatesBrowseState() {
+        val service = freshService()
         val body = buildJsonObject {
             put("path", "/storage/emulated/0/DCIM")
             put("entries", kotlinx.serialization.json.buildJsonArray {
@@ -70,6 +71,7 @@ class VfsDesktopServiceTest {
 
     @Test
     fun downloadAssemblesOutOfOrderChunksAndLandsOnDisk() {
+        val service = freshService()
         val chunkA = "hello ".toByteArray()
         val chunkB = "world".toByteArray()
         val sent = mutableListOf<Pair<String, kotlinx.serialization.json.JsonObject>>()
@@ -106,9 +108,9 @@ class VfsDesktopServiceTest {
 
     @Test
     fun gapKeepsDownloadIncomplete() {
-        val service2 = VfsDesktopService(destinationDir = Files.createTempDirectory("ec0-vfs"))
-        service2.download({ _, _ -> }, path = "/pc/big.bin")
-        service2.handleControlEnvelope(
+        val service = freshService()
+        service.download({ _, _ -> }, path = "/pc/big.bin")
+        service.handleControlEnvelope(
             envelope(VfsProtocol.INFO_VFS_CHUNK, buildJsonObject {
                 put("path", "/pc/big.bin"); put("offset", 10L); put("eof", false)
                 put("buffer_b64", java.util.Base64.getEncoder().encodeToString("late".toByteArray()))
@@ -119,6 +121,7 @@ class VfsDesktopServiceTest {
 
     @Test
     fun vfsErrorSurfaces() {
+        val service = freshService()
         service.handleControlEnvelope(
             envelope(VfsProtocol.INFO_VFS_ERROR, buildJsonObject {
                 put("path", "/root/secret")
