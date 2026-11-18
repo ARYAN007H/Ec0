@@ -185,6 +185,6 @@ class VfsDesktopService(
         ) {
             return null
         }
-        return candidate
+        return candidate.toPath()
     }
 }
