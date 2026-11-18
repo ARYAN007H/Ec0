@@ -102,7 +102,7 @@ class VfsDesktopServiceTest {
         assertNull(service.error.value)
         val landed = service.downloadBytes.value
         assertEquals("hello world", String(landed!!.second), "assembled bytes")
-        assertTrue(landed.first.endsWith("readme.txt"))
+        assertTrue(landed.first.endsWith("readme.txt"), "landed path = ${landed.first}")
         assertEquals("hello world", Files.readString(java.nio.file.Path.of(landed.first)), "file on disk")
         assertEquals("vfs_download", sent.single().first)
     }
