@@ -73,6 +73,16 @@ class ClipboardPushPolicyTest {
     }
 
     @Test
+    fun skipsWhileSyncPaused() {
+        // The SyncPanel / HOME Auto-sync / QS-tile switch pauses BOTH push
+        // paths through this gate — the reason string is the observable trace
+        // in logcat (adb) that the pause is honored.
+        val decision = evaluate(syncEnabled = false)
+        assertFalse(decision.push)
+        assertEquals("sync-paused", decision.reason)
+    }
+
+    @Test
     fun desktopEchoGuardExpiresWhenUserCopiesSomethingElse() {
         // After the echo clip, the user copies new content — that must push even
         // though the guard still holds the desktop-applied sha.
@@ -86,11 +96,11 @@ class ClipboardPushPolicyTest {
  * Feature 1 (ColorOS workaround): the Activity reads the clipboard on focus and
  * hands text through [AndroidClipboardWatcher.pushText] → [ClipboardPushSender].
  * These tests pin the pushText path end-to-end over the shared sender — policy,
- * echo guard, dedupe claim, and the engine send — without android.jar.
+ * pause gate, echo guard, dedupe claim, and the engine send — without android.jar.
  */
 class ClipboardPushSenderTest {
 
-    private class SenderHarness(appFocused: Boolean = true) {
+    private class SenderHarness(appFocused: Boolean = true, syncEnabled: () -> Boolean = { true }) {
         val echoGuard = ClipboardEchoGuard()
         val pushed = mutableListOf<ClipboardItem>()
         val sender = ClipboardPushSender(
@@ -98,6 +108,7 @@ class ClipboardPushSenderTest {
             isAppFocused = { appFocused },
             // Unconfined: launch() executes inline, so onPush is observable synchronously.
             pushScope = CoroutineScope(Dispatchers.Unconfined),
+            isSyncEnabled = syncEnabled,
             onPush = { item -> pushed.add(item) },
         )
 
@@ -159,5 +170,26 @@ class ClipboardPushSenderTest {
         h.sender.pushCandidate("fresh user copy", sensitive = false)
         assertEquals(1, h.pushed.size)
         assertEquals("fresh user copy", h.pushed.single().asUtf8Text())
+    }
+
+    @Test
+    fun pushTextHonorsTheSyncPauseAcrossBothToggleDirections() {
+        // The SyncPanel "paused" state must gate the ACTIVITY focus path too —
+        // before the gate, only the listener path stopped (unregistration),
+        // while MainActivity's focus read kept pushing.
+        var paused = false
+        val h = SenderHarness(syncEnabled = { !paused })
+
+        h.sender.pushCandidate("pushed while armed", sensitive = false)
+        assertEquals(1, h.pushed.size)
+
+        paused = true
+        h.sender.pushCandidate("copied while paused", sensitive = false)
+        assertEquals(1, h.pushed.size, "paused sync must push nothing")
+        assertEquals(null, h.sender.lastPushedSha256, "a paused push must not claim the dedupe slot")
+
+        paused = false
+        h.sender.pushCandidate("copied after resume", sensitive = false)
+        assertEquals(2, h.pushed.size, "re-arming resumes pushes; the paused clip never leaked")
     }
 }

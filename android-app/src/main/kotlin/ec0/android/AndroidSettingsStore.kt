@@ -137,6 +137,41 @@ class AndroidSettingsStore(
         }
     }
 
+    /**
+     * Phone clipboard-sync toggle — ONE boolean behind the SyncPanel card, the
+     * HOME Auto-sync tile and the QS tile: phone→PC watcher pushes AND PC→phone
+     * applies both honor it. Kept out of [SettingsState] on purpose (the shared
+     * desktop model carries no such preference; the desktop hub keeps it in
+     * memory), mirroring the [KEY_DEVICE_CAPS] precedent. Defaults to `true` —
+     * an unset key must mean the feature the UI always showed as on.
+     */
+    fun clipboardSyncEnabled(): Boolean = kotlinx.coroutines.runBlocking {
+        runCatching { dataStore.data.first()[KEY_CLIPBOARD_SYNC_ENABLED] ?: true }
+            .getOrDefault(true)
+    }
+
+    fun clipboardSyncEnabledFlow(): Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[KEY_CLIPBOARD_SYNC_ENABLED] ?: true }
+
+    suspend fun setClipboardSyncEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[KEY_CLIPBOARD_SYNC_ENABLED] = enabled }
+    }
+
+    /**
+     * Camera grant flow: whether a CAMERA request ever came back DENIED. The
+     * Android 11+ "blocked" verdict (denied + no rationale) is only
+     * distinguishable from a fresh install with this fact — and Android's own
+     * rationale flag does not survive process death, so the denial is
+     * persisted here for the Settings row. Cleared again on a grant.
+     */
+    fun cameraDeniedOnce(): Boolean = kotlinx.coroutines.runBlocking {
+        runCatching { dataStore.data.first()[KEY_CAMERA_DENIED_ONCE] ?: false }.getOrDefault(false)
+    }
+
+    suspend fun setCameraDeniedOnce(denied: Boolean) {
+        dataStore.edit { prefs -> prefs[KEY_CAMERA_DENIED_ONCE] = denied }
+    }
+
     private fun mapPreferencesToSettings(
         prefs: Preferences,
         defaultState: SettingsState,
@@ -197,6 +232,8 @@ class AndroidSettingsStore(
         internal val KEY_TRUSTED_FINGERPRINTS = stringSetPreferencesKey("trusted_fingerprints")
         internal val KEY_OWN_FINGERPRINT = stringPreferencesKey("own_fingerprint")
         internal val KEY_DEVICE_CAPS = stringPreferencesKey("device_capability_grants")
+        internal val KEY_CLIPBOARD_SYNC_ENABLED = booleanPreferencesKey("clipboard_sync_enabled")
+        internal val KEY_CAMERA_DENIED_ONCE = booleanPreferencesKey("camera_denied_once")
 
         private const val THEME_SYSTEM = "system"
         private const val THEME_DARK = "dark"

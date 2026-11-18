@@ -135,11 +135,19 @@ class AndroidHonestPlatformCallbacks(
     private val clipboardEchoGuard: ClipboardEchoGuard? = null,
     /** Service-owned: lives as long as the runtime so the wake activity can stop it. */
     val ringController: FindMyRingController = FindMyRingController(appContext),
+    /**
+     * Shared clipboard-sync toggle — PC→phone applies honor the SAME switch the
+     * SyncPanel card / HOME Auto-sync tile / QS tile flip for phone→PC pushes.
+     * The QS-tile doc always claimed the apply path honors it; this parameter is
+     * what actually makes that true (before, the toggle only paused pushes).
+     */
+    private val clipboardSyncGate: ClipboardSyncSwitch? = null,
 ) : AndroidPlatformCallbacks {
 
     private val mediaLog = Logger.getLogger("ec0.android.media")
 
     override fun onApplyRemoteClipboard(item: ClipboardItem): Boolean {
+        if (clipboardSyncGate?.enabled == false) return false
         if (!item.mime.startsWith("text/", ignoreCase = true)) return false
         val text = runCatching { item.asUtf8Text() }.getOrNull() ?: return false
         return runCatching {
@@ -809,13 +817,26 @@ class Ec0CompanionService : Service() {
                     "ec0",
                 ).also { it.mkdirs() }
 
+                // Clipboard-sync toggle: seed the shared switch from the persisted
+                // pref BEFORE the runtime exists, so neither push nor apply direction
+                // ever runs against a window where the persisted "paused" is ignored.
+                val clipboardSettingsStore = AndroidSettingsStore(
+                    appContext.applicationContext.ec0SettingsDataStore,
+                )
+                val clipboardSyncSwitch = ClipboardSyncSwitch(clipboardSettingsStore.clipboardSyncEnabled())
+
                 val clipboardEchoGuard = ClipboardEchoGuard()
                 val findMyRingController = FindMyRingController(appContext)
                 ringControllerRef = findMyRingController
                 val runtime = AndroidCompanionRuntime.createWithPersistentStores(
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
-                    callbacks = AndroidHonestPlatformCallbacks(appContext, clipboardEchoGuard, findMyRingController),
+                    callbacks = AndroidHonestPlatformCallbacks(
+                        appContext,
+                        clipboardEchoGuard,
+                        findMyRingController,
+                        clipboardSyncGate = clipboardSyncSwitch,
+                    ),
                     listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
                 )
@@ -825,6 +846,7 @@ class Ec0CompanionService : Service() {
                     echoGuard = clipboardEchoGuard,
                     isAppFocused = { isAppFocusedForClipboard },
                     pushScope = serviceScope,
+                    syncSwitch = clipboardSyncSwitch,
                 )
 
                 val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
@@ -921,12 +943,16 @@ class Ec0CompanionService : Service() {
                 host.start()
 
                 // A4: QS tile seams — the tiles read/write the live setting and
-                // send the lock command through the active host.
-                val clipboardSettingsStore = AndroidSettingsStore(
-                    appContext.applicationContext.ec0SettingsDataStore,
-                )
+                // send the lock command through the active host. The clipboard
+                // toggle ALSO persists (same pref the SyncPanel card and HOME
+                // Auto-sync tile read) so a QS flip survives process death.
                 Ec0TileState.clipboardSyncEnabled = { clipboardWatcher.isStarted() }
-                Ec0TileState.setClipboardSyncEnabled = { enabled -> clipboardWatcher.setEnabled(enabled) }
+                Ec0TileState.setClipboardSyncEnabled = { enabled ->
+                    clipboardWatcher.setEnabled(enabled)
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching { clipboardSettingsStore.setClipboardSyncEnabled(enabled) }
+                    }
+                }
                 Ec0TileState.lockWorkstation = {
                     val desktopId = host.pinnedPeers.value
                         .firstOrNull { host.runtime.node.activeSessionFor(it.deviceId) != null }

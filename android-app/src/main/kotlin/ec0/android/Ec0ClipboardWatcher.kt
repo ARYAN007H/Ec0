@@ -44,12 +44,27 @@ class ClipboardEchoGuard {
     var lastAppliedFromDesktopSha256: String? = null
 }
 
+/**
+ * Single source of truth for the phone's clipboard-sync toggle — ONE boolean
+ * behind the SyncPanel card, the HOME Auto-sync tile and the QS tile:
+ *   - phone→PC pushes honor it via [AndroidClipboardWatcher],
+ *   - PC→phone applies honor it via [AndroidHonestPlatformCallbacks].
+ * The persistent twin lives in DataStore ([AndroidSettingsStore]); hosts seed
+ * this switch from the store at startup and persist on every flip. A plain
+ * mutable holder because both consumers are plain runtime services, not flows.
+ */
+class ClipboardSyncSwitch(initial: Boolean = true) {
+    @Volatile
+    var enabled: Boolean = initial
+}
+
 /** Pure, Android-free decision core for phone→PC clipboard pushes (unit-tested). */
 object ClipboardPushPolicy {
 
     data class Decision(val push: Boolean, val reason: String) {
         companion object {
             val SKIP_EMPTY = Decision(false, "empty-clip")
+            val SKIP_SYNC_PAUSED = Decision(false, "sync-paused")
             val SKIP_SENSITIVE = Decision(false, "sensitive-clip")
             val SKIP_NOT_FOCUSED = Decision(false, "app-not-focused")
             val SKIP_ECHO = Decision(false, "echo-of-desktop-apply")
@@ -65,8 +80,10 @@ object ClipboardPushPolicy {
         lastAppliedFromDesktopSha256: String?,
         lastPushedSha256: String?,
         candidateSha256: String,
+        syncEnabled: Boolean = true,
     ): Decision = when {
         text.isNullOrEmpty() -> Decision.SKIP_EMPTY
+        !syncEnabled -> Decision.SKIP_SYNC_PAUSED
         isSensitive -> Decision.SKIP_SENSITIVE
         !appFocused -> Decision.SKIP_NOT_FOCUSED
         candidateSha256 == lastAppliedFromDesktopSha256 -> Decision.SKIP_ECHO
@@ -85,6 +102,13 @@ class ClipboardPushSender(
     private val echoGuard: ClipboardEchoGuard,
     private val isAppFocused: () -> Boolean,
     private val pushScope: CoroutineScope,
+    /**
+     * The phone's clipboard-sync switch ([ClipboardSyncSwitch.enabled]) — the
+     * ONE gate for BOTH push paths (listener + Activity focus read). Without
+     * it, "Sync paused" would still push from the focus path, because the
+     * listener-unregistration gate only covers the listener path.
+     */
+    private val isSyncEnabled: () -> Boolean = { true },
     private val log: Logger = Logger.getLogger("ec0.android.clipboard"),
     private val onPush: (ClipboardItem) -> Unit,
 ) {
@@ -108,6 +132,7 @@ class ClipboardPushSender(
             lastAppliedFromDesktopSha256 = echoGuard.lastAppliedFromDesktopSha256,
             lastPushedSha256 = lastPushedSha256,
             candidateSha256 = candidateSha,
+            syncEnabled = isSyncEnabled(),
         )
         log.info("Clipboard push decision=${decision.reason} chars=${text.length}")
         if (!decision.push) return
@@ -127,6 +152,8 @@ class ClipboardPushSender(
  * (offline desktops are handled by the engine outbox — pushes never block on send).
  *
  * Honors the phone→PC sync contract surfaced in the UI:
+ *  - pushes nothing while the sync switch is off ([ClipboardSyncSwitch] — both
+ *    the listener and the Activity focus path gate in [ClipboardPushSender]),
  *  - pushes only while ec0 is the focused app ([isAppFocused]; Android 10+ read grant),
  *  - never transmits `EXTRA_IS_SENSITIVE` clips (password managers),
  *  - never echoes a clip that was just applied from the desktop ([ClipboardEchoGuard]).
@@ -141,6 +168,12 @@ class AndroidClipboardWatcher(
     private val echoGuard: ClipboardEchoGuard,
     private val isAppFocused: () -> Boolean,
     private val pushScope: CoroutineScope,
+    /**
+     * Shared clipboard-sync toggle ([ClipboardSyncSwitch]) — the SyncPanel /
+     * HOME Auto-sync / QS-tile switch writes here, phone→PC pushes honor it,
+     * and the PC→phone apply path reads the same instance.
+     */
+    private val syncSwitch: ClipboardSyncSwitch = ClipboardSyncSwitch(true),
 ) : ClipboardManager.OnPrimaryClipChangedListener {
 
     // java.util.logging routes to logcat on Android — the skip reason is the only
@@ -154,6 +187,7 @@ class AndroidClipboardWatcher(
         echoGuard = echoGuard,
         isAppFocused = isAppFocused,
         pushScope = pushScope,
+        isSyncEnabled = { enabled },
         log = log,
         onPush = { runtime.onAndroidClipboardChanged(it) },
     )
@@ -163,12 +197,11 @@ class AndroidClipboardWatcher(
     /** Exposed for the dashboard honesty card / tests. */
     val lastPushedSha256: String? get() = sender.lastPushedSha256
 
-    @Volatile
-    private var enabled = true
+    private val enabled: Boolean get() = syncSwitch.enabled
 
-    /** QS-tile / dashboard toggle: enables or pauses phone→PC clipboard pushes. */
+    /** SyncPanel / QS-tile toggle: enables or pauses phone→PC clipboard pushes. */
     fun setEnabled(value: Boolean) {
-        enabled = value
+        syncSwitch.enabled = value
         if (value) start() else stop()
     }
 
@@ -203,8 +236,8 @@ class AndroidClipboardWatcher(
     /**
      * Push a clip the **Activity** already read successfully (ColorOS denies service
      * reads even while focused — the focused-app UID grant covers the Activity's own
-     * read). Shares the exact policy/echo/dedupe/send tail with the listener path;
-     * [isSensitive] keeps the password-manager suppression honest.
+     * read). Shares the exact policy/pause/echo/dedupe/send tail with the listener
+     * path; [isSensitive] keeps the password-manager suppression honest.
      */
     fun pushText(text: String, isSensitive: Boolean = false) {
         sender.pushCandidate(text, isSensitive)
