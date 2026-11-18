@@ -315,7 +315,7 @@ fun RemoteInputScreen(
 
 @Composable
 private fun HonestCard(text: String, modifier: Modifier = Modifier) {
-    Card(modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
         Text(
             text,
             style = MaterialTheme.typography.bodyMedium,
@@ -375,7 +375,7 @@ private fun TouchpadSurface(
                                 val prevAvg = lastPositions.values.map { it.y }.average().toFloat()
                                 if (abs(avgY - prevAvg) > 0.5f) {
                                     moved = true
-                                    onScroll(PointerGestures.scaleScroll(avgY - prevAvg))
+                                    onScroll(avgY - prevAvg)
                                 }
                             } else if (!longPressed) {
                                 val pos = current.values.first()
@@ -411,7 +411,7 @@ private fun TouchpadSurface(
 @Composable
 private fun KeyboardBar(onCommit: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
-    Card(modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
