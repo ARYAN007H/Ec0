@@ -24,6 +24,7 @@ class ClipboardPushPolicyTest {
         lastApplied: String? = null,
         lastPushed: String? = null,
         candidate: String = "sha-candidate",
+        syncEnabled: Boolean = true,
     ) = ClipboardPushPolicy.evaluate(
         text = text,
         isSensitive = isSensitive,
@@ -31,6 +32,7 @@ class ClipboardPushPolicyTest {
         lastAppliedFromDesktopSha256 = lastApplied,
         lastPushedSha256 = lastPushed,
         candidateSha256 = candidate,
+        syncEnabled = syncEnabled,
     )
 
     @Test
