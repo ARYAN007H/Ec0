@@ -220,3 +220,27 @@ class AndroidSettingsStore(
         }
     }
 }
+
+internal fun parseDeviceCaps(raw: String?): Map<String, Set<String>> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return runCatching {
+        val obj = kotlinx.serialization.json.Json.parseToJsonElement(raw)
+            as kotlinx.serialization.json.JsonObject
+        obj.entries.associate { (deviceId, element) ->
+            deviceId to ((element as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+                ?.toSet())
+                ?: emptySet()
+        }
+    }.getOrDefault(emptyMap())
+}
+
+internal fun serializeDeviceCaps(grants: Map<String, Set<String>>): String =
+    kotlinx.serialization.json.buildJsonObject {
+        grants.forEach { (deviceId, caps) ->
+            put(
+                deviceId,
+                kotlinx.serialization.json.JsonArray(caps.map { kotlinx.serialization.json.JsonPrimitive(it) }),
+            )
+        }
+    }.toString()
