@@ -73,4 +73,43 @@ class TileRegistryTest {
         assertEquals(2, tiles.size)
         assertEquals(listOf("p1", "p2"), tiles.map { it.deviceId })
     }
+
+    @Test
+    fun desktopBeaconCapsWireNamesFeedRegistryEndToEnd() {
+        // The exact desktop→phone data flow: DesktopBridge.tiles maps the
+        // PHONE's beacon capabilities through beaconCapabilityWireNames and
+        // intersects with the desktop's local support. Before the seam fix
+        // the desktop never broadcast its own beacon and the phone's registry
+        // was empty; here the phone's (now mirror/cam-carrying) beacon
+        // negotiates mirror + camera tiles.
+        val phoneBeacon = ec0.core.engine.protocol.PresenceBeaconInfo(
+            batteryPct = 66,
+            isCharging = false,
+            screenOn = true,
+            capabilities = setOf(
+                ec0.core.engine.EngineCapability.MIRROR,
+                ec0.core.engine.EngineCapability.CAMERA,
+                ec0.core.engine.EngineCapability.CLIPBOARD,
+                ec0.core.engine.EngineCapability.BATTERY,
+            ),
+        )
+        val desktopSupport = setOf(
+            ec0.core.engine.EngineCapability.MIRROR,
+            ec0.core.engine.EngineCapability.CAMERA,
+            ec0.core.engine.EngineCapability.FILE,
+            ec0.core.engine.EngineCapability.CLIPBOARD,
+            ec0.core.engine.EngineCapability.NOTIFICATION,
+            ec0.core.engine.EngineCapability.INPUT,
+        )
+        val tiles = computeTileRegistry(
+            peerCapabilities = mapOf(
+                "phone-a" to ec0.core.engine.protocol.beaconCapabilityWireNames(phoneBeacon.capabilities),
+            ),
+            localSupport = desktopSupport.map { it.wireName }.toSet(),
+            onlineByDevice = mapOf("phone-a" to true),
+        )
+        // BATTERY is intentionally absent (renders in the header, not a tile).
+        assertEquals(listOf("mirror", "cam", "clip"), tiles.map { it.capabilityId })
+        assertTrue(tiles.all { it.deviceId == "phone-a" && it.enabled })
+    }
 }

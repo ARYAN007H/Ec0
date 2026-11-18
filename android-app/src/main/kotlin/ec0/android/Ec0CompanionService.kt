@@ -244,6 +244,18 @@ class AndroidHonestPlatformCallbacks(
         }.getOrDefault(false)
     }
 
+    /**
+     * CAMERA gate for the presence beacon's `cam` capability — the permission
+     * is declared in the manifest but only a runtime grant means CamDroid
+     * can actually stream, so the desktop's camera tile stays honest.
+     */
+    private fun hasCameraPermission(): Boolean = runCatching {
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            appContext,
+            android.Manifest.permission.CAMERA,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }.getOrDefault(false)
+
     override fun queryPhonePresence(): PresenceBeaconInfo {
         val batteryPct = runCatching {
             val bm = appContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
@@ -266,6 +278,13 @@ class AndroidHonestPlatformCallbacks(
             add(EngineCapability.BATTERY)
             if (NotificationAccessHelper.isNotificationListenerEnabled(appContext)) {
                 add(EngineCapability.NOTIFICATION)
+            }
+            // The desktop's mirror/camera tiles negotiate against THIS beacon:
+            // scrcpy mirroring runs from the desktop today (serial resolution
+            // ships with the hub), so the phone is honestly mirror-capable.
+            add(EngineCapability.MIRROR)
+            if (hasCameraPermission()) {
+                add(EngineCapability.CAMERA)
             }
             // Deep-integration capabilities (plan §P2/P4) — declared only when the
             // phone genuinely supports them:
