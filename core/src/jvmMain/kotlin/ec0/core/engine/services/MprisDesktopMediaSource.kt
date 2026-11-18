@@ -26,6 +26,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import ec0.core.engine.protocol.MediaControlCommand
+import ec0.core.engine.protocol.MediaPlaybackState
+import ec0.core.engine.protocol.MediaSessionInfo
 
 
 /** Pure parsing of busctl output — fixture-tested, no live D-Bus. */
