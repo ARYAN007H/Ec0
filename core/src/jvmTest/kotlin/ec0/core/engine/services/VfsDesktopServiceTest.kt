@@ -24,7 +24,10 @@ class VfsDesktopServiceTest {
     private fun envelope(bodyType: String, body: kotlinx.serialization.json.JsonObject) =
         ec0.core.engine.Ec0Envelope(
             msgType = "info",
-            msgBody = body,
+            msgBody = buildJsonObject {
+                put("info_type", bodyType)
+                put("info_body", body)
+            },
             srcRole = "phone",
             category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS,
             timestamp = 0L,

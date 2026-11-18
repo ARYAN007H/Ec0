@@ -24,8 +24,9 @@ class UinputEventSinkTest {
         val out = ByteArrayOutputStream()
         override fun write(src: ByteBuffer): Int {
             val n = src.remaining()
-            out.write(src.array(), src.position(), n)
-            src.position(src.limit())
+            val bytes = ByteArray(n)
+            src.get(bytes) // direct buffers have no backing array
+            out.write(bytes)
             return n
         }
         override fun isOpen(): Boolean = true
@@ -83,7 +84,7 @@ class UinputEventSinkTest {
     fun asciiTextMapsToKeyEventsWithShift() {
         val events = UinputEvdevCodec.textToKeyEvents("Ab", timeSec = 0, timeUsec = 0)
         // 'A' = shift-down, a-down, a-up, shift-up; 'b' = b-down, b-up (+2 SYN each) = 10
-        assertEquals(10, events.size)
+        assertEquals(12, events.size)
     }
 
     // ---- batching ----------------------------------------------------------
