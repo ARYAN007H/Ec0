@@ -270,7 +270,7 @@ fun RemoteInputScreen(
         modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Remote input", style = MaterialTheme.typography.h6, fontWeight = FontWeight.SemiBold)
+        Text("Remote input", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         if (!sessionLive) {
             HonestCard("No live session — pair and connect to a desktop first.")
         } else if (!negotiated) {

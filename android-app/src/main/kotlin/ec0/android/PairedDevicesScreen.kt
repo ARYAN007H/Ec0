@@ -55,7 +55,7 @@ fun PairedDevicesScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Paired devices", style = MaterialTheme.typography.h6, fontWeight = FontWeight.SemiBold)
+            Text("Paired devices", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Button(onClick = onClose, shape = RoundedCornerShape(10.dp)) { Text("Done") }
         }
@@ -97,7 +97,7 @@ private fun PairedPeerCard(
                 Spacer(Modifier.weight(1f))
                 Text(
                     if (peer.connected) "connected" else "offline",
-                    style = MaterialTheme.typography.caption,
+                    style = MaterialTheme.typography.labelSmall,
                     color = if (peer.connected) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -110,7 +110,7 @@ private fun PairedPeerCard(
             Text(
                 "trusted since " + java.text.DateFormat.getDateTimeInstance().format(java.util.Date(peer.pinnedAtMs)) +
                     " · " + peer.trustLevel,
-                style = MaterialTheme.typography.caption,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             CapabilityRow("Remote input", "remote_input", peer.grantedCapabilities, onSetCapability)
