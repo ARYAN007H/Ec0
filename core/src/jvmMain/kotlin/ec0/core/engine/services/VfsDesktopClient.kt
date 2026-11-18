@@ -12,6 +12,7 @@ import ec0.core.engine.protocol.VfsChunkReply
 import ec0.core.engine.protocol.VfsDirReply
 import ec0.core.engine.protocol.VfsEntryDto
 import ec0.core.engine.protocol.VfsListRequest
+import ec0.core.engine.protocol.VfsDownloadRequest
 import ec0.core.engine.protocol.VfsProtocol
 import kotlinx.serialization.json.Json
 
