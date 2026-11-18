@@ -65,6 +65,7 @@ class VfsDesktopServiceTest {
 
     @Test
     fun nonVfsEnvelopeReturnsFalse() {
+        val service = freshService()
         val body = buildJsonObject { put("whatever", 1) }
         assertTrue(!service.handleControlEnvelope(envelope("some_other_type", body)))
     }
@@ -116,7 +117,7 @@ class VfsDesktopServiceTest {
                 put("buffer_b64", java.util.Base64.getEncoder().encodeToString("late".toByteArray()))
             }),
         )
-        assertNull(service2.downloadBytes.value) // gap at offset 0 — never complete
+        assertNull(service.downloadBytes.value) // gap at offset 0 — never complete
     }
 
     @Test
