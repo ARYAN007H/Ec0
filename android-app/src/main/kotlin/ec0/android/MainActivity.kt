@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import ec0.core.engine.EngineCapability
 import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.PairingStepState
@@ -47,6 +48,7 @@ import ec0.core.localsend.dto.RegisterDtoV2
 import ec0.ui.Ec0App
 import ec0.ui.models.Capabilities
 import ec0.ui.models.IncomingRequest
+import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.PeerLinkState
 import ec0.ui.models.PeerManagementBridge
 import ec0.ui.models.RemoteInputBridge

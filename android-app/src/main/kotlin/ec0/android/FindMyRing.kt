@@ -97,7 +97,7 @@ class FindMyRingController(
             // agent-2's full-screen-intent follow-up (hub note).
             val wake = Intent(appContext, FindMyRingActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(FindMyRingActivity.EXTRA_RINGING, true)
+                putExtra("ringing", true)
             }
             runCatching { appContext.startActivity(wake) }
                 .onFailure { log.warning("wake activity launch refused: $it") }
@@ -169,13 +169,12 @@ class FindMyRingActivity : Activity() {
                     setPadding(pad, pad, pad, pad)
                 },
             )
-            addView(
-                button,
-                android.widget.LinearLayout.LayoutParams(
-                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).setMargins(pad, pad, pad, pad),
+            val buttonParams = android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
             )
+            buttonParams.setMargins(pad, pad, pad, pad)
+            addView(button, buttonParams)
         }
         setContentView(layout)
     }
