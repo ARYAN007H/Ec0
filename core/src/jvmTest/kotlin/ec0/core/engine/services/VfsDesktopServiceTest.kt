@@ -6,6 +6,8 @@
  */
 package ec0.core.engine.services
 
+import ec0.core.engine.protocol.NotificationPostInfo
+import ec0.core.engine.protocol.VfsProtocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -14,7 +16,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.test.assertNull
 
 class VfsDesktopServiceTest {
 
