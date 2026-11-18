@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import ec0.core.engine.EngineCapability
+import ec0.core.engine.EngineConstants
 import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.PairingStepState
