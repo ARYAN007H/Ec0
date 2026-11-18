@@ -98,7 +98,7 @@ class VfsDesktopService(
                 current.feed(offset, eof, Base64.getMimeDecoder().decode(bufferB64))
                 if (current.complete) {
                     val bytes = current.assembled() ?: ByteArray(0)
-                    val safe = downloadPath?.replace(Regex("[^A-Za-z0-9._-]"), "_") ?: "vfs_download"
+                    val safe = downloadPath?.substringAfterLast('/')?.replace(Regex("[^A-Za-z0-9._-]"), "_") ?: "vfs_download"
                     val target = destinationDir.resolve(safe)
                     target.toAbsolutePath().parent?.let { java.nio.file.Files.createDirectories(it) }
                     java.nio.file.Files.write(
