@@ -431,7 +431,11 @@ class AndroidAppState(
             )
 
         override fun requestGrant() {
-            val current = cameraGrantInputs.value
+            // Decide on the MAPPED state (same source the row renders): the raw
+            // inputs have no needsSystemSettings — that verdict is computed by
+            // [mapPhoneCameraGrant] (denied + no rationale = Android will
+            // silently auto-deny, so bounce to app settings).
+            val current = grant.value
             when {
                 current.granted -> Unit
                 current.needsSystemSettings -> openAppPermissionSettings()
