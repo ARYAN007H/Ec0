@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -51,6 +52,11 @@ fun SyncPanel(bridge: UiBridge) {
     val caps = bridge.capabilities
     val settings by bridge.settings.collectAsState()
 
+    // The toggle seams use the established per-access-flow default idiom —
+    // remember them so a host without an override still collects ONE flow.
+    val clipboardSyncEnabled = remember { bridge.clipboardSyncEnabled }.collectAsState()
+    val notificationRelayEnabled = remember { bridge.notificationRelayEnabled }.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -68,7 +74,7 @@ fun SyncPanel(bridge: UiBridge) {
                 accent = ec0Colors().synergy,
                 title = "Remote input",
                 live = available,
-                onToggle = if (available) ({ remoteInput.openTouchpad() }) else null,
+                onToggle = if (available) ({ _ -> remoteInput.openTouchpad() }) else null,
                 detail = if (available) {
                     "Touchpad, keyboard and volume rocker for the paired desktop"
                 } else {
@@ -81,23 +87,26 @@ fun SyncPanel(bridge: UiBridge) {
             icon = Icons.Filled.ContentCopy,
             accent = ec0Colors().synergy,
             title = "Clipboard sync",
-            live = caps.clipboardSync,
-            onToggle = if (caps.clipboardSync) null else null,
-            detail = if (caps.clipboardSync) {
-                "Copy on one device, paste on the other — live"
-            } else {
-                "Needs the continuity service — desktop tray attached, phone service ships with the background-service slice"
+            live = caps.clipboardSync && clipboardSyncEnabled.value,
+            checked = clipboardSyncEnabled.value,
+            onToggle = { bridge.setClipboardSyncEnabled(it) },
+            detail = when {
+                !clipboardSyncEnabled.value -> "Sync paused — flip to resume"
+                caps.clipboardSync -> "Copy on one device, paste on the other — live"
+                else -> "Waiting for the peer link — sync resumes automatically"
             },
         )
         FeatureCard(
             icon = Icons.Filled.Notifications,
             accent = ec0Colors().localSend,
             title = "Notification relay",
-            live = caps.notifications,
-            detail = if (caps.notifications) {
-                "Phone notifications mirrored to this device"
-            } else {
-                "Needs the notification-listener grant — arrives with the service slice"
+            live = caps.notifications && notificationRelayEnabled.value,
+            checked = notificationRelayEnabled.value,
+            onToggle = { bridge.setNotificationRelayEnabled(it) },
+            detail = when {
+                !notificationRelayEnabled.value -> "Relay paused — flip to resume"
+                caps.notifications -> "Phone notifications mirrored to this device"
+                else -> "Needs the notification-listener grant on the sending device"
             },
         )
         FeatureCard(
@@ -121,7 +130,8 @@ private fun FeatureCard(
     title: String,
     live: Boolean,
     detail: String,
-    onToggle: (() -> Unit)? = null,
+    checked: Boolean = live,
+    onToggle: ((Boolean) -> Unit)? = null,
 ) {
     Card(
         shape = Ec0Shapes.card,
@@ -167,7 +177,7 @@ private fun FeatureCard(
                 )
             }
             if (onToggle != null) {
-                Switch(checked = live, onCheckedChange = { onToggle() })
+                Switch(checked = checked, onCheckedChange = { onToggle(it) })
             }
         }
     }

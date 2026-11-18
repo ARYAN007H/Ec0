@@ -119,6 +119,19 @@ interface UiBridge {
     val scanning: StateFlow<Boolean>
     val capabilities: Capabilities
 
+    /**
+     * Real toggles for the Sync & continuity cards. The defaults are per-access
+     * flows (the established seam idiom) — panels must remember them; hosts
+     * override with state-backed flows so the Switches reflect and change
+     * actual service state. [capabilities] answers "is this capability
+     * attached for the session?"; these answer "does the user want it on?".
+     */
+    val clipboardSyncEnabled: StateFlow<Boolean> get() = MutableStateFlow(true)
+    fun setClipboardSyncEnabled(enabled: Boolean) = Unit
+
+    val notificationRelayEnabled: StateFlow<Boolean> get() = MutableStateFlow(true)
+    fun setNotificationRelayEnabled(enabled: Boolean) = Unit
+
     fun startScan()
     fun cancelTransfer(id: String)
     fun updateSettings(transform: (SettingsState) -> SettingsState)
