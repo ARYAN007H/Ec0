@@ -62,6 +62,7 @@ import ec0.core.engine.EngineCapability
 import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
 import ec0.core.engine.protocol.InputProtocol
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -92,19 +93,24 @@ class PointerEventBatcher {
     private var pendingScrollY = 0
     private val queued = ArrayDeque<InputPointerEvent>()
 
+    // Gestures call add* on the UI thread while the flush tick drains on the
+    // injected IO dispatcher — every access guards against that race.
     /** Accumulate touchpad drag deltas. */
+    @Synchronized
     fun addMove(dx: Int, dy: Int) {
         pendingDx += dx
         pendingDy += dy
     }
 
     /** Accumulate two-finger scroll deltas. */
+    @Synchronized
     fun addScroll(dx: Int, dy: Int) {
         pendingScrollX += dx
         pendingScrollY += dy
     }
 
     /** Queue a button click (the receiver turns one CLICK into down+up). */
+    @Synchronized
     fun addClick(buttonsMask: Int) {
         queued.addLast(
             InputPointerEvent(action = InputProtocol.POINTER_ACTION_CLICK, buttonsMask = buttonsMask),
@@ -115,6 +121,7 @@ class PointerEventBatcher {
      * Drain the pending burst: the coalesced MOVE (if any), then queued
      * clicks/scrolls. Called from the ≤8 ms flush tick; empty result = no-op.
      */
+    @Synchronized
     fun flush(): List<InputPointerEvent> {
         val burst = mutableListOf<InputPointerEvent>()
         if (pendingDx != 0 || pendingDy != 0) {
@@ -176,9 +183,19 @@ class RemoteInputSender(
     private val scope: CoroutineScope,
     private val peerDeviceId: () -> String?,
     private val flushIntervalMs: Long = 8L,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val batcher = PointerEventBatcher()
     private var flushJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Test seam (the relayDispatcherOverride precedent): thread name of the
+     * last send dispatch. The NetworkOnMainThreadException regression is
+     * Android-StrictMode-only, so JVM tests pin the contract through this.
+     */
+    @Volatile
+    internal var lastSendThreadName: String? = null
+        private set
 
     /** Peers that refuse the input capability get an honest no-send. */
     var remoteInputAllowed: Boolean = true
@@ -187,12 +204,21 @@ class RemoteInputSender(
 
     private fun startFlushTick() {
         if (flushJob?.isActive == true) return
-        flushJob = scope.launch {
+        // Sends are blocking socket writes — they MUST run off the Android main
+        // thread or StrictMode kills the process (NetworkOnMainThreadException,
+        // the exact crash the notification relay hit before its daemon executor).
+        // The tick therefore runs on [ioDispatcher]; the batcher synchronizes
+        // add* (UI thread) against flush (here).
+        flushJob = scope.launch(ioDispatcher) {
             while (isActive) {
                 delay(flushIntervalMs)
                 val session = session() ?: continue
                 for (event in batcher.flush()) {
-                    node.inputShareService.sendPointerEvent(event, session, System.currentTimeMillis())
+                    // A session closing mid-churn must not kill the tick.
+                    runCatching {
+                        lastSendThreadName = Thread.currentThread().name
+                        node.inputShareService.sendPointerEvent(event, session, System.currentTimeMillis())
+                    }
                 }
             }
         }
@@ -220,27 +246,37 @@ class RemoteInputSender(
     fun sendCommitText(text: String) {
         if (!remoteInputAllowed || text.isEmpty()) return
         val session = session() ?: return
-        node.inputShareService.sendKeyEvent(
-            InputKeyEvent(action = InputProtocol.KEY_ACTION_COMMIT_TEXT, text = text),
-            session,
-            System.currentTimeMillis(),
-        )
+        scope.launch(ioDispatcher) {
+            runCatching {
+                lastSendThreadName = Thread.currentThread().name
+                node.inputShareService.sendKeyEvent(
+                    InputKeyEvent(action = InputProtocol.KEY_ACTION_COMMIT_TEXT, text = text),
+                    session,
+                    System.currentTimeMillis(),
+                )
+            }
+        }
     }
 
     /** Volume rocker: PC volume keys (desktop maps to XF86Audio* / uinput). */
     fun sendKey(keyCode: Int, modifiers: Int = 0) {
         if (!remoteInputAllowed) return
         val session = session() ?: return
-        node.inputShareService.sendKeyEvent(
-            InputKeyEvent(action = InputProtocol.KEY_ACTION_DOWN, keyCode = keyCode, modifiers = modifiers),
-            session,
-            System.currentTimeMillis(),
-        )
-        node.inputShareService.sendKeyEvent(
-            InputKeyEvent(action = InputProtocol.KEY_ACTION_UP, keyCode = keyCode, modifiers = modifiers),
-            session,
-            System.currentTimeMillis(),
-        )
+        scope.launch(ioDispatcher) {
+            runCatching {
+                lastSendThreadName = Thread.currentThread().name
+                node.inputShareService.sendKeyEvent(
+                    InputKeyEvent(action = InputProtocol.KEY_ACTION_DOWN, keyCode = keyCode, modifiers = modifiers),
+                    session,
+                    System.currentTimeMillis(),
+                )
+                node.inputShareService.sendKeyEvent(
+                    InputKeyEvent(action = InputProtocol.KEY_ACTION_UP, keyCode = keyCode, modifiers = modifiers),
+                    session,
+                    System.currentTimeMillis(),
+                )
+            }
+        }
     }
 }
 
@@ -263,7 +299,12 @@ fun RemoteInputScreen(
     modifier: Modifier = Modifier,
 ) {
     val scope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
-    val sender = remember(node) { RemoteInputSender(node, scope, peerDeviceId = { connectedPeerId }) }
+    // Keyed on the peer id too: remember(node) alone would freeze the FIRST
+    // composition's peer lambda forever, so a sender built before the session
+    // resolved stayed a silent no-op even after CONNECTED.
+    val sender = remember(node, connectedPeerId) {
+        RemoteInputSender(node, scope, peerDeviceId = { connectedPeerId })
+    }
     val sessionLive = connectedPeerId != null
     val negotiated = EngineCapability.INPUT in peerCapabilities ||
         EngineCapability.REMOTE_INPUT in peerCapabilities
