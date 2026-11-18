@@ -58,6 +58,8 @@ import ec0.ui.models.IncomingRequest
 import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.PeerLinkState
 import ec0.ui.models.PeerManagementBridge
+import ec0.ui.models.PhoneCameraBridge
+import ec0.ui.models.PhoneCameraGrant
 import ec0.ui.models.RemoteInputBridge
 import ec0.ui.models.SettingsState
 import ec0.ui.models.TransferDirection
@@ -74,6 +76,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -202,14 +205,75 @@ class AndroidAppState(
     override val scanning: StateFlow<Boolean>
         get() = serviceHost.scanning
 
+    /**
+     * Notification-listener grant state, polled — the grant can flip outside the
+     * app (system settings, QS) and the SyncPanel switch must reflect reality,
+     * not the value seen at process start. A Settings.Secure read per 2 s is
+     * noise; the activity scope cancels the ticker on destroy.
+     */
+    private val _notificationRelayGranted = MutableStateFlow(false)
+
+    /**
+     * Strict session-live predicate (any engine session CONNECTED) — feeds the
+     * SyncPanel dots ("LIVE" must mean an actual peer session, not a hardcoded
+     * `true`) and the remote-input bridge's availability.
+     */
+    private val sessionLive: StateFlow<Boolean> =
+        serviceHost.runtime.node.connectionStates
+            .map { states -> states.values.any { it == EngineConnectionState.CONNECTED } }
+            .stateIn(scope, SharingStarted.Eagerly, false)
+
     override val capabilities: Capabilities
         get() = Capabilities(
             canReceive = true,
-            clipboardSync = true,
-            notifications = isNotificationListenerAccessGranted(),
-            photoSync = false,
+            // LIVE only means something real: a live peer session AND the sync
+            // toggle armed (the hardcoded `true` made the dot lie while paused
+            // or disconnected).
+            clipboardSync = clipboardSyncEnabled.value && sessionLive.value,
+            notifications = _notificationRelayGranted.value,
+            photoSync = false, // photo-sync slice has not shipped — stays honest
             remoteInput = false,
         )
+
+    /**
+     * Phone clipboard-sync toggle — ONE boolean behind the SyncPanel card, the
+     * HOME Auto-sync tile and the QS tile, persisted in DataStore and applied to
+     * the running watcher/apply gate via [Ec0TileState.setClipboardSyncEnabled]
+     * (assigned by the service host, same instance the QS tile flips).
+     */
+    override val clipboardSyncEnabled: StateFlow<Boolean> =
+        settingsStore.clipboardSyncEnabledFlow().stateIn(scope, SharingStarted.Eagerly, true)
+
+    override fun setClipboardSyncEnabled(enabled: Boolean) {
+        scope.launch(Dispatchers.IO) {
+            runCatching { settingsStore.setClipboardSyncEnabled(enabled) }
+        }
+        Ec0TileState.setClipboardSyncEnabled(enabled)
+    }
+
+    /** HOME Auto-sync switch = the same phone clipboard-sync boolean. */
+    override val autoSyncClipboard: StateFlow<Boolean> get() = clipboardSyncEnabled
+    override fun setAutoSyncClipboard(enabled: Boolean) = setClipboardSyncEnabled(enabled)
+
+    /**
+     * Notification relay toggle — REAL state is the system notification-listener
+     * grant, which Android cannot grant or revoke programmatically. Both toggle
+     * directions therefore route to the system grant screen; the flow updates
+     * when the grant actually changes (ticker + resume refresh), never before.
+     */
+    override val notificationRelayEnabled: StateFlow<Boolean> = _notificationRelayGranted.asStateFlow()
+
+    override fun setNotificationRelayEnabled(enabled: Boolean) {
+        val granted = isNotificationListenerAccessGranted()
+        when {
+            enabled && !granted -> requestNotificationListenerAccess()
+            !enabled && granted -> requestNotificationListenerAccess()
+        }
+    }
+
+    private fun refreshNotificationRelayState() {
+        _notificationRelayGranted.value = isNotificationListenerAccessGranted()
+    }
 
     /**
      * Dashboard header chip — mirrors [ec0.desktop.ui.DesktopBridge.peerLink]:
@@ -315,11 +379,9 @@ class AndroidAppState(
         }
     }
 
-    /** A1: remote-input senders — available while the peer link is live. */
+    /** A1: remote-input senders — available while a peer engine session is live. */
     private inner class RemoteInputBridgeImpl : RemoteInputBridge {
-        override val available: StateFlow<Boolean> =
-            peerLink.map { link -> link?.connected == true }
-                .stateIn(scope, SharingStarted.Eagerly, false)
+        override val available: StateFlow<Boolean> = sessionLive
 
         override fun openTouchpad() {
             showRemoteInput.value = true
@@ -329,6 +391,87 @@ class AndroidAppState(
     override val peerManagement: PeerManagementBridge = PeerManagementBridgeImpl()
 
     override val remoteInput: RemoteInputBridge = RemoteInputBridgeImpl()
+
+    // ---- Phone-camera runtime grant (Settings "Phone camera" row) ----
+
+    /** Observable CAMERA-grant facts; mapped to honest UI state by [mapPhoneCameraGrant]. */
+    private val cameraGrantInputs = MutableStateFlow(
+        CameraGrantInputs(granted = hasCameraPermission(), shouldShowRationale = false, deniedAtLeastOnce = false),
+    )
+
+    /**
+     * Set by [MainActivity] — the permission dialog can only be launched from an
+     * Activity; the bridge (applicationContext-backed) delegates through here.
+     */
+    var cameraRequestHandler: (() -> Unit)? = null
+
+    private fun hasCameraPermission(): Boolean = runCatching {
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+    }.getOrDefault(false)
+
+    private fun openAppPermissionSettings(): Boolean = runCatching {
+        context.startActivity(
+            android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = android.net.Uri.parse("package:${context.packageName}")
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+        true
+    }.getOrDefault(false)
+
+    private inner class PhoneCameraBridgeImpl : PhoneCameraBridge {
+        override val grant: StateFlow<PhoneCameraGrant> =
+            cameraGrantInputs.map { mapPhoneCameraGrant(it) }.stateIn(
+                scope,
+                SharingStarted.Eagerly,
+                mapPhoneCameraGrant(cameraGrantInputs.value),
+            )
+
+        override fun requestGrant() {
+            // Decide on the MAPPED state (same source the row renders): the raw
+            // inputs have no needsSystemSettings — that verdict is computed by
+            // [mapPhoneCameraGrant] (denied + no rationale = Android will
+            // silently auto-deny, so bounce to app settings).
+            val current = grant.value
+            when {
+                current.granted -> Unit
+                current.needsSystemSettings -> openAppPermissionSettings()
+                else -> cameraRequestHandler?.invoke()
+            }
+        }
+    }
+
+    override val phoneCamera: PhoneCameraBridge = PhoneCameraBridgeImpl()
+
+    /**
+     * [MainActivity] feeds the launcher result here. The denial flag flips on
+     * the RESULT (never on launching the dialog — dismissing a dialog by
+     * navigating away is not a denial) and is persisted, because Android's own
+     * rationale signal does not survive process death: without this, a blocked
+     * grant would look like a fresh install after a restart and Enable would
+     * launch a dialog that silently auto-denies.
+     */
+    fun onCameraPermissionResult(granted: Boolean, shouldShowRationale: Boolean) {
+        cameraGrantInputs.value = CameraGrantInputs(
+            granted = granted,
+            shouldShowRationale = shouldShowRationale,
+            deniedAtLeastOnce = !granted,
+        )
+        scope.launch(Dispatchers.IO) {
+            runCatching { settingsStore.setCameraDeniedOnce(!granted) }
+        }
+    }
+
+    /** [MainActivity] re-checks on resume — grants flip in system settings too. */
+    fun refreshCameraGrant(shouldShowRationale: Boolean = false) {
+        cameraGrantInputs.value = cameraGrantInputs.value.copy(
+            granted = hasCameraPermission(),
+            shouldShowRationale = shouldShowRationale,
+        )
+    }
 
     fun isNotificationListenerAccessGranted(): Boolean =
         NotificationAccessHelper.isNotificationListenerEnabled(context)
@@ -389,6 +532,31 @@ class AndroidAppState(
             val loaded = runCatching { settingsStore.load(defaultSettings) }.getOrDefault(defaultSettings)
             _settings.value = loaded
             Ec0CompanionService.updateCachedSettings(loaded)
+        }
+        // Notification-listener grant can flip while the app sits in the system
+        // settings screen — poll gently so the SyncPanel switch never lies. IO
+        // dispatcher: the check is a Settings.Secure binder read. The CAMERA
+        // grant rides the same loop (the Settings row's "Open settings" routing
+        // and user revokes/re-grants flip it outside the app too); rationale is
+        // only observable from the Activity, so it stays with onResume/results.
+        refreshNotificationRelayState()
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(2_000)
+                refreshNotificationRelayState()
+                val granted = hasCameraPermission()
+                if (granted != cameraGrantInputs.value.granted) {
+                    cameraGrantInputs.value = cameraGrantInputs.value.copy(granted = granted)
+                }
+            }
+        }
+        // Seed the persisted camera-denial flag (upgrade-only: a fresh process
+        // starts at false, and nothing here may downgrade a denial set this
+        // session). Rationale itself is re-observed in MainActivity.onResume.
+        scope.launch(Dispatchers.IO) {
+            if (runCatching { settingsStore.cameraDeniedOnce() }.getOrDefault(false)) {
+                cameraGrantInputs.value = cameraGrantInputs.value.copy(deniedAtLeastOnce = true)
+            }
         }
     }
 
@@ -523,6 +691,23 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { _ -> }
 
+    /**
+     * Phone-camera runtime grant — the normal one-shot contract, launched ONLY
+     * from the Settings row's Enable action (never in onResume; a declined grant
+     * stays calm: the row just says "Declined" / "Blocked" and offers the honest
+     * next step).
+     */
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        appState?.onCameraPermissionResult(
+            granted = granted,
+            shouldShowRationale = runCatching {
+                shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+            }.getOrDefault(false),
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestPostNotificationsIfNeeded()
@@ -538,6 +723,9 @@ class MainActivity : ComponentActivity() {
             ec0StoreDir = ec0StoreDir,
         )
         appState = state
+        state.cameraRequestHandler = {
+            runCatching { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+        }
         setContent {
             val settings by state.settings.collectAsState()
             val trustedPeerCount by state.trustedPeerCount.collectAsState()
@@ -628,6 +816,13 @@ class MainActivity : ComponentActivity() {
         // Android 10+ grants clipboard read to the focused app's UID — phone→PC
         // clipboard pushes (and the focus-gain re-check) only run while resumed.
         Ec0CompanionService.onMainActivityFocusChanged(focused = true)
+        // Grants (camera, notification-listener) can flip while the app sits in
+        // system settings — re-check on every resume so the UI never lies.
+        appState?.refreshCameraGrant(
+            shouldShowRationale = runCatching {
+                shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+            }.getOrDefault(false),
+        )
         // NOTE: the clipboard READ itself waits for WINDOW focus — onResume fires
         // before the window is focusable, and ClipboardService denies the read
         // ("application is not in focus") if it happens here. See onWindowFocusChanged.

@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 class AndroidSettingsStoreTest {
@@ -125,6 +126,83 @@ class AndroidSettingsStoreTest {
             val updatedSystem = store2.update(reloaded) { s -> s.copy(darkTheme = null) }
             assertNull(updatedSystem.darkTheme)
             assertNull(store2.load().darkTheme)
+        } finally {
+            scope2.coroutineContext[Job]?.cancelAndJoin()
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun clipboardSyncTogglePersistsAndDefaultsTrue() = runBlocking {
+        val tempDir = Files.createTempDirectory("ec0-clip-sync-test").toFile()
+        val scope1 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val store1 = AndroidSettingsStore.create(
+                storageDir = tempDir,
+                scope = scope1,
+                fileName = "clip-sync.preferences_pb",
+            )
+            // Unset key must mean ON — the UI has always shown sync armed by
+            // default, so an absent preference must not flip the switch off.
+            assertTrue(store1.clipboardSyncEnabled())
+            assertEquals(true, store1.clipboardSyncEnabledFlow().first())
+
+            store1.setClipboardSyncEnabled(false)
+            assertEquals(false, store1.clipboardSyncEnabled())
+            assertEquals(false, store1.clipboardSyncEnabledFlow().first())
+        } finally {
+            scope1.coroutineContext[Job]?.cancelAndJoin()
+        }
+
+        // Re-open in a fresh scope (simulating process restart): the pause survives.
+        val scope2 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val store2 = AndroidSettingsStore.create(
+                storageDir = tempDir,
+                scope = scope2,
+                fileName = "clip-sync.preferences_pb",
+            )
+            assertEquals(false, store2.clipboardSyncEnabled())
+            store2.setClipboardSyncEnabled(true)
+            assertEquals(true, store2.clipboardSyncEnabledFlow().first())
+        } finally {
+            scope2.coroutineContext[Job]?.cancelAndJoin()
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cameraDeniedOncePersistsAcrossProcessRestartAndClears() = runBlocking {
+        val tempDir = Files.createTempDirectory("ec0-cam-denied-test").toFile()
+        val scope1 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val store1 = AndroidSettingsStore.create(
+                storageDir = tempDir,
+                scope = scope1,
+                fileName = "cam-denied.preferences_pb",
+            )
+            // Fresh install: no denial on record — the Settings row offers the
+            // in-app dialog, not the system settings bounce.
+            assertTrue(!store1.cameraDeniedOnce())
+            store1.setCameraDeniedOnce(true)
+            assertTrue(store1.cameraDeniedOnce())
+        } finally {
+            scope1.coroutineContext[Job]?.cancelAndJoin()
+        }
+
+        // Process restart: Android's rationale signal is gone, but the denial
+        // fact survives — the row must still say "Blocked", not "Off".
+        val scope2 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val store2 = AndroidSettingsStore.create(
+                storageDir = tempDir,
+                scope = scope2,
+                fileName = "cam-denied.preferences_pb",
+            )
+            assertTrue(store2.cameraDeniedOnce())
+            // The user re-grants in system settings — the flag clears.
+            store2.setCameraDeniedOnce(false)
+            assertTrue(!store2.cameraDeniedOnce())
         } finally {
             scope2.coroutineContext[Job]?.cancelAndJoin()
             tempDir.deleteRecursively()

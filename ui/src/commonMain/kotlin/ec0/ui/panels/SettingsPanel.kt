@@ -50,6 +50,7 @@ import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Shapes
+import ec0.ui.theme.ec0Colors
 import ec0.ui.widgets.SectionHeader
 
 @Composable
@@ -129,6 +130,42 @@ fun SettingsPanel(bridge: UiBridge) {
                         Button(onClick = { peerManagementLocal.unpair(peer.deviceId) }) {
                             Text("Unpair")
                         }
+                    }
+                }
+            }
+        }
+
+        // Phone-camera runtime grant (Android only): the desktop's camera tile
+        // renders from the phone's beacon `cam` capability, advertised only while
+        // this OS grant is held. State + Enable action — declined stays calm,
+        // blocked routes to system settings, nothing nags.
+        val phoneCameraLocal = bridge.phoneCamera
+        if (phoneCameraLocal != null) {
+            val cameraGrant by phoneCameraLocal.grant.collectAsState()
+            SettingsCard("Phone camera") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Camera streaming", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            cameraGrant.detailLine,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (!cameraGrant.granted) {
+                        Button(
+                            onClick = { phoneCameraLocal.requestGrant() },
+                            shape = Ec0Shapes.pill,
+                        ) {
+                            Text(if (cameraGrant.needsSystemSettings) "Open settings" else "Enable")
+                        }
+                    } else {
+                        Text(
+                            cameraGrant.stateLine,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ec0Colors().success,
+                        )
                     }
                 }
             }

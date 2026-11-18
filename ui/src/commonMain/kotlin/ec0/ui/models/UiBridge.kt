@@ -91,6 +91,30 @@ interface RemoteInputBridge {
     fun openTouchpad()
 }
 
+/**
+ * Phone-camera runtime-permission state for the phone's Settings row. The
+ * desktop's camera tile renders from the phone's beacon `cam` capability,
+ * which [ec0.android] advertises only while the OS grant is held — so the
+ * grant flow lives entirely phone-side. Hosts render the pre-computed
+ * [stateLine]/[detailLine] verbatim: the Android nuance (fresh ask vs.
+ * declined vs. Android 11+ "stopped asking") is resolved where
+ * `shouldShowRequestPermissionRationale` is observable, not in shared UI.
+ */
+data class PhoneCameraGrant(
+    val granted: Boolean,
+    /** true → the system dialog auto-denies; Enable must bounce to app settings. */
+    val needsSystemSettings: Boolean,
+    val stateLine: String,
+    val detailLine: String,
+)
+
+/** Enable action for the phone-camera Settings row (see [PhoneCameraGrant]). */
+interface PhoneCameraBridge {
+    val grant: StateFlow<PhoneCameraGrant>
+    /** Asks Android for the grant, or opens app settings when [PhoneCameraGrant.needsSystemSettings]. */
+    fun requestGrant()
+}
+
 /** Live link state to the trusted peer — drives the dashboard header and tile honesty. */
 data class PeerLinkState(
     val connected: Boolean,
@@ -154,6 +178,13 @@ interface UiBridge {
      * for the PC). Null on the desktop — the desktop is the input RECEIVER side.
      */
     val remoteInput: RemoteInputBridge? get() = null
+
+    /**
+     * Phone-camera runtime-permission surface (Settings "Phone camera" row).
+     * Null on the desktop — the desktop never holds the phone's camera grant;
+     * it only consumes the beacon capability the grant unlocks.
+     */
+    val phoneCamera: PhoneCameraBridge? get() = null
 
     /**
      * Smart Connect pairing QR (`motorolardpconnection{...}`) rendered in Settings.

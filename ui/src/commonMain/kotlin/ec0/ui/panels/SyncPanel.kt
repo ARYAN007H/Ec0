@@ -57,6 +57,20 @@ fun SyncPanel(bridge: UiBridge) {
     val clipboardSyncEnabled = remember { bridge.clipboardSyncEnabled }.collectAsState()
     val notificationRelayEnabled = remember { bridge.notificationRelayEnabled }.collectAsState()
 
+    // Conditional collection is stable here: remoteInput is null only on the
+    // desktop and non-null only on Android (platform-defined, never flips
+    // mid-session). Collected in the FUNCTION scope — on the phone the
+    // clipboard card's caps.clipboardSync derives from the same session-live
+    // flow as this availability, and a State read inside the Column lambda
+    // below would only recompose the remote-input card, leaving the clipboard
+    // LIVE dot stale until some other state happened to recompose the panel.
+    val remoteInputLocal = bridge.remoteInput
+    val remoteInputAvailable: Boolean = if (remoteInputLocal != null) {
+        remoteInputLocal.available.collectAsState().value
+    } else {
+        false
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -68,14 +82,13 @@ fun SyncPanel(bridge: UiBridge) {
 
         // Deep-integration A1 (Android only): remote input senders.
         bridge.remoteInput?.let { remoteInput ->
-            val available = remoteInput.available.collectAsState().value
             FeatureCard(
                 icon = Icons.Filled.Mouse,
                 accent = ec0Colors().synergy,
                 title = "Remote input",
-                live = available,
-                onToggle = if (available) ({ _ -> remoteInput.openTouchpad() }) else null,
-                detail = if (available) {
+                live = remoteInputAvailable,
+                onToggle = if (remoteInputAvailable) ({ _ -> remoteInput.openTouchpad() }) else null,
+                detail = if (remoteInputAvailable) {
                     "Touchpad, keyboard and volume rocker for the paired desktop"
                 } else {
                     "Connects when the desktop negotiates the remote-input capability"
@@ -103,8 +116,12 @@ fun SyncPanel(bridge: UiBridge) {
             live = caps.notifications && notificationRelayEnabled.value,
             checked = notificationRelayEnabled.value,
             onToggle = { bridge.setNotificationRelayEnabled(it) },
+            // "Paused" is only honest when the capability is actually attached
+            // and the user turned it off (desktop). On the phone the checked
+            // state IS the system grant — a missing grant is not a pause, so
+            // the grant line shows instead.
             detail = when {
-                !notificationRelayEnabled.value -> "Relay paused — flip to resume"
+                !notificationRelayEnabled.value && caps.notifications -> "Relay paused — flip to resume"
                 caps.notifications -> "Phone notifications mirrored to this device"
                 else -> "Needs the notification-listener grant on the sending device"
             },
