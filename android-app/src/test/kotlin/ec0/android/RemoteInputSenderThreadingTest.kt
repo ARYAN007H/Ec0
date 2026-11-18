@@ -94,8 +94,11 @@ class RemoteInputSenderThreadingTest {
         desktopNode.startServer(startMdns = false)
         phoneNode.startServer(startMdns = false)
         val desktopId = desktopNode.localIdentity.deviceId
+        val pairing = runCatching {
+            phoneNode.pairAndConnectWithQrUri(desktopNode.generatePairingQr(ips = listOf("127.0.0.1")).toUri())
+        }
         assertTrue(
-            phoneNode.pairAndConnectWithQrUri(desktopNode.generatePairingQr(ips = listOf("127.0.0.1")).toUri()),
+            pairing.isSuccess,
             "pairing must succeed before the sender can resolve a session",
         )
 
