@@ -173,4 +173,61 @@ class ContinuityCameraPreflightTest {
         assertEquals(V4l2Outcome.READY, result.outcome)
         assertTrue(sudoCalled.none { it.firstOrNull() == "sudo" }) // device ready → no modprobe attempt
     }
+
+    // ---- streamPreflight: the four gates before arming the phone camera ----
+
+    private fun preflight(
+        sessionConnected: Boolean = true,
+        camAdvertised: Boolean = true,
+        v4l2Ok: Boolean = true,
+        ffmpegExit: Int = 0,
+        ffmpegStdout: String = "ffmpeg version n9.0.2",
+    ): Pair<CameraStreamPreflight, List<List<String>>> {
+        val coordinator = ContinuityCameraCoordinator(
+            v4l2DeviceCheck = { v4l2Ok },
+            ffmpegBinary = "ffmpeg",
+        )
+        val calls = mutableListOf<List<String>>()
+        val result = coordinator.streamPreflight(
+            sessionConnected = sessionConnected,
+            phoneCameraAdvertised = camAdvertised,
+        ) { argv ->
+            calls.add(argv)
+            CommandExecResult(ffmpegExit, ffmpegStdout, "")
+        }
+        return result to calls
+    }
+
+    @Test
+    fun streamPreflightAllClear() {
+        val (result, calls) = preflight()
+        assertTrue(result.allClear)
+        assertEquals("", result.bannerText())
+        // ffmpeg is probed exactly once on PATH
+        assertEquals(1, calls.size)
+        assertEquals(listOf("ffmpeg", "-version"), calls[0])
+    }
+
+    @Test
+    fun streamPreflightNamesEveryMissingGate() {
+        val (result, _) = preflight(
+            sessionConnected = false,
+            camAdvertised = false,
+            v4l2Ok = false,
+            ffmpegExit = 127,
+        )
+        assertFalse(result.allClear)
+        val banner = result.bannerText()
+        assertTrue(banner.contains("phone session not connected"))
+        assertTrue(banner.contains("CAMERA permission"))
+        assertTrue(banner.contains("modprobe v4l2loopback"))
+        assertTrue(banner.contains("ffmpeg not found"))
+    }
+
+    @Test
+    fun streamPreflightRejectsGarbledFfmpegOutput() {
+        val (result, _) = preflight(ffmpegStdout = "gcc: error: no input files")
+        assertFalse(result.allClear)
+        assertTrue(result.bannerText().contains("ffmpeg not found"))
+    }
 }
