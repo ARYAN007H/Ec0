@@ -175,16 +175,19 @@ class CamDroidStreamServer(
     }
 
     /**
-     * Closes the listening socket and any live session. Always succeeds.
+     * Closes the listening socket and any live session. Always succeeds and
+     * always lands the server in IDLE — a disarmed server holds nothing.
      */
     fun disarm() = synchronized(lock) {
         disarmLocked()
         update { snap ->
-            if (snap.state == CamDroidServerState.ARMED) {
-                CamDroidServerSnapshot(state = CamDroidServerState.IDLE, reason = snap.reason)
-            } else {
-                snap
-            }
+            CamDroidServerSnapshot(
+                state = CamDroidServerState.IDLE,
+                port = null,
+                framesSent = snap.framesSent,
+                framesDropped = snap.framesDropped,
+                reason = snap.reason,
+            )
         }
     }
 
@@ -348,6 +351,8 @@ class CamDroidStreamServer(
                             out.flush()
                         }
                         framesSent.incrementAndGet()
+                        // Keep the observable snapshot's counters in lockstep.
+                        update { it.copy(framesSent = framesSent.get(), framesDropped = framesDropped.get()) }
                     }
                 }
                 if (now - lastHeartbeatSent >= heartbeatIntervalMs) {
@@ -402,11 +407,10 @@ class CamDroidStreamServer(
     }
 
     private fun handleControl(packet: CamDroidV1Packet) {
-        val command = runCatching {
-            CamDroidControlCommand.fromJsonObject(
-                Json.decodeFromString(JsonObject.serializer(), packet.payload.decodeToString()),
-            )
-        }.getOrNull() ?: return
+        // TCP control plane carries the raw CamDroid wire JSON, not the
+        // engine-envelope representation — parse accordingly.
+        val command = CamDroidControlCommand.fromCamDroidWireJson(packet.payload.decodeToString())
+            ?: return
         if (command is CamDroidControlCommand.Stop) {
             endSession("stopped by desktop")
             return

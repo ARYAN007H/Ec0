@@ -9,17 +9,20 @@
 package ec0.core.engine.protocol
 
 import ec0.core.engine.EngineEncoding
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlin.math.roundToLong
 
 object CamDroidConstants {
     /** mDNS service type registered by CamDroid's `NsdHelper.kt`. */
@@ -518,6 +521,44 @@ sealed class CamDroidControlCommand {
                 else -> throw IllegalArgumentException("Unknown cam.control.cmd: '$cmd'")
             }
         }
+
+        /**
+         * Parses the RAW CamDroid wire JSON (`toCamDroidJsonString` format:
+         * snake_case command names, `value` fields, decimal-scaled numbers) as
+         * it travels on the TCP :4747 control plane. Returns null for
+         * unparsable/unknown packets — control-plane garbage never crashes the
+         * stream. The engine-envelope counterpart is [fromJsonObject].
+         */
+        fun fromCamDroidWireJson(json: String): CamDroidControlCommand? = runCatching {
+            val obj = Json.decodeFromString(JsonObject.serializer(), json)
+            when (obj["cmd"]?.jsonPrimitive?.contentOrNull) {
+                "start" -> Start(
+                    codec = obj["codec"]?.jsonPrimitive?.contentOrNull ?: "h264",
+                    resolution = obj["resolution"]?.jsonPrimitive?.contentOrNull ?: "1080p",
+                    fps = obj["fps"]?.jsonPrimitive?.intOrNull ?: 30,
+                    audio = obj["audio"]?.jsonPrimitive?.booleanOrNull ?: true,
+                )
+                "stop" -> Stop
+                "switch_camera" -> SwitchCamera
+                "set_zoom" -> obj["value"]?.jsonPrimitive?.doubleOrNull
+                    ?.let { SetZoom((it * 100).roundToLong()) }
+                "set_focus" -> SetFocus(
+                    mode = obj["mode"]?.jsonPrimitive?.contentOrNull ?: "auto",
+                    distanceX100 = obj["distance"]?.jsonPrimitive?.doubleOrNull
+                        ?.let { (it * 100).roundToLong() },
+                )
+                "set_exposure" -> obj["compensation"]?.jsonPrimitive?.intOrNull?.let { SetExposure(it) }
+                "set_white_balance" -> obj["mode"]?.jsonPrimitive?.contentOrNull?.let { SetWhiteBalance(it) }
+                "set_flash" -> obj["enabled"]?.jsonPrimitive?.booleanOrNull?.let { SetFlash(it) }
+                "set_mirror" -> obj["enabled"]?.jsonPrimitive?.booleanOrNull?.let { SetMirror(it) }
+                "set_resolution" -> obj["value"]?.jsonPrimitive?.contentOrNull?.let { SetResolution(it) }
+                "set_fps" -> obj["value"]?.jsonPrimitive?.intOrNull?.let { SetFps(it) }
+                "set_codec" -> obj["value"]?.jsonPrimitive?.contentOrNull?.let { SetCodec(it) }
+                "set_bitrate" -> obj["value"]?.jsonPrimitive?.longOrNull?.let { SetBitrate(it) }
+                "request_keyframe" -> RequestKeyframe
+                else -> null
+            }
+        }.getOrNull()
     }
 }
 

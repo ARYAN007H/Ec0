@@ -115,6 +115,13 @@ class CamDroidStreamReceiver(
     private val lock = Any()
     private var socket: Socket? = null
     private var readerThread: Thread? = null
+
+    /**
+     * Volatile (never guarded by [lock]): the reader thread reads it per frame
+     * while `start()` holds [lock] waiting for the config latch — taking the
+     * lock here would deadlock the session before the first frame.
+     */
+    @Volatile
     private var sink: CamDroidSinkHandle? = null
 
     private val sessionEnded = AtomicBoolean(true)
@@ -297,7 +304,7 @@ class CamDroidStreamReceiver(
     }
 
     private fun handleVideo(packet: CamDroidV1Packet) {
-        val activeSink = synchronized(lock) { sink }
+        val activeSink = sink // volatile read — MUST NOT take [lock] (see field doc)
         if (activeSink == null || receivedConfig.get() == null) {
             // Bounded pre-config policy: drop, never queue.
             framesDropped.incrementAndGet()
@@ -322,14 +329,9 @@ class CamDroidStreamReceiver(
     }
 
     private fun handleControl(packet: CamDroidV1Packet) {
-        val command = runCatching {
-            CamDroidControlCommand.fromJsonObject(
-                kotlinx.serialization.json.Json.decodeFromString(
-                    kotlinx.serialization.json.JsonObject.serializer(),
-                    packet.payload.decodeToString(),
-                ),
-            )
-        }.getOrNull() ?: return
+        // TCP control plane carries the raw CamDroid wire JSON.
+        val command = CamDroidControlCommand.fromCamDroidWireJson(packet.payload.decodeToString())
+            ?: return
         if (command is CamDroidControlCommand.Stop) {
             endSession("Phone stopped the camera stream")
         }
@@ -369,10 +371,8 @@ class CamDroidStreamReceiver(
         }
         runCatching { socket?.close() }
         socket = null
-        synchronized(lock) {
-            runCatching { sink?.close() }
-            sink = null
-        }
+        runCatching { sink?.close() }
+        sink = null
         configLatchField?.countDown() // unblock a start() waiting for config
         update { snap ->
             CamDroidReceiverSnapshot(
@@ -409,6 +409,7 @@ class CamDroidStreamReceiver(
         runCatching { sink?.close() }
         sink = null
         readerThread = null
+        configLatchField = null
     }
 
     private fun failLocked(reason: String): CamDroidReceiverSnapshot {

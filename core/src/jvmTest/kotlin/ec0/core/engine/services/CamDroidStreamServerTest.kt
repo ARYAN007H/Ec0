@@ -388,4 +388,23 @@ class CamDroidStreamServerTest {
         )
         assertEquals("ff0011", parsedWith["token"]?.toString()?.trim('"'))
     }
+
+    @Test
+    fun wireControlJsonRoundTripsThroughWireParser() {
+        // The TCP control plane speaks CamDroid wire JSON ("value", decimals) —
+        // the phone server must parse it, not the engine-envelope format.
+        val zoomPacket = CamDroidV1Codec.controlCommandPacket(CamDroidControlCommand.SetZoom(250L))
+        val parsedZoom = CamDroidControlCommand.fromCamDroidWireJson(zoomPacket.payload.decodeToString())
+        assertEquals(CamDroidControlCommand.SetZoom(250L), parsedZoom)
+
+        val stop = CamDroidControlCommand.fromCamDroidWireJson("""{"cmd":"stop"}""")
+        assertEquals(CamDroidControlCommand.Stop, stop)
+
+        val switch = CamDroidControlCommand.fromCamDroidWireJson("""{"cmd":"switch_camera"}""")
+        assertEquals(CamDroidControlCommand.SwitchCamera, switch)
+
+        // Garbage never crashes the stream.
+        assertEquals(null, CamDroidControlCommand.fromCamDroidWireJson("not json"))
+        assertEquals(null, CamDroidControlCommand.fromCamDroidWireJson("""{"cmd":"launch_missiles"}"""))
+    }
 }

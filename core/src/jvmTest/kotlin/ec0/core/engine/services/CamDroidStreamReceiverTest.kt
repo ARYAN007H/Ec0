@@ -231,7 +231,9 @@ class CamDroidStreamReceiverTest {
     @Test
     fun silentPhoneAutoStopsWithHonestReason() {
         val sink = RecordingSink()
-        val phone = FakePhoneServer(expectedToken = "tok") { session ->
+        // Socket stays open well past the 500ms watchdog so the SILENCE path
+        // trips (not the EOF path) — that is the honest reason we assert.
+        val phone = FakePhoneServer(expectedToken = "tok", holdOpenMs = 3_000) { session ->
             session.sendConfig()
             // Then nothing at all.
         }
