@@ -533,6 +533,25 @@ data class TransferSpeedSample(
     val bytesPerSecond: Long,
     val etaSeconds: Long,
 ) {
+    val formattedSpeed: String
+        get() = when {
+            bytesPerSecond <= 0L -> ""
+            bytesPerSecond >= 1024L * 1024L -> {
+                val mbps = bytesPerSecond.toDouble() / (1024.0 * 1024.0)
+                "${(mbps * 10.0).toLong() / 10.0} MB/s"
+            }
+            bytesPerSecond >= 1024L -> "${bytesPerSecond / 1024L} KB/s"
+            else -> "$bytesPerSecond B/s"
+        }
+
+    val formattedEta: String
+        get() {
+            if (bytesPerSecond <= 0L) return ""
+            val mins = (etaSeconds / 60L).coerceAtLeast(0L).toString().padStart(2, '0')
+            val secs = (etaSeconds % 60L).coerceAtLeast(0L).toString().padStart(2, '0')
+            return "$mins:$secs"
+        }
+
     fun formatTabular(): String {
         val mbps = bytesPerSecond.toDouble() / (1024.0 * 1024.0)
         val mbpsFormatted = ((mbps * 10.0).toLong() / 10.0).toString()

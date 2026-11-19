@@ -1,13 +1,12 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * ec0 design system — Material 3 Expressive language: wide tonal palettes,
- * oversized corner shapes, spring-driven motion. One theme for desktop and
- * phone so both ends read as the same product.
- *
- * Color: curated M3 Expressive tonal schemes per seed (Material Theme Builder
- * values, dark + light). The seed is a user setting — pick it in Settings →
- * Appearance → Color theme.
+ * ec0 design system — Material 3 Expressive language:
+ *   - Curated wide tonal palettes (Amber, Violet, Teal, Cobalt) in Dark & Light
+ *   - Expressive Typography scale with strong weight contrast & tabular numerals
+ *   - Oversized expressive corner geometry (`Ec0Shapes`)
+ *   - Spring-driven motion tokens (`Ec0Motion` + `MotionScheme.expressive()`)
+ *   - Theme-aware `LocalEc0Colors` provided via `CompositionLocalProvider`
  */
 package ec0.ui.theme
 
@@ -19,18 +18,24 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 // ---- Motion: expressive springs (bouncy for entrances, snappy for taps) ----
 object Ec0Motion {
-    fun <T> bouncy() = spring<T>(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow)
-    fun <T> snappy() = spring<T>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
-    fun <T> gentle() = spring<T>(dampingRatio = 0.9f, stiffness = Spring.StiffnessLow)
+    fun <T> bouncy() = spring<T>(dampingRatio = 0.58f, stiffness = Spring.StiffnessMediumLow)
+    fun <T> snappy() = spring<T>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
+    fun <T> gentle() = spring<T>(dampingRatio = 0.92f, stiffness = Spring.StiffnessLow)
 }
 
 // ---- Shapes: oversized expressive corners ----
@@ -42,18 +47,104 @@ object Ec0Shapes {
     val pill = RoundedCornerShape(100)
 }
 
+// ---- Expressive Typography: crisp display scale, generous weight contrast, tabular figures ----
+val Ec0Typography: Typography = Typography(
+    displaySmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 34.sp,
+        lineHeight = 40.sp,
+        letterSpacing = (-0.5).sp,
+    ),
+    headlineMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold,
+        fontSize = 26.sp,
+        lineHeight = 32.sp,
+        letterSpacing = (-0.3).sp,
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.2).sp,
+    ),
+    titleLarge = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold,
+        fontSize = 20.sp,
+        lineHeight = 26.sp,
+        letterSpacing = (-0.15).sp,
+    ),
+    titleMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 16.sp,
+        lineHeight = 22.sp,
+        letterSpacing = 0.sp,
+    ),
+    titleSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.05.sp,
+    ),
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal,
+        fontSize = 15.sp,
+        lineHeight = 22.sp,
+    ),
+    bodyMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+    ),
+    bodySmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+    ),
+    labelLarge = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
+        fontFeatureSettings = "tnum",
+    ),
+    labelMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        fontFeatureSettings = "tnum",
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        fontFeatureSettings = "tnum",
+    ),
+)
+
 /** Curated M3 Expressive seeds. [id] is what [ec0.ui.models.SettingsState.themeSeed] stores. */
 enum class Ec0Seed(val id: String, val label: String, val swatch: Color) {
     AMBER("amber", "Warm Amber", Color(0xFFFFB947)),
     VIOLET("violet", "Electric Violet", Color(0xFFD0BCFF)),
-    TEAL("teal", "Jade Teal", Color(0xFF7CD5CB));
+    TEAL("teal", "Jade Teal", Color(0xFF7CD5CB)),
+    COBALT("cobalt", "Cobalt Spark", Color(0xFF8AB4F8));
 
     companion object {
         fun fromId(id: String?): Ec0Seed = entries.firstOrNull { it.id == id?.lowercase() } ?: AMBER
     }
 }
 
-// ---- Extended semantic colors (protocol accents + states) — seed-independent ----
+// ---- Extended semantic colors — adapted for both Dark & Light modes and seed ----
 data class Ec0Colors(
     val localSend: Color,
     val synergy: Color,
@@ -63,6 +154,28 @@ data class Ec0Colors(
     val heroContainer: Color,
     val onHeroContainer: Color,
 )
+
+private fun semanticColorsFor(dark: Boolean, scheme: ColorScheme): Ec0Colors = if (dark) {
+    Ec0Colors(
+        localSend = Color(0xFF67D4FF),
+        synergy = Color(0xFFCFBCFF),
+        kdeConnect = Color(0xFF8CD3A4),
+        success = Color(0xFF5BE095),
+        warning = Color(0xFFFFB947),
+        heroContainer = scheme.primaryContainer,
+        onHeroContainer = scheme.onPrimaryContainer,
+    )
+} else {
+    Ec0Colors(
+        localSend = Color(0xFF00668B),
+        synergy = Color(0xFF6750A4),
+        kdeConnect = Color(0xFF1B6D40),
+        success = Color(0xFF137333),
+        warning = Color(0xFF9A5B00),
+        heroContainer = scheme.primaryContainer,
+        onHeroContainer = scheme.onPrimaryContainer,
+    )
+}
 
 val LocalEc0Colors = staticCompositionLocalOf {
     Ec0Colors(
@@ -124,7 +237,7 @@ private fun lightScheme(
     outline = outline, outlineVariant = outlineVariant,
 )
 
-// ---- Warm Amber (default): cold void, warm signal — the design board's scheme ----
+// ---- Warm Amber (default): cold void, warm signal ----
 private val AmberDark = darkScheme(
     primary = Color(0xFFFFB947), onPrimary = Color(0xFF422C00),
     primaryContainer = Color(0xFF5D4000), onPrimaryContainer = Color(0xFFFFDDB0),
@@ -143,8 +256,8 @@ private val AmberLight = lightScheme(
     primaryContainer = Color(0xFFFFDDB0), onPrimaryContainer = Color(0xFF291800),
     secondary = Color(0xFF705B3E), onSecondary = Color(0xFFFFFFFF),
     secondaryContainer = Color(0xFFFCEDD6), onSecondaryContainer = Color(0xFF271904),
-    tertiary = Color(0xFF3B6938), onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFFBDF0B4), onTertiaryContainer = Color(0xFF002204),
+    tertiary = Color(0xFF00668B), onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFC3E8FF), onTertiaryContainer = Color(0xFF001E2C),
     surface = Color(0xFFFFF8F3), onSurface = Color(0xFF201A12), onSurfaceVariant = Color(0xFF4F4539),
     outline = Color(0xFF817567), outlineVariant = Color(0xFFD2C4B4),
     containerLowest = Color(0xFFFFFFFF), containerLow = Color(0xFFFBF2E7),
@@ -205,6 +318,33 @@ private val TealLight = lightScheme(
     container = Color(0xFFE9EFED), containerHigh = Color(0xFFE3EAE8), containerHighest = Color(0xFFDDE4E2),
 )
 
+// ---- Cobalt Spark ----
+private val CobaltDark = darkScheme(
+    primary = Color(0xFF8AB4F8), onPrimary = Color(0xFF002E69),
+    primaryContainer = Color(0xFF004494), onPrimaryContainer = Color(0xFFD6E3FF),
+    secondary = Color(0xFFBEC6DC), onSecondary = Color(0xFF283041),
+    secondaryContainer = Color(0xFF3E4759), onSecondaryContainer = Color(0xFFDAE2F9),
+    tertiary = Color(0xFFDDACE3), onTertiary = Color(0xFF3F2844),
+    tertiaryContainer = Color(0xFF573E5C), onTertiaryContainer = Color(0xFFFAD8FD),
+    surface = Color(0xFF10131A), onSurface = Color(0xFFE2E2E9), onSurfaceVariant = Color(0xFFC4C6D0),
+    outline = Color(0xFF8E9099), outlineVariant = Color(0xFF44474E),
+    containerLowest = Color(0xFF0B0E14), containerLow = Color(0xFF181C24),
+    container = Color(0xFF1C2028), containerHigh = Color(0xFF272A33), containerHighest = Color(0xFF32353E),
+)
+
+private val CobaltLight = lightScheme(
+    primary = Color(0xFF1A5CC8), onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFD6E3FF), onPrimaryContainer = Color(0xFF001B3E),
+    secondary = Color(0xFF565E71), onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFDAE2F9), onSecondaryContainer = Color(0xFF131C2B),
+    tertiary = Color(0xFF705574), onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFFAD8FD), onTertiaryContainer = Color(0xFF29132E),
+    surface = Color(0xFFF9F9FF), onSurface = Color(0xFF191C20), onSurfaceVariant = Color(0xFF44474E),
+    outline = Color(0xFF74777F), outlineVariant = Color(0xFFC4C6D0),
+    containerLowest = Color(0xFFFFFFFF), containerLow = Color(0xFFF3F3FA),
+    container = Color(0xFFEDEDF4), containerHigh = Color(0xFFE7E8EE), containerHighest = Color(0xFFE2E2E9),
+)
+
 /** ec0 shape scale — deliberately larger than M3 defaults. */
 private val Ec0ShapeScale = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
@@ -225,13 +365,18 @@ fun Ec0Theme(
         Ec0Seed.AMBER -> if (dark) AmberDark else AmberLight
         Ec0Seed.VIOLET -> if (dark) VioletDark else VioletLight
         Ec0Seed.TEAL -> if (dark) TealDark else TealLight
+        Ec0Seed.COBALT -> if (dark) CobaltDark else CobaltLight
     }
-    MaterialExpressiveTheme(
-        colorScheme = scheme,
-        motionScheme = MotionScheme.expressive(),
-        shapes = Ec0ShapeScale,
-        content = content,
-    )
+    val extended = semanticColorsFor(dark = dark, scheme = scheme)
+    CompositionLocalProvider(LocalEc0Colors provides extended) {
+        MaterialExpressiveTheme(
+            colorScheme = scheme,
+            motionScheme = MotionScheme.expressive(),
+            shapes = Ec0ShapeScale,
+            typography = Ec0Typography,
+            content = content,
+        )
+    }
 }
 
 /** Extended accents — use inside a @Composable via [LocalEc0Colors.current]. */

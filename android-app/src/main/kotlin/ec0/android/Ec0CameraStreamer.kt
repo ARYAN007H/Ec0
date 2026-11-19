@@ -1,26 +1,18 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * ec0's phone-side Continuity Camera streamer: turns a CameraX-capable device
- * (Samsung A03 included) into a token-gated webcam for the paired desktop.
+ * ec0's phone-side Continuity Camera streamer: turns any CameraX-capable Android
+ * phone into a 1080p30/60 token-gated virtual webcam for the paired desktop.
  *
- * Capture profile (production defaults, honest about limits):
- *   - 640x480 MJPEG @ up to 30 fps, JPEG quality 70 — ~0.3-0.8 MB/s on Wi-Fi.
- *   - Explicit frame-drop policy, two stages:
- *       1. analyzer throttle: frames arriving faster than the target interval
- *          are dropped before any conversion work;
- *       2. server slot: [CamDroidStreamServer] keeps exactly ONE undelivered
- *          frame — a new capture overwrites it, stale frames never queue.
- *   - Arming: ONLY via a `cam.control.cmd` Start over the AEAD-encrypted,
- *     Ed25519-signed engine session, carrying a one-shot token echoed in the
- *     TCP handshake. The socket exists only while a stream is armed.
- *   - Clean stop: desktop `stop` command, client silence watchdog, or service
- *     teardown all close the capture and the socket.
- *
- * Android 11+ background-capture reality: camera access from a foreground
- * service requires the `camera` FGS type — Ec0CompanionService promotes with
- * `connectedDevice|camera` once the CAMERA grant exists (re-promoted on every
- * service start and on arming).
+ * Key properties:
+ *   - Honors desktop-requested profile (`720p`, `1080p`, `1440p`/`2k`, `4k` @ 30/60 fps)
+ *     via [parseCameraProfile], defaulting to crisp 1080p30 MJPEG (quality 80).
+ *   - Row-slice bulk `ByteBuffer.get` copies + reusable frame buffers on the
+ *     single-threaded analyzer executor to keep GC pressure minimal at 1080p.
+ *   - Two-stage latest-wins frame drop policy (analyzer throttle + single-slot
+ *     server) so latency stays low even over congested Wi-Fi.
+ *   - Token-gated arming ONLY via signed `cam.control.cmd` Start over the
+ *     AEAD-encrypted engine session.
  */
 package ec0.android
 
@@ -41,11 +33,11 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraBackend
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.CameraStreamState
-import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.services.CamDroidArmResult
 import ec0.core.engine.services.CamDroidFrameSource
 import ec0.core.engine.services.CamDroidStreamServer
@@ -56,6 +48,45 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+/** Parsed camera capture profile (pure Kotlin, unit-testable without android.jar). */
+data class CameraCaptureProfile(
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+    val label: String,
+)
+
+/**
+ * Resolves a wire resolution string (`"720p"`, `"1080p"`, `"1440p"`, `"2k"`, `"4k"`,
+ * `"1920x1080"`, etc.) and requested FPS into concrete dimensions clamped by [maxFpsCeiling].
+ */
+fun parseCameraProfile(
+    resolution: String,
+    requestedFps: Int,
+    maxFpsCeiling: Int = 60,
+): CameraCaptureProfile {
+    val norm = resolution.trim().lowercase()
+    val (w, h, label) = when (norm) {
+        "480p", "640x480" -> Triple(640, 480, "480p")
+        "720p", "1280x720" -> Triple(1280, 720, "720p")
+        "1080p", "1920x1080" -> Triple(1920, 1080, "1080p")
+        "1440p", "2k", "2560x1440" -> Triple(2560, 1440, "1440p")
+        "4k", "2160p", "3840x2160" -> Triple(3840, 2160, "4k")
+        else -> {
+            val match = Regex("^(\\d{3,4})x(\\d{3,4})$").matchEntire(norm)
+            if (match != null) {
+                val pw = match.groupValues[1].toInt().coerceIn(320, 3840)
+                val ph = match.groupValues[2].toInt().coerceIn(240, 2160)
+                Triple(pw, ph, "${pw}x${ph}")
+            } else {
+                Triple(1920, 1080, "1080p")
+            }
+        }
+    }
+    val fps = requestedFps.coerceIn(15, maxFpsCeiling.coerceIn(15, 60))
+    return CameraCaptureProfile(width = w, height = h, fps = fps, label = label)
+}
+
 /**
  * Owns the phone-side camera stream lifecycle. One [CamDroidStreamServer] at a
  * time; the ec0 companion callbacks delegate every `cam.control.cmd` here.
@@ -63,11 +94,11 @@ import java.util.concurrent.atomic.AtomicReference
 class Ec0CameraStreamer(
     private val appContext: Context,
     private val streamPort: Int = CamDroidConstants.DEFAULT_TCP_PORT,
-    private val captureWidth: Int = 640,
-    private val captureHeight: Int = 480,
-    /** Capture profile ceiling; the desktop's Start command can lower it. */
-    private val maxFps: Int = 30,
-    private val jpegQuality: Int = 70,
+    private val captureWidth: Int = 1920,
+    private val captureHeight: Int = 1080,
+    /** Capture profile ceiling; the desktop's Start command selects 30 or 60 fps. */
+    private val maxFps: Int = 60,
+    private val jpegQuality: Int = 80,
     private val hasCameraPermission: () -> Boolean = {
         androidx.core.content.ContextCompat.checkSelfPermission(
             appContext,
@@ -77,8 +108,13 @@ class Ec0CameraStreamer(
 ) {
     private val lock = Any()
     private var server: CamDroidStreamServer? = null
+    private var activeProfile: CameraCaptureProfile = CameraCaptureProfile(
+        width = captureWidth,
+        height = captureHeight,
+        fps = maxFps.coerceAtMost(30),
+        label = "${captureWidth}x${captureHeight}",
+    )
 
-    /** Applied on the next arm; `switch_camera` flips it live when streaming. */
     @Volatile
     private var frontCameraRequested: Boolean = false
 
@@ -94,11 +130,6 @@ class Ec0CameraStreamer(
             server?.snapshot?.state == ec0.core.engine.services.CamDroidServerState.STREAMING
         }
 
-    /**
-     * Entry point for the engine's camera command dispatch (`onCameraControlCommand`).
-     * Returns the honest status for the phone-side `cam_status` flow, or null
-     * for commands that carry no status information.
-     */
     fun handleCommand(command: CamDroidControlCommand): CameraStatusInfo? = synchronized(lock) {
         when (command) {
             is CamDroidControlCommand.Start -> armForStart(command)
@@ -109,8 +140,8 @@ class Ec0CameraStreamer(
                     backend = CameraBackend.CAMDROID_NATIVE,
                     port = streamPort,
                     codec = "mjpeg",
-                    resolution = "${captureWidth}x${captureHeight}",
-                    fps = maxFps,
+                    resolution = "${activeProfile.width}x${activeProfile.height}",
+                    fps = activeProfile.fps,
                     audioEnabled = false,
                     reason = "Stopped by desktop",
                 )
@@ -122,11 +153,11 @@ class Ec0CameraStreamer(
             }
             is CamDroidControlCommand.SetZoom -> {
                 liveSource?.setZoom(command.zoomX100 / 100.0)
-                currentStatusLocked(reason = null)?.copy(zoomX100 = command.zoomX100)
+                currentStatusLocked(reason = null).copy(zoomX100 = command.zoomX100)
             }
             is CamDroidControlCommand.SetFlash -> {
                 liveSource?.setTorch(command.enabled)
-                currentStatusLocked(reason = null)?.copy(flashEnabled = command.enabled)
+                currentStatusLocked(reason = null).copy(flashEnabled = command.enabled)
             }
             else -> null
         }
@@ -143,8 +174,8 @@ class Ec0CameraStreamer(
         port = streamPort,
         v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
         codec = "mjpeg",
-        resolution = "${captureWidth}x${captureHeight}",
-        fps = maxFps,
+        resolution = "${activeProfile.width}x${activeProfile.height}",
+        fps = activeProfile.fps,
         audioEnabled = false,
         frontCamera = frontCameraRequested,
         reason = reason,
@@ -154,39 +185,41 @@ class Ec0CameraStreamer(
         val token = command.token
         if (token.isNullOrBlank()) {
             return currentStatusLocked(
-                "Start without a stream token — the desktop must arm the camera " +
-                    "over the encrypted session first",
+                "Start without a stream token — desktop must arm camera over encrypted session first",
             ).copy(state = CameraStreamState.ERROR)
         }
         if (!hasCameraPermission()) {
             return currentStatusLocked("CAMERA permission not granted on the phone")
                 .copy(state = CameraStreamState.ERROR)
         }
-        // Re-promote the foreground service so the FGS carries the `camera`
-        // type before CameraX opens the device (Android 11+ requirement).
         runCatching { onArming?.invoke() }
 
         disarmLocked("re-armed by a new start command")
-        android.util.Log.i("ec0.camera", "arming stream server (token received, fps=${command.fps.coerceAtMost(maxFps)})")
+        val profile = parseCameraProfile(
+            resolution = command.resolution,
+            requestedFps = command.fps,
+            maxFpsCeiling = maxFps,
+        )
+        activeProfile = profile
+        android.util.Log.i("ec0.camera", "arming stream server (${profile.width}x${profile.height}@${profile.fps})")
 
         val source = CameraXFrameSource(
             appContext = appContext,
-            width = captureWidth,
-            height = captureHeight,
-            fps = command.fps.coerceAtMost(maxFps),
+            width = profile.width,
+            height = profile.height,
+            fps = profile.fps,
             jpegQuality = jpegQuality,
             startBackCamera = !frontCameraRequested,
         )
         val newServer = CamDroidStreamServer(
             frameSourceFactory = { source },
             port = streamPort,
-            width = captureWidth,
-            height = captureHeight,
-            targetFps = command.fps.coerceAtMost(maxFps),
+            width = profile.width,
+            height = profile.height,
+            targetFps = profile.fps,
             codec = "mjpeg",
         )
         newServer.onControlCommand = { cmd ->
-            // Route live controls (zoom/switch/flash) through the same handler.
             runCatching { handleCommand(cmd) }
         }
         return when (val armResult = newServer.arm(token)) {
@@ -200,8 +233,8 @@ class Ec0CameraStreamer(
                     port = armResult.port,
                     v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
                     codec = "mjpeg",
-                    resolution = "${captureWidth}x${captureHeight}",
-                    fps = command.fps.coerceAtMost(maxFps),
+                    resolution = "${profile.width}x${profile.height}",
+                    fps = profile.fps,
                     audioEnabled = false,
                     frontCamera = frontCameraRequested,
                     reason = null,
@@ -224,23 +257,22 @@ class Ec0CameraStreamer(
         liveSource = null
     }
 
-    /** Service teardown: capture and sockets must never outlive the host. */
     fun shutdown() = synchronized(lock) {
         disarmLocked("service shutdown")
     }
 }
 
 /**
- * CameraX `ImageAnalysis` MJPEG frame source with an explicit throttle +
- * latest-wins drop policy and sensor-rotation-corrected output so the desktop
- * sees an upright webcam.
+ * CameraX `ImageAnalysis` MJPEG frame source with bulk row-slice YUV→NV21
+ * conversion, reusable frame buffers, explicit FPS throttling, and upright
+ * sensor-rotation correction.
  */
 class CameraXFrameSource(
     private val appContext: Context,
     private val width: Int,
     private val height: Int,
     private val fps: Int,
-    private val jpegQuality: Int = 70,
+    private val jpegQuality: Int = 80,
     private val startBackCamera: Boolean = true,
 ) : CamDroidFrameSource {
 
@@ -253,6 +285,13 @@ class CameraXFrameSource(
     private val lastFrameMs = AtomicLong(0L)
     private val minIntervalMs = (1000L / fps.coerceIn(1, 60)).coerceAtLeast(1L)
 
+    // Reusable scratch buffers accessed exclusively on analyzerExecutor.
+    private var nv21Scratch = ByteArray(0)
+    private var rotatedScratch = ByteArray(0)
+    private var chromaRowV = ByteArray(0)
+    private var chromaRowU = ByteArray(0)
+    private val jpegOut = ByteArrayOutputStream(256 * 1024)
+
     private val lifecycleOwner = ServiceLifecycleOwner()
     private var provider: ProcessCameraProvider? = null
 
@@ -264,8 +303,6 @@ class CameraXFrameSource(
             onError("frame source already closed — stream cannot start")
             return
         }
-        // Resolve the provider on the CALLING (background) thread — never block
-        // the main thread on a ListenableFuture.
         val cameraProvider = try {
             ProcessCameraProvider.getInstance(appContext).get(5, TimeUnit.SECONDS)
         } catch (e: Exception) {
@@ -294,9 +331,6 @@ class CameraXFrameSource(
         }
         analysisUseCase = analysis
 
-        // CameraX requires binding on a lifecycle thread (main). The lifecycle
-        // is driven synchronously right before the bind so the state machine
-        // is RESUMED exactly when bindToLifecycle runs.
         val selector =
             if (startBackCamera) CameraSelector.DEFAULT_BACK_CAMERA
             else CameraSelector.DEFAULT_FRONT_CAMERA
@@ -313,19 +347,14 @@ class CameraXFrameSource(
         }
     }
 
-    /** Throttle -> close -> NV21 -> rotate -> JPEG, never blocking capture. */
     private fun pumpFrame(proxy: ImageProxy, sink: (ByteArray) -> Unit, onError: (String) -> Unit) {
         try {
             if (closed.get()) return
             val now = System.currentTimeMillis()
             val last = lastFrameMs.get()
-            if (now - last < minIntervalMs) {
-                // Stage-1 explicit drop: over-frequent frames never get converted.
-                return
-            }
-            if (!lastFrameMs.compareAndSet(last, now)) {
-                return
-            }
+            if (now - last < minIntervalMs) return
+            if (!lastFrameMs.compareAndSet(last, now)) return
+
             val rotation = proxy.imageInfo.rotationDegrees
             val jpeg = runCatching {
                 imageProxyToRotatedJpeg(proxy, rotation)
@@ -342,86 +371,164 @@ class CameraXFrameSource(
     }
 
     private fun imageProxyToRotatedJpeg(proxy: ImageProxy, rotationDegrees: Int): ByteArray? {
-        val nv21 = imageProxyToNv21(proxy)
-        val rotated = rotateNv21(nv21, proxy.width, proxy.height, rotationDegrees)
+        val nv21 = imageProxyToNv21Fast(proxy)
+        val rotated = rotateNv21Fast(nv21, proxy.width, proxy.height, rotationDegrees)
         val outW = if (rotationDegrees == 90 || rotationDegrees == 270) proxy.height else proxy.width
         val outH = if (rotationDegrees == 90 || rotationDegrees == 270) proxy.width else proxy.height
         val yuv = YuvImage(rotated, ImageFormat.NV21, outW, outH, null)
-        val out = ByteArrayOutputStream(outW * outH / 8)
-        val ok = yuv.compressToJpeg(Rect(0, 0, outW, outH), jpegQuality, out)
-        return if (ok) out.toByteArray() else null
+        jpegOut.reset()
+        val ok = yuv.compressToJpeg(Rect(0, 0, outW, outH), jpegQuality, jpegOut)
+        return if (ok) jpegOut.toByteArray() else null
     }
 
-    /** YUV_420_888 -> NV21 (Y + interleaved VU), stride-correct. */
-    private fun imageProxyToNv21(image: ImageProxy): ByteArray {
-        val imgWidth = image.width
-        val imgHeight = image.height
+    /**
+     * Stride-correct, bulk-copy YUV_420_888 → NV21 converter using reusable buffers.
+     * Avoids per-pixel ByteBuffer JNI calls for full-speed 1080p30/60 capture.
+     */
+    private fun imageProxyToNv21Fast(image: ImageProxy): ByteArray {
+        val w = image.width
+        val h = image.height
+        val ySize = w * h
+        val required = ySize + (ySize / 2)
+        if (nv21Scratch.size != required) {
+            nv21Scratch = ByteArray(required)
+        }
+        val nv21 = nv21Scratch
+
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
-        val yBuffer = yPlane.buffer
-        val uBuffer = uPlane.buffer
-        val vBuffer = vPlane.buffer
-        val nv21 = ByteArray(imgWidth * imgHeight * 3 / 2)
-        var pos = 0
-        if (yPlane.pixelStride == 1 && yPlane.rowStride == imgWidth) {
-            yBuffer.get(nv21, 0, imgWidth * imgHeight)
-            pos = imgWidth * imgHeight
+
+        val yBuf = yPlane.buffer
+        val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+        if (yPixelStride == 1 && yRowStride == w) {
+            yBuf.position(0)
+            yBuf.get(nv21, 0, ySize)
+        } else if (yPixelStride == 1) {
+            var dst = 0
+            for (row in 0 until h) {
+                yBuf.position(row * yRowStride)
+                yBuf.get(nv21, dst, w)
+                dst += w
+            }
         } else {
-            for (row in 0 until imgHeight) {
-                for (col in 0 until imgWidth) {
-                    nv21[pos++] = yBuffer.get(row * yPlane.rowStride + col)
+            var dst = 0
+            for (row in 0 until h) {
+                val rowBase = row * yRowStride
+                for (col in 0 until w) {
+                    nv21[dst++] = yBuf.get(rowBase + col * yPixelStride)
                 }
             }
         }
-        val chromaHeight = imgHeight / 2
-        val chromaWidth = imgWidth / 2
-        for (row in 0 until chromaHeight) {
-            for (col in 0 until chromaWidth) {
-                val vIndex = row * vPlane.rowStride + col * vPlane.pixelStride
-                val uIndex = row * uPlane.rowStride + col * uPlane.pixelStride
-                nv21[pos++] = vBuffer.get(vIndex)
-                nv21[pos++] = uBuffer.get(uIndex)
+
+        val chromaH = h / 2
+        val chromaW = w / 2
+        val vBuf = vPlane.buffer
+        val uBuf = uPlane.buffer
+        val vRowStride = vPlane.rowStride
+        val uRowStride = uPlane.rowStride
+        val vPixelStride = vPlane.pixelStride
+        val uPixelStride = uPlane.pixelStride
+
+        // Fast path: standard Android semi-planar NV21 layout (vPixelStride == 2, uPixelStride == 2).
+        var dst = ySize
+        val vRowLen = (chromaW - 1) * vPixelStride + 1
+        val uRowLen = (chromaW - 1) * uPixelStride + 1
+        if (chromaRowV.size < vRowLen) chromaRowV = ByteArray(vRowLen)
+        if (chromaRowU.size < uRowLen) chromaRowU = ByteArray(uRowLen)
+
+        for (row in 0 until chromaH) {
+            val vStart = row * vRowStride
+            val uStart = row * uRowStride
+            val vRemaining = (vBuf.limit() - vStart).coerceAtMost(vRowLen)
+            val uRemaining = (uBuf.limit() - uStart).coerceAtMost(uRowLen)
+            if (vRemaining > 0) {
+                vBuf.position(vStart)
+                vBuf.get(chromaRowV, 0, vRemaining)
+            }
+            if (uRemaining > 0) {
+                uBuf.position(uStart)
+                uBuf.get(chromaRowU, 0, uRemaining)
+            }
+            var vOff = 0
+            var uOff = 0
+            for (col in 0 until chromaW) {
+                nv21[dst++] = chromaRowV[vOff]
+                nv21[dst++] = chromaRowU[uOff]
+                vOff += vPixelStride
+                uOff += uPixelStride
             }
         }
         return nv21
     }
 
-    /** Rotates an NV21 buffer by 0/90/180/270 degrees clockwise (chroma pairs kept together). */
-    private fun rotateNv21(src: ByteArray, width: Int, height: Int, degrees: Int): ByteArray {
+    /** Rotates an NV21 buffer by 0/90/180/270 degrees clockwise into reusable scratch storage. */
+    private fun rotateNv21Fast(src: ByteArray, width: Int, height: Int, degrees: Int): ByteArray {
         val rotation = ((degrees % 360) + 360) % 360
         if (rotation == 0) return src
-        val outW = if (rotation == 90 || rotation == 270) height else width
-        val outH = if (rotation == 90 || rotation == 270) width else height
-        val dst = ByteArray(src.size)
+        if (rotatedScratch.size != src.size) {
+            rotatedScratch = ByteArray(src.size)
+        }
+        val dst = rotatedScratch
         val ySize = width * height
         val chromaW = width / 2
         val chromaH = height / 2
-        val outChromaW = outW / 2
-        val outChromaH = outH / 2
 
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val (dx, dy) = when (rotation) {
-                    90 -> (outW - 1 - y) to x
-                    180 -> (outW - 1 - x) to (outH - 1 - y)
-                    else -> y to (outH - 1 - x)
+        when (rotation) {
+            90 -> {
+                val outW = height
+                for (y in 0 until height) {
+                    val srcRow = y * width
+                    val dstCol = outW - 1 - y
+                    for (x in 0 until width) {
+                        dst[x * outW + dstCol] = src[srcRow + x]
+                    }
                 }
-                dst[dy * outW + dx] = src[y * width + x]
+                val outChromaW = chromaH
+                for (cy in 0 until chromaH) {
+                    val srcRow = ySize + cy * chromaW * 2
+                    val dstCol = (outChromaW - 1 - cy) * 2
+                    for (cx in 0 until chromaW) {
+                        val dstIdx = ySize + cx * outChromaW * 2 + dstCol
+                        val srcIdx = srcRow + cx * 2
+                        dst[dstIdx] = src[srcIdx]
+                        dst[dstIdx + 1] = src[srcIdx + 1]
+                    }
+                }
             }
-        }
-        for (cy in 0 until chromaH) {
-            for (cx in 0 until chromaW) {
-                val (dx, dy) = when (rotation) {
-                    90 -> (outChromaW - 1 - cy) to cx
-                    180 -> (outChromaW - 1 - cx) to (outChromaH - 1 - cy)
-                    else -> cy to (outChromaH - 1 - cx)
+            180 -> {
+                for (i in 0 until ySize) {
+                    dst[ySize - 1 - i] = src[i]
                 }
-                val dstIdx = ySize + dy * outChromaW * 2 + dx * 2
-                val srcIdx = ySize + cy * chromaW * 2 + cx * 2
-                // Copy the interleaved VU pair as one unit.
-                dst[dstIdx] = src[srcIdx]
-                dst[dstIdx + 1] = src[srcIdx + 1]
+                val totalPairs = chromaW * chromaH
+                for (i in 0 until totalPairs) {
+                    val srcIdx = ySize + i * 2
+                    val dstIdx = ySize + (totalPairs - 1 - i) * 2
+                    dst[dstIdx] = src[srcIdx]
+                    dst[dstIdx + 1] = src[srcIdx + 1]
+                }
+            }
+            else -> { // 270
+                val outW = height
+                val outH = width
+                for (y in 0 until height) {
+                    val srcRow = y * width
+                    for (x in 0 until width) {
+                        dst[(outH - 1 - x) * outW + y] = src[srcRow + x]
+                    }
+                }
+                val outChromaW = chromaH
+                val outChromaH = chromaW
+                for (cy in 0 until chromaH) {
+                    val srcRow = ySize + cy * chromaW * 2
+                    for (cx in 0 until chromaW) {
+                        val dstIdx = ySize + (outChromaH - 1 - cx) * outChromaW * 2 + cy * 2
+                        val srcIdx = srcRow + cx * 2
+                        dst[dstIdx] = src[srcIdx]
+                        dst[dstIdx + 1] = src[srcIdx + 1]
+                    }
+                }
             }
         }
         return dst
@@ -454,8 +561,6 @@ class CameraXFrameSource(
         if (!closed.compareAndSet(false, true)) return
         runCatching {
             mainHandler.post {
-                // Never let a lifecycle edge kill the host process: close() can
-                // legitimately run before the bind lambda ever executed.
                 runCatching {
                     provider?.unbindAll()
                     lifecycleOwner.destroy()
@@ -468,7 +573,6 @@ class CameraXFrameSource(
         runCatching { analyzerExecutor.awaitTermination(1, TimeUnit.SECONDS) }
     }
 
-    /** Minimal LifecycleOwner so CameraX can bind from a foreground Service. */
     private class ServiceLifecycleOwner : LifecycleOwner {
         private val registry = LifecycleRegistry(this)
         override val lifecycle: Lifecycle get() = registry
@@ -481,11 +585,6 @@ class CameraXFrameSource(
             }
         }
 
-        /**
-         * LifecycleRegistry refuses INITIALIZED -> DESTROYED (crashes the app
-         * when close() wins the race against the bind lambda). A source that
-         * never reached CREATED has nothing to destroy.
-         */
         fun destroy() {
             if (registry.currentState != Lifecycle.State.INITIALIZED) {
                 runCatching { registry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY) }

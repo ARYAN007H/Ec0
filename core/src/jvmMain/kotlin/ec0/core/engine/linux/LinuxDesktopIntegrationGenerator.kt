@@ -250,7 +250,7 @@ object LinuxDesktopIntegrationGenerator {
         Version=1.0
         Name=ec0 Continuity Hub
         GenericName=Cross-Device Continuity & AirDrop
-        Comment=Send files, mirror screen, sync clipboard, and stream CamDroid Continuity Camera
+        Comment=Send files, mirror screen, sync clipboard, and stream Continuity Camera
         Exec=$binaryExecPath --send %F
         Icon=phone
         Terminal=false

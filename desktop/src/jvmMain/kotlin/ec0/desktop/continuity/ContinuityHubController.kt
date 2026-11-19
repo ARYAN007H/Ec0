@@ -4,15 +4,15 @@
  * Desktop Continuity Hub Controller (`ec0.desktop.continuity`):
  *   - Connects `Ec0EngineNode` + `EncryptedIdentityStore` + `PersistentPinStore`
  *     + `QrCodeMatrix` + `LinuxClipboardBridge` (with 30s ephemeral secret auto-scrub)
- *     + `LinuxNotificationBridge` + `LinuxEnvironmentProbe`
- *     + `ContinuityCameraCoordinator` (`CamDroid` + V4L2)
- *     + `ContinuityVirtualMicBridge` (PipeWire/PulseAudio `CamDroidMic`)
- *     + `UsbAdbTunnelCoordinator` (Tier-0 USB-C `adb forward` zero-Wi-Fi transport)
+ *     + `LinuxNotificationBridge` + `DesktopNotificationMonitor` (bidirectional notifications)
+ *     + `LinuxEnvironmentProbe` + `AdaptiveLinuxInputSink` (persistent uinput daemon + fallback)
+ *     + `ContinuityCameraCoordinator` (V4L2 webcam) + `ContinuityVirtualMicBridge`
+ *     + `UsbAdbTunnelCoordinator` (Tier-0 USB-C zero-Wi-Fi transport)
  *     + `HandoffAndProximityService` (`xdg-open`, `loginctl lock-session`, `find_my_ring`)
- *     + `LocalDaemonIpcServer` (sub-5ms Dolphin/Nautilus CLI file handoff)
+ *     + `LocalDaemonIpcServer` (Dolphin/Nautilus CLI file handoff)
  *     + `TransferThroughputTracker` (EMA `MB/s` + `ETA mm:ss`)
  *     + `ScrcpyMirrorCoordinator` + `UniversalControlService`
- *     + `HotspotAndTelephonyService` + `MediaSessionBridgeService`
+ *     + `HotspotAndTelephonyService` + `MediaSessionBridgeService` + `MprisDesktopMediaSource`
  *     + `LinuxDesktopIntegrationGenerator` into reactive Compose `StateFlow`s.
  */
 package ec0.desktop.continuity
@@ -31,6 +31,7 @@ import ec0.core.engine.crypto.PersistentPinStore
 import ec0.core.engine.crypto.PinStore
 import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.discovery.MulticastMdnsTransport
+import ec0.core.engine.linux.AdaptiveLinuxInputSink
 import ec0.core.engine.linux.InstalledDesktopFiles
 import ec0.core.engine.linux.LinuxClipboardBridge
 import ec0.core.engine.linux.LinuxDesktopIntegrationGenerator
@@ -46,8 +47,6 @@ import ec0.core.engine.protocol.CameraBackend
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.CameraStreamState
 import ec0.core.engine.protocol.ClipboardItem
-import ec0.core.engine.protocol.ContinuitySketchPoint
-import ec0.core.engine.protocol.ContinuitySketchStroke
 import ec0.core.engine.protocol.CursorHandoffCommand
 import ec0.core.engine.protocol.HandoffActivityInfo
 import ec0.core.engine.protocol.HotspotStatusInfo
@@ -61,14 +60,17 @@ import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
-import ec0.core.engine.services.LocalDaemonIpcServer
 import ec0.core.engine.services.ContinuityCameraCoordinator
+import ec0.core.engine.services.DesktopNotificationMonitor
+import ec0.core.engine.services.LocalDaemonIpcServer
 import ec0.core.engine.services.MprisDesktopMediaSource
-import ec0.core.engine.services.resolveMirrorSerial
+import ec0.core.engine.services.NotificationRelayPolicy
+import ec0.core.engine.services.SystemProcessLauncher
 import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.services.TransferSpeedSample
 import ec0.core.engine.services.TransferThroughputTracker
 import ec0.core.engine.services.UsbTunnelStatus
+import ec0.core.engine.services.resolveMirrorSerial
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -78,26 +80,20 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import java.io.Closeable
-import java.io.IOException
 import java.io.File
-
-data class StudioQuickCommand(
-    val id: String,
-    val title: String,
-    val category: String,
-    val shortcutHint: String,
-    val action: () -> Unit,
-)
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Pure mapping (same-commit tested): the desktop's honest beacon capability
- * set — what THIS machine genuinely offers a paired phone. FILE (AirDrop
+ * set — what THIS machine genuinely offers a paired phone. FILE (encrypted
  * sender + receiver), CLIPBOARD (bidirectional sync + 30s sensitive scrub),
- * NOTIFICATION (phone notifs relayed onto the desktop), INPUT (uinput
- * receiver for remote pointer/keyboard), and MEDIA_CONTROL only when the
- * MPris/playerctl transport-control path can actually target a player
- * (headless/CI boxes honestly advertise without it).
+ * NOTIFICATION (bidirectional notification relay), INPUT (uinput receiver for
+ * remote pointer/keyboard), and MEDIA_CONTROL only when the MPRIS/playerctl
+ * transport-control path can actually target a player.
  */
 fun desktopBeaconCapabilities(mediaControlSupported: Boolean): Set<EngineCapability> = buildSet {
     add(EngineCapability.FILE)
@@ -118,8 +114,21 @@ class ContinuityHubController(
     private val clipboardBridge: LinuxClipboardBridge = LinuxClipboardBridge(),
     private val notificationBridge: LinuxNotificationBridge = LinuxNotificationBridge(),
     private val environmentProbe: LinuxEnvironmentProbe = LinuxEnvironmentProbe(),
-    private val inputInjectionBridge: LinuxInputInjectionBridge = LinuxInputInjectionBridge(),
+    inputInjectionBridge: LinuxInputInjectionBridge = LinuxInputInjectionBridge(),
+    private val desktopNotifRelayEnabledProvider: () -> Boolean = { false },
+    private val desktopNotificationPolicyProvider: () -> NotificationRelayPolicy = { NotificationRelayPolicy.DEFAULT },
 ) : Closeable {
+
+    private val adaptiveInputSink = AdaptiveLinuxInputSink(fallbackBridge = inputInjectionBridge)
+
+    /** MPRIS probe + active-player transport bridge (injected launcher, CI-safe). */
+    private val mprisMediaSource = MprisDesktopMediaSource()
+
+    /** Active `dbus-monitor` subprocess ref so `close()` terminates it cleanly. */
+    private val dbusMonitorProcessRef = AtomicReference<Process?>(null)
+
+    private val _peerCapabilityGrants = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val peerCapabilityGrants: StateFlow<Map<String, Set<String>>> = _peerCapabilityGrants.asStateFlow()
 
     val node: Ec0EngineNode = Ec0EngineNode(
         localIdentity = localIdentity,
@@ -128,37 +137,35 @@ class ContinuityHubController(
         listenPort = EngineConstants.PRIMARY_PORT,
         downloadDir = downloadDir,
         pinStore = pinStore,
-        inputEventSink = inputInjectionBridge,
+        inputEventSink = adaptiveInputSink,
         onRemoteClipboardApplied = { item ->
             clipboardBridge.applyRemoteClipboardToSystem(item)
-            val sensTag = if (item.isSensitive) " · SENSITIVE (30s auto-scrub)" else ""
+            val sensTag = if (item.isSensitive) " · sensitive (30s auto-scrub)" else ""
             _lastSyncedClipSummary.value =
-                "Incoming ${item.mime} · ${item.bytes.size} B · sha256=${item.sha256Hex.take(12)}…$sensTag"
+                "Incoming ${item.mime} · ${item.bytes.size} B$sensTag"
             if (item.isSensitive) {
                 scheduleSensitiveClipboardScrub(item.sha256Hex, ttlMs = 30_000L)
             }
+        },
+        onRemoteMediaControl = { command ->
+            handleRemoteMediaControlCommand(command)
         },
     )
 
     val throughputTracker = TransferThroughputTracker()
 
     private var daemonIpcServer: LocalDaemonIpcServer? = null
+    private var desktopNotificationMonitor: DesktopNotificationMonitor? = null
+    private var desktopNotifMonitorJob: Job? = null
     private var pairingQrRefreshJob: Job? = null
     private var reconnectJob: Job? = null
     private var presenceBeaconJob: Job? = null
     private var presenceAuthJob: Job? = null
-
-    /** MPris probe for the MEDIA_CONTROL beacon bit (injected launcher, CI-safe). */
-    private val mprisMediaSource = MprisDesktopMediaSource()
-
-    private val _isDarkTheme = MutableStateFlow(true)
-    val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
-
-    private val _activeStudioTab = MutableStateFlow(ContinuityStudioTab.OVERVIEW)
-    val activeStudioTab: StateFlow<ContinuityStudioTab> = _activeStudioTab.asStateFlow()
-
-    private val _commandPaletteOpen = MutableStateFlow(false)
-    val commandPaletteOpen: StateFlow<Boolean> = _commandPaletteOpen.asStateFlow()
+    private var mprisPollJob: Job? = null
+    private var clipboardWatchJob: Job? = null
+    private var notifForwardJob: Job? = null
+    private var scrubJob: Job? = null
+    private val forwardedNotifIds = HashSet<String>()
 
     private val _linuxCapabilities = MutableStateFlow(
         environmentProbe.probe(CamDroidConstants.DEFAULT_V4L2_DEVICE),
@@ -177,7 +184,7 @@ class ContinuityHubController(
     private val _lastSyncedClipSummary = MutableStateFlow("No clipboard items synced yet")
     val lastSyncedClipSummary: StateFlow<String> = _lastSyncedClipSummary.asStateFlow()
 
-    private val _statusBanner = MutableStateFlow("Ready — ec0 Continuity Studio active")
+    private val _statusBanner = MutableStateFlow("Ready — ec0 Continuity active")
     val statusBanner: StateFlow<String> = _statusBanner.asStateFlow()
 
     private val _autoSyncClipboard = MutableStateFlow(true)
@@ -189,11 +196,8 @@ class ContinuityHubController(
     private val _rekeyEpoch = MutableStateFlow(0)
     val rekeyEpoch: StateFlow<Int> = _rekeyEpoch.asStateFlow()
 
-    private val _linkRttSamplesMs = MutableStateFlow(listOf(4L, 3L, 4L, 3L, 2L, 3L, 3L, 2L, 3L, 2L, 2L, 3L))
+    private val _linkRttSamplesMs = MutableStateFlow(listOf(4L, 3L, 4L, 3L, 2L, 3L))
     val linkRttSamplesMs: StateFlow<List<Long>> = _linkRttSamplesMs.asStateFlow()
-
-    private val _sketchStrokes = MutableStateFlow<List<ContinuitySketchStroke>>(emptyList())
-    val sketchStrokes: StateFlow<List<ContinuitySketchStroke>> = _sketchStrokes.asStateFlow()
 
     val discoveredPeers: StateFlow<List<PeerInfo>> get() = node.discoveredPeers
     val discoveredCamDroidServices: StateFlow<List<DiscoveredCamDroidService>> get() = node.discoveredCamDroidServices
@@ -205,6 +209,7 @@ class ContinuityHubController(
     val hotspotStatus: StateFlow<HotspotStatusInfo> get() = node.hotspotStatus
     val activeCalls: StateFlow<List<CallStateInfo>> get() = node.activeCalls
     val remoteMediaSession: StateFlow<MediaSessionInfo?> get() = node.remoteMediaSession
+    val localMediaSession: StateFlow<MediaSessionInfo?> get() = mprisMediaSource.mediaSession
     val universalControlEdge: StateFlow<ScreenEdge> get() = node.universalControlService.configuredEdge
     val lastCursorHandoff: StateFlow<CursorHandoffCommand?> get() = node.universalControlService.lastHandoffEvent
     val usbTunnelStatus: StateFlow<UsbTunnelStatus?> get() = node.usbTunnelStatus
@@ -212,86 +217,6 @@ class ContinuityHubController(
     val avDriftMs: StateFlow<Long> get() = node.virtualMicBridge.avDriftMs
     val remoteHandoffActivity: StateFlow<HandoffActivityInfo?> get() = node.remoteHandoffActivity
     val findMyRinging: StateFlow<Boolean> get() = node.handoffAndProximityService.findMyRinging
-
-    private var clipboardWatchJob: Job? = null
-    private var notifForwardJob: Job? = null
-    private var scrubJob: Job? = null
-    private val forwardedNotifIds = HashSet<String>()
-
-    fun toggleDarkTheme() {
-        _isDarkTheme.value = !_isDarkTheme.value
-    }
-
-    fun selectStudioTab(tab: ContinuityStudioTab) {
-        _activeStudioTab.value = tab
-    }
-
-    fun setCommandPaletteOpen(open: Boolean) {
-        _commandPaletteOpen.value = open
-    }
-
-    fun toggleCommandPalette() {
-        _commandPaletteOpen.value = !_commandPaletteOpen.value
-    }
-
-    fun availableQuickCommands(defaultHost: String): List<StudioQuickCommand> = listOf(
-        StudioQuickCommand(
-            id = "usb_tunnel",
-            title = "Establish Tier-0 USB-C Tunnel (adb forward :49880 & :4747)",
-            category = "Transport",
-            shortcutHint = "Tier-0",
-            action = { probeAndConnectUsbTunnel() },
-        ),
-        StudioQuickCommand(
-            id = "camdroid_start",
-            title = "Start CamDroid Continuity Camera (:4747 -> /dev/video10)",
-            category = "Camera",
-            shortcutHint = "V4L2",
-            action = { startContinuityCamera(host = defaultHost) },
-        ),
-        StudioQuickCommand(
-            id = "virtual_mic",
-            title = "Toggle PipeWire / PulseAudio Virtual Microphone (CamDroidMic)",
-            category = "Audio",
-            shortcutHint = "PipeWire",
-            action = { toggleVirtualMic() },
-        ),
-        StudioQuickCommand(
-            id = "mirror_screen",
-            title = "Start 60fps Phone Screen Mirror (adb + scrcpy)",
-            category = "Display",
-            shortcutHint = "scrcpy",
-            action = { startScreenMirror(host = defaultHost) },
-        ),
-        StudioQuickCommand(
-            id = "find_my_phone",
-            title = "Ring Paired Android Phone (Override Silent / DND)",
-            category = "Security",
-            shortcutHint = "Siren",
-            action = { triggerFindMyPhone(start = true) },
-        ),
-        StudioQuickCommand(
-            id = "lock_workstation",
-            title = "Lock Linux Session Immediately (loginctl lock-session)",
-            category = "Security",
-            shortcutHint = "Lock",
-            action = { lockLocalWorkstation() },
-        ),
-        StudioQuickCommand(
-            id = "rotate_keys",
-            title = "Rotate Session ChaCha20-Poly1305 Keys (KEY_UPDATE 0x04)",
-            category = "Crypto",
-            shortcutHint = "HKDF",
-            action = { rotateActiveSessionKeys() },
-        ),
-        StudioQuickCommand(
-            id = "toggle_theme",
-            title = "Switch Studio Theme (Dark Slate / Crisp Light)",
-            category = "UI",
-            shortcutHint = "Theme",
-            action = { toggleDarkTheme() },
-        ),
-    )
 
     fun start(startMdns: Boolean = true) {
         node.startServer(startMdns = startMdns)
@@ -306,9 +231,11 @@ class ContinuityHubController(
         refreshLinuxCapabilities()
         startClipboardWatchLoop()
         startNotificationForwardLoop()
+        startDesktopNotificationRelayMonitor()
         startPairingQrRefreshLoop()
         startReconnectSupervisor()
         startPresenceBeaconLoop()
+        startMprisBroadcastLoop()
     }
 
     fun refreshLinuxCapabilities() {
@@ -317,8 +244,6 @@ class ContinuityHubController(
 
     fun refreshPairingQr() {
         val qr = node.generatePairingQr(
-            // The default is 127.0.0.1 — a phone scanning that would dial itself. Advertise
-            // every real LAN address, falling back to loopback only when nothing exists.
             ips = MulticastMdnsTransport.detectLocalIpv4Addresses().ifEmpty { listOf("127.0.0.1") },
         )
         val uri = qr.toUri()
@@ -326,7 +251,6 @@ class ContinuityHubController(
         _pairingQrMatrix.value = runCatching { QrCodeMatrix.encodeText(uri) }.getOrNull()
     }
 
-    /** QR pairing nonces expire after 120 s — regenerate on a 90 s cadence so the QR never goes stale. */
     private fun startPairingQrRefreshLoop() {
         pairingQrRefreshJob?.cancel()
         pairingQrRefreshJob = scope.launch {
@@ -337,12 +261,6 @@ class ContinuityHubController(
         }
     }
 
-    /**
-     * Trusted peers reconnect on their own: a pinned peer appearing on mDNS triggers an
-     * immediate attempt, and every 15 s any pinned peer without a live session gets one
-     * (EndpointResolver walks live mDNS, then last-known endpoints). Failures land in the
-     * engine's BACKOFF state; attempts are cheap and guarded by the live-session check.
-     */
     private fun startReconnectSupervisor() {
         reconnectJob?.cancel()
         val pinnedIds = { pinStore.all().map { it.deviceId }.toSet() }
@@ -361,8 +279,7 @@ class ContinuityHubController(
                             }
                             .onFailure { e ->
                                 supervisorLog.warning(
-                                    "Reconnect to $deviceId failed: ${e.message} " +
-                                        "(candidates will be retried next cycle)",
+                                    "Reconnect to $deviceId failed: ${e.message}",
                                 )
                             }
                     }
@@ -374,23 +291,6 @@ class ContinuityHubController(
 
     private val supervisorLog = java.util.logging.Logger.getLogger("ec0.hub.reconnect")
 
-    /**
-     * Presence-beacon leg (docs/engine/design.md §6.5): the desktop must
-     * broadcast ITS OWN beacon too — the phone renders its dashboard tiles
-     * from the desktop's beacons (`node.peerPresence` on the phone tracks the
-     * RECEIVED desktop beacons; `hub.peerPresence` here tracks the phone's —
-     * the two directions are independent). Without this leg both tile
-     * registries render empty.
-     *
-     * Two triggers: a reactive leg broadcasts the moment `connectionStates`
-     * reports CONNECTED (StateFlow collect replays the current value, so an
-     * already-live session at hub start is covered too — no 15 s dead window
-     * after pairing), plus a 15 s ticker refreshing caps/battery on the same
-     * cadence as the reconnect supervisor.
-     *
-     * Battery fields are desktop placeholders (no battery on a desktop) — the
-     * phone's tile registry consumes capabilities, not battery, for desktops.
-     */
     private fun startPresenceBeaconLoop() {
         presenceBeaconJob?.cancel()
         presenceAuthJob?.cancel()
@@ -411,7 +311,6 @@ class ContinuityHubController(
         }
     }
 
-    /** Broadcasts the desktop beacon to every peer with a live engine session. */
     private fun broadcastPresenceBeacons() {
         val peerIds = node.pinnedPeers.value.map { it.deviceId } + node.connectionStates.value.keys
         for (deviceId in peerIds.toSet()) {
@@ -427,19 +326,111 @@ class ContinuityHubController(
             screenOn = true,
             capabilities = desktopBeaconCapabilities(mediaControlSupported = hasMprisMediaSupport()),
         )
-        // A session can close between the check and the send — beacons are
-        // idempotent refreshes, so a lost race is simply skipped.
         runCatching { node.presenceService.broadcastBeacon(beacon, session) }
     }
 
-    /**
-     * True when the session bus enumerates at least one MPris player (the
-     * same transport the phone's media-control commands drive). Probe is
-     * CI/headless-safe: no busctl / no session bus → false, honest beacon.
-     */
     private fun hasMprisMediaSupport(): Boolean = runCatching {
-        mprisMediaSource.firstPlayerOrNull() != null
+        val player = mprisMediaSource.firstPlayerOrNull()
+        if (player != null) {
+            mprisMediaSource.setActivePlayer(player)
+            true
+        } else {
+            false
+        }
     }.getOrDefault(false)
+
+    /**
+     * Executes a remote `MediaControlCommand` from a paired phone against the
+     * active MPRIS player via `playerctl --player=...` (never raw shell).
+     */
+    private fun handleRemoteMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? {
+        return runCatching {
+            val player = mprisMediaSource.firstPlayerOrNull() ?: return null
+            mprisMediaSource.setActivePlayer(player)
+            val argv = mprisMediaSource.buildTargetedCommand(command)
+            if (argv != null) {
+                SystemProcessLauncher.runBlockingCommand(argv, timeoutMs = 4_000L)
+            }
+            val updated = mprisMediaSource.poll()
+            if (updated != null) {
+                for (peerId in targetPeerDeviceIds()) {
+                    node.activeSessionFor(peerId)?.let { s ->
+                        runCatching { node.mediaSessionBridgeService.broadcastMediaSession(updated, s) }
+                    }
+                }
+            }
+            updated
+        }.getOrNull()
+    }
+
+    /**
+     * Polls MPRIS playback metadata every 3 s while at least one peer session is
+     * connected and pushes changes to paired phones so their Now Playing card stays live.
+     */
+    private fun startMprisBroadcastLoop() {
+        mprisPollJob?.cancel()
+        mprisPollJob = scope.launch(Dispatchers.IO) {
+            var lastBroadcastKey = ""
+            while (isActive) {
+                delay(3_000L)
+                val activeSessions = targetPeerDeviceIds().mapNotNull { node.activeSessionFor(it) }
+                if (activeSessions.isEmpty()) continue
+                val info = runCatching {
+                    val player = mprisMediaSource.firstPlayerOrNull()
+                    mprisMediaSource.setActivePlayer(player)
+                    if (player != null) mprisMediaSource.poll() else null
+                }.getOrNull() ?: continue
+
+                val key = "${info.playerName}|${info.title}|${info.artist}|${info.state}|${info.volumePct}"
+                if (key != lastBroadcastKey) {
+                    lastBroadcastKey = key
+                    for (session in activeSessions) {
+                        runCatching { node.mediaSessionBridgeService.broadcastMediaSession(info, session) }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Starts `DesktopNotificationMonitor` (dbus-monitor --session) to relay Linux
+     * desktop alerts to connected phones whenever the user enables it in Continuity
+     * settings. Skips `ec0`-originated notifications to prevent echo loops.
+     */
+    private fun startDesktopNotificationRelayMonitor() {
+        desktopNotifMonitorJob?.cancel()
+        val monitor = DesktopNotificationMonitor(
+            policyProvider = desktopNotificationPolicyProvider,
+            monitorRunner = { argv, onLine ->
+                runCatching {
+                    val proc = ProcessBuilder(argv)
+                        .redirectErrorStream(true)
+                        .start()
+                    dbusMonitorProcessRef.getAndSet(proc)?.destroyForcibly()
+                    proc.inputStream.bufferedReader().useLines { lines ->
+                        for (line in lines) {
+                            if (!scope.isActive) break
+                            onLine(line)
+                        }
+                    }
+                }
+            },
+            sender = { info ->
+                if (!desktopNotifRelayEnabledProvider()) return@DesktopNotificationMonitor
+                // Echo-loop guard: never relay notifications posted by ec0 itself.
+                val appLower = info.appName.lowercase()
+                if (appLower == "ec0" || appLower.startsWith("ec0 ")) return@DesktopNotificationMonitor
+                for (peerId in targetPeerDeviceIds()) {
+                    val session = node.activeSessionFor(peerId) ?: continue
+                    runCatching { node.notificationRelayService.postNotification(info, session) }
+                }
+            },
+        )
+        desktopNotificationMonitor = monitor
+        desktopNotifMonitorJob = scope.launch(Dispatchers.IO) {
+            runCatching { monitor.start() }
+        }
+    }
 
     fun setAutoSyncClipboard(enabled: Boolean) {
         _autoSyncClipboard.value = enabled
@@ -449,19 +440,23 @@ class ContinuityHubController(
         _forwardNotificationsToDesktop.value = enabled
     }
 
-    /**
-     * Probes `adb devices -l` for a USB-C connected phone and forwards TCP `:49880`
-     * (`ec0-engine`) and `:4747` (`CamDroid`) over `127.0.0.1`.
-     */
+    fun setPeerCapability(deviceId: String, wireName: String, granted: Boolean) {
+        val id = deviceId.lowercase()
+        val current = _peerCapabilityGrants.value.toMutableMap()
+        val existing = current[id] ?: setOf("remote_input")
+        current[id] = if (granted) existing + wireName else existing - wireName
+        _peerCapabilityGrants.value = current
+    }
+
     fun probeAndConnectUsbTunnel() {
         scope.launch(Dispatchers.IO) {
             val status = node.usbAdbTunnelCoordinator.probeAndEstablishUsbTunnel()
             if (status != null) {
                 _linkRttSamplesMs.value = (_linkRttSamplesMs.value + 1L).takeLast(16)
                 _statusBanner.value =
-                    "Tier-0 USB-C tunnel active: ${status.model} (${status.serial}) -> 127.0.0.1:${status.engineLocalPort} & :${status.camDroidLocalPort}"
+                    "USB-C Direct Link active: ${status.model} (${status.serial})"
             } else {
-                _statusBanner.value = "No USB-C Android device found via `adb devices -l` (using LAN / mDNS tiers)"
+                _statusBanner.value = "No USB-C Android device detected — using encrypted Wi-Fi link"
             }
         }
     }
@@ -469,13 +464,10 @@ class ContinuityHubController(
     fun tearDownUsbTunnel() {
         scope.launch(Dispatchers.IO) {
             node.usbAdbTunnelCoordinator.tearDownUsbTunnel()
-            _statusBanner.value = "Removed USB-C adb port forwards; returned to LAN/Wi-Fi transport"
+            _statusBanner.value = "USB-C Direct Link disconnected — returned to Wi-Fi"
         }
     }
 
-    /**
-     * Toggles the Linux PipeWire/PulseAudio virtual microphone (`CamDroidMic`).
-     */
     fun toggleVirtualMic() {
         scope.launch(Dispatchers.IO) {
             val currentlyActive = node.virtualMicBridge.virtualMicActive.value
@@ -485,35 +477,28 @@ class ContinuityHubController(
                 node.virtualMicBridge.enableVirtualMic()
             }
             _statusBanner.value = if (!currentlyActive && ok) {
-                "Loaded PipeWire/PulseAudio virtual microphone 'CamDroidMic' (48kHz s16le)"
+                "Loaded virtual microphone (PipeWire/PulseAudio 48 kHz)"
             } else if (currentlyActive) {
-                "Unloaded virtual microphone 'CamDroidMic'"
+                "Unloaded virtual microphone"
             } else {
-                "Virtual mic setup requires pactl (PipeWire-Pulse / PulseAudio)"
+                "Virtual mic requires pactl (PipeWire-Pulse or PulseAudio)"
             }
         }
     }
 
-    /**
-     * Opens the active remote Handoff URL on the Linux desktop via `xdg-open`
-     * after strict `http://`/`https://` validation.
-     */
     fun openRemoteHandoffOnLinux() {
         scope.launch(Dispatchers.IO) {
             val activity = node.remoteHandoffActivity.value ?: return@launch
             val opened = node.handoffAndProximityService.openActiveRemoteHandoffLocally()
             _statusBanner.value = if (opened) {
-                "Opened Handoff URL on Linux: ${activity.url}"
+                "Opened handoff link: ${activity.url}"
             } else {
-                "Validated Handoff URL ready: ${activity.url}"
+                "Validated link ready: ${activity.url}"
             }
         }
     }
 
-    /**
-     * Sends a browser/app URL to the paired Android phone to open immediately.
-     */
-    fun sendUrlHandoffToPhone(rawUrl: String, title: String = "Linux Browser Tab") {
+    fun sendUrlHandoffToPhone(rawUrl: String, title: String = "Desktop Tab") {
         val trimmed = rawUrl.trim()
         if (trimmed.isEmpty()) return
         scope.launch(Dispatchers.IO) {
@@ -524,17 +509,13 @@ class ContinuityHubController(
                     title = title,
                     session = session,
                 )
-                _statusBanner.value = "Sent URL Handoff to phone: $trimmed"
+                _statusBanner.value = "Sent link to paired device: $trimmed"
             } catch (e: Exception) {
-                _statusBanner.value = "Rejected unsafe Handoff URL: ${e.message}"
+                _statusBanner.value = "Rejected unsafe link: ${e.message}"
             }
         }
     }
 
-    /**
-     * Copies an extracted 2FA / OTP verification code to the Linux clipboard as an
-     * ephemeral secret and schedules automatic scrubbing after 30 seconds.
-     */
     fun copyExtractedOtpCode(otpCode: String) {
         if (otpCode.isBlank()) return
         scope.launch(Dispatchers.IO) {
@@ -552,15 +533,12 @@ class ContinuityHubController(
             delay(ttlMs)
             val scrubbed = clipboardBridge.scrubIfUnchanged(expectedSha256Hex)
             if (scrubbed) {
-                _lastSyncedClipSummary.value = "Scrubbed expired sensitive clipboard item (sha256=${expectedSha256Hex.take(10)}…)"
-                _statusBanner.value = "Auto-scrubbed sensitive 2FA / secret from Linux clipboard"
+                _lastSyncedClipSummary.value = "Scrubbed expired sensitive clipboard item"
+                _statusBanner.value = "Auto-scrubbed sensitive 2FA code from clipboard"
             }
         }
     }
 
-    /**
-     * Triggers or stops the "Find My Phone" DND-override siren on the paired Android device.
-     */
     fun triggerFindMyPhone(start: Boolean = true) {
         scope.launch(Dispatchers.IO) {
             val session = activeSessionOrNull()
@@ -570,61 +548,28 @@ class ContinuityHubController(
                 session = session,
             )
             _statusBanner.value = if (start) {
-                "Ringing paired phone at max alarm volume (DND override)"
+                "Ringing paired phone at max alarm volume"
             } else {
                 "Stopped Find My Phone ring"
             }
         }
     }
 
-    /**
-     * Locks the local Linux desktop session via `loginctl lock-session`.
-     */
     fun lockLocalWorkstation() {
         scope.launch(Dispatchers.IO) {
             val ok = node.handoffAndProximityService.lockLocalWorkstation()
             _statusBanner.value = if (ok) {
-                "Locked Linux workstation session via loginctl"
+                "Locked workstation session"
             } else {
-                "Requested workstation lock (loginctl lock-session)"
+                "Requested workstation lock"
             }
         }
     }
 
-    /**
-     * Rotates the symmetric ChaCha20-Poly1305 session keys forward (`KEY_UPDATE 0x04`).
-     */
     fun rotateActiveSessionKeys() {
         val nextEpoch = _rekeyEpoch.value + 1
         _rekeyEpoch.value = nextEpoch
-        _statusBanner.value = "Rotated session keys to HKDF Epoch #$nextEpoch (ChaCha20-Poly1305 forward secrecy)"
-    }
-
-    /**
-     * Adds a normalized vector stroke to the Continuity Sketch markup pad.
-     */
-    fun addSketchPresetStroke(colorHex: String) {
-        val idx = _sketchStrokes.value.size
-        val yBase = (200 + (idx * 130)) % 850
-        val stroke = ContinuitySketchStroke(
-            colorHex = colorHex,
-            strokeWidthPx = 4,
-            points = listOf(
-                ContinuitySketchPoint(120, yBase),
-                ContinuitySketchPoint(480, (yBase - 60).coerceAtLeast(50)),
-                ContinuitySketchPoint(860, (yBase + 40).coerceAtMost(950)),
-            ),
-        )
-        _sketchStrokes.value = _sketchStrokes.value + stroke
-    }
-
-    fun clearSketchStrokes() {
-        _sketchStrokes.value = emptyList()
-    }
-
-    fun syncSketchOverlayToPeer() {
-        val count = _sketchStrokes.value.size
-        _statusBanner.value = "Synced Continuity Sketch overlay ($count vector stroke(s)) to connected peer"
+        _statusBanner.value = "Rotated session keys to epoch #$nextEpoch"
     }
 
     fun formatTransferThroughput(snap: TransferProgressSnapshot): TransferSpeedSample =
@@ -634,34 +579,45 @@ class ContinuityHubController(
             totalBytes = snap.totalBytes,
         )
 
-    /**
-     * Pairs with a phone by accepting its `ec0://pair?v=1...` URI and opening an
-     * authenticated X25519+Ed25519+ChaCha20-Poly1305 session.
-     */
     fun pairWithQrUri(uri: String) {
         scope.launch(Dispatchers.IO) {
             try {
                 val session = node.pairAndConnectWithQrUri(uri.trim())
                 val sas = EngineIdentity.verificationBadge(localIdentity.publicKeyRaw, session.peerPublicKeyRaw)
                 _lastVerifiedSasBadge.value = sas
-                _statusBanner.value = "Connected & verified peer ${session.peerDeviceId.take(12)}… (SAS: $sas)"
+                _statusBanner.value = "Paired & verified ${session.peerDeviceId.take(12)}… (SAS: $sas)"
             } catch (e: Exception) {
                 _statusBanner.value = "Pairing failed: ${e.message}"
             }
         }
     }
 
+    /**
+     * Two-way unpair: sends `CMD_UNPAIR` over the active authenticated session FIRST
+     * while the socket is still alive so the remote device immediately revokes our pin too,
+     * then drops the local pin and closes the session.
+     */
     fun unpairPeer(deviceId: String) {
-        val removed = node.unpairPeer(deviceId)
+        val normalized = deviceId.lowercase()
+        node.activeSessionFor(normalized)?.let { session ->
+            runCatching {
+                session.sendCmd(
+                    cmdType = EngineConstants.CMD_UNPAIR,
+                    cmdBody = buildJsonObject {
+                        put("reason", JsonPrimitive("user_unpair"))
+                        put("device_id", JsonPrimitive(localIdentity.deviceId))
+                    },
+                    category = EngineConstants.CATEGORY_SYSTEM,
+                    timestampMs = System.currentTimeMillis(),
+                )
+            }
+        }
+        val removed = node.unpairPeer(normalized)
         if (removed) {
-            _statusBanner.value = "Unpaired peer ${deviceId.take(12)}… from persistent PinStore"
+            _statusBanner.value = "Unpaired device ${normalized.take(12)}…"
         }
     }
 
-    /**
-     * Polls the Linux system clipboard (`wl-paste` / `xclip`) once and pushes any
-     * new clip to all connected or pinned peers.
-     */
     fun syncLocalClipboardNow() {
         scope.launch(Dispatchers.IO) {
             val item = clipboardBridge.pollLocalClipboardForChange() ?: return@launch
@@ -669,30 +625,28 @@ class ContinuityHubController(
         }
     }
 
-    /**
-     * Checks the Linux clipboard for copied file URIs (`text/uri-list` from Dolphin /
-     * Nautilus) and sends them as a resumable file transfer to connected peers.
-     */
     fun sendCopiedFilesFromClipboard() {
         scope.launch(Dispatchers.IO) {
             val files = clipboardBridge.pollCopiedFilesFromClipboard()
             if (files.isEmpty()) {
-                _statusBanner.value = "No copied files found in Linux clipboard (text/uri-list)"
+                _statusBanner.value = "No copied files found in clipboard"
                 return@launch
             }
             sendFilesToConnectedPeers(files)
         }
     }
 
-    /**
-     * Sends dropped or selected [files] to all connected peers using adaptive chunk sizing.
-     */
-    fun sendFilesToConnectedPeers(files: List<File>) {
+    fun sendFilesToConnectedPeers(files: List<File>, targetDeviceId: String? = null) {
         val validFiles = files.filter { it.exists() }
         if (validFiles.isEmpty()) return
         scope.launch(Dispatchers.IO) {
             var sentCount = 0
-            for (peerId in targetPeerDeviceIds()) {
+            val targets = if (!targetDeviceId.isNullOrBlank()) {
+                setOf(targetDeviceId.lowercase())
+            } else {
+                targetPeerDeviceIds()
+            }
+            for (peerId in targets) {
                 if (node.activeSessionFor(peerId) != null) {
                     for (f in validFiles) {
                         runCatching {
@@ -703,9 +657,9 @@ class ContinuityHubController(
                 }
             }
             _statusBanner.value = if (sentCount > 0) {
-                "Initiated parallel AirDrop of ${validFiles.size} file(s) to connected peer(s)"
+                "Sending ${validFiles.size} file(s) over encrypted ec0 link"
             } else {
-                "Connect a peer first to send ${validFiles.size} file(s)"
+                "Connect a paired device first to send ${validFiles.size} file(s)"
             }
         }
     }
@@ -726,14 +680,15 @@ class ContinuityHubController(
             val cancelled = node.fileTransferService.cancelTransfer(transferId)
             if (cancelled) {
                 throughputTracker.remove(transferId)
-                _statusBanner.value = "Cancelled transfer $transferId"
+                _statusBanner.value = "Cancelled transfer"
             }
         }
     }
 
-    /**
-     * Forwards a remote pointer action (`move`, `click`, `scroll`) to the connected phone.
-     */
+    fun clearFinishedTransfers() {
+        node.fileTransferService.clearFinishedTransfers()
+    }
+
     fun sendRemotePointerEvent(
         action: String,
         dx: Int = 0,
@@ -742,7 +697,7 @@ class ContinuityHubController(
         buttonsMask: Int = 1,
     ) {
         scope.launch(Dispatchers.IO) {
-            val session = activeSessionOrNull()
+            val session = activeSessionOrNull() ?: return@launch
             val event = InputPointerEvent(
                 action = action,
                 dx = dx,
@@ -750,17 +705,10 @@ class ContinuityHubController(
                 scrollY = scrollY,
                 buttonsMask = buttonsMask,
             )
-            if (session != null) {
-                node.inputShareService.sendPointerEvent(event, session)
-            } else {
-                _statusBanner.value = "Queued/simulated pointer $action (dx=$dx, dy=$dy)"
-            }
+            node.inputShareService.sendPointerEvent(event, session)
         }
     }
 
-    /**
-     * Commits UTF-8 text from the Linux desktop keyboard directly to the paired phone.
-     */
     fun sendRemoteTextCommit(text: String) {
         if (text.isEmpty()) return
         scope.launch(Dispatchers.IO) {
@@ -771,9 +719,9 @@ class ContinuityHubController(
             )
             if (session != null) {
                 node.inputShareService.sendKeyEvent(event, session)
-                _statusBanner.value = "Typed ${text.length} char(s) on paired phone"
+                _statusBanner.value = "Typed ${text.length} char(s) on paired device"
             } else {
-                _statusBanner.value = "Connect a phone session to forward live keyboard input"
+                _statusBanner.value = "Connect a paired device to forward keyboard input"
             }
         }
     }
@@ -795,22 +743,16 @@ class ContinuityHubController(
         for (peerId in targets) {
             node.sendOrQueueClipboard(peerId, item)
         }
-        val sensTag = if (item.isSensitive) " · SENSITIVE (30s TTL)" else ""
+        val sensTag = if (item.isSensitive) " · sensitive (30s TTL)" else ""
         _lastSyncedClipSummary.value =
-            "Outgoing ${item.mime} (${item.bytes.size} B, sha256=${item.sha256Hex.take(12)}…)$sensTag"
+            "Synced ${item.bytes.size} B to paired device$sensTag"
     }
 
-    /**
-     * Configures the Universal Control monitor edge (`LEFT`, `RIGHT`, `TOP`, `BOTTOM`).
-     */
     fun setUniversalControlEdge(edge: ScreenEdge) {
         node.universalControlService.setConfiguredEdge(edge)
-        _statusBanner.value = "Universal Control screen edge set to ${edge.wireName.uppercase()}"
+        _statusBanner.value = "Screen edge set to ${edge.wireName.uppercase()}"
     }
 
-    /**
-     * Simulates or triggers a cursor handoff across the configured screen edge.
-     */
     fun triggerEdgeCursorHandoff(positionPermille: Int = 500) {
         scope.launch(Dispatchers.IO) {
             val peerId = targetPeerDeviceIds().firstOrNull() ?: "paired-peer"
@@ -831,7 +773,7 @@ class ContinuityHubController(
                 session = session,
             )
             if (cmd != null) {
-                _statusBanner.value = "Cursor handoff (${cmd.action}) across ${cmd.edge.wireName} edge -> $peerId"
+                _statusBanner.value = "Cursor handoff (${cmd.action}) across ${cmd.edge.wireName} edge"
             }
         }
     }
@@ -840,7 +782,7 @@ class ContinuityHubController(
         scope.launch(Dispatchers.IO) {
             val session = activeSessionOrNull()
             node.universalControlService.returnCursorToLocal(session = session)
-            _statusBanner.value = "Returned cursor focus to local Linux desktop"
+            _statusBanner.value = "Returned cursor focus to local desktop"
         }
     }
 
@@ -849,7 +791,7 @@ class ContinuityHubController(
             val session = activeSessionOrNull()
             node.hotspotAndTelephonyService.requestHotspotToggle(enable = enable, session = session)
             _statusBanner.value = if (enable) {
-                "Requested Instant Hotspot activation from phone"
+                "Requested Instant Hotspot from phone"
             } else {
                 "Requested Instant Hotspot shutdown"
             }
@@ -860,9 +802,9 @@ class ContinuityHubController(
         scope.launch(Dispatchers.IO) {
             val joined = node.hotspotAndTelephonyService.joinHotspotOnLinux()
             _statusBanner.value = if (joined) {
-                "Connected to phone hotspot '${hotspotStatus.value.ssid}' via NetworkManager (nmcli)"
+                "Connected to phone hotspot '${hotspotStatus.value.ssid}'"
             } else {
-                "Failed to connect to phone hotspot via nmcli"
+                "Failed to connect to phone hotspot via NetworkManager"
             }
         }
     }
@@ -871,7 +813,7 @@ class ContinuityHubController(
         scope.launch(Dispatchers.IO) {
             val session = activeSessionOrNull()
             node.hotspotAndTelephonyService.sendCallAction(command, session)
-            _statusBanner.value = "Sent call action '${command.action}' for call ${command.callId}"
+            _statusBanner.value = "Sent call action '${command.action}'"
         }
     }
 
@@ -880,7 +822,7 @@ class ContinuityHubController(
             val session = activeSessionOrNull()
             val cmd = MediaControlCommand(action = action, volumePct = volumePct)
             node.mediaSessionBridgeService.sendMediaControl(cmd, session)
-            _statusBanner.value = "Sent media control '${cmd.action}' to peer"
+            _statusBanner.value = "Sent media control '${cmd.action}'"
         }
     }
 
@@ -902,9 +844,9 @@ class ContinuityHubController(
                 }
             }
             _statusBanner.value = if (sent) {
-                "Sent inline reply to notification $notifId"
+                "Sent quick reply"
             } else {
-                "No active peer session to deliver reply for $notifId"
+                "No active peer session to deliver reply"
             }
         }
     }
@@ -920,33 +862,31 @@ class ContinuityHubController(
         }
     }
 
-    fun startScreenMirror(host: String = "", adbPort: Int = 5555, maxFps: Int = 60, bitrateKbps: Int = 8_000) {
+    fun startScreenMirror(
+        host: String = "",
+        adbPort: Int = 5555,
+        maxFps: Int = 60,
+        bitrateKbps: Int = 8_000,
+        audioEnabled: Boolean = true,
+        turnScreenOff: Boolean = false,
+    ) {
         val mirrorLog = java.util.logging.Logger.getLogger("ec0.hub.mirror")
         scope.launch(Dispatchers.IO) {
             try {
-                mirrorLog.info("Mirror: requested (host hint='$host')")
-                // Resolve the LIVE adb serial for the pinned phone: wireless-debugging
-                // serials are ip:port and change per re-pairing — the hardcoded :5555
-                // dial could never survive real usage (observed: 'Start mirror' dead).
+                mirrorLog.info("Mirror: requested (host hint='$host', fps=$maxFps, audio=$audioEnabled, screenOff=$turnScreenOff)")
                 val adbDevices = node.scrcpyCoordinator.adbDevicesList()
-                mirrorLog.info("Mirror: adb devices → ${adbDevices.replace("\n", " | ").take(300)}")
-                // Multi-device rule: target the peer with a LIVE session (the connected
-                // phone), never firstOrNull — two paired phones made the mirror pick the
-                // offline one alphabetically (observed: OPPO pin shadowed the live A03).
                 val peer = node.pinnedPeers.value
                     .firstOrNull { node.activeSessionFor(it.deviceId) != null }
                     ?: node.pinnedPeers.value.firstOrNull()
                     ?: throw IOException("No paired phone — pair first, then mirror")
-                mirrorLog.info("Mirror: peer=${peer.alias} liveSession=${node.activeSessionFor(peer.deviceId) != null}")
                 val peerIp = node.activeSessionFor(peer.deviceId)?.peerRemoteIp
                 val serial = resolveMirrorSerial(adbDevices, peer.alias, peerIp)
                     ?: run {
-                        // No live serial: last resort, dial the legacy tcpip port.
                         if (host.isNotBlank() && adbDevices.isNotBlank()) {
                             null
                         } else {
                             throw IOException(
-                                "No adb device matching '${peer.alias}' — enable Wireless debugging on the phone (or plug USB)",
+                                "No adb device matching '${peer.alias}' — enable Wireless debugging on the phone or connect USB-C",
                             )
                         }
                     }
@@ -956,13 +896,14 @@ class ContinuityHubController(
                     maxFps = maxFps,
                     bitrateKbps = bitrateKbps,
                     windowTitle = "ec0 Mirror (${peer.alias})",
+                    audioEnabled = audioEnabled,
+                    turnScreenOff = turnScreenOff,
                 )
-                mirrorLog.info("Mirror: launching scrcpy (serial=${serial ?: "legacy-dial"})")
                 node.scrcpyCoordinator.launchMirrorSession(cmd, directSerial = serial)
                 _statusBanner.value = if (serial != null) {
-                    "Mirroring ${peer.alias} via scrcpy (serial $serial)"
+                    "Mirroring ${peer.alias} (${maxFps} fps${if (audioEnabled) ", audio" else ", muted"})"
                 } else {
-                    "Mirroring phone screen via scrcpy (${cmd.serial})"
+                    "Mirroring phone screen (${cmd.serial})"
                 }
             } catch (e: Exception) {
                 mirrorLog.warning("Mirror failed: ${e.javaClass.simpleName}: ${e.message}")
@@ -991,8 +932,6 @@ class ContinuityHubController(
             val camAdvertised = node.peerPresence.value.values.any { beacon ->
                 EngineCapability.CAMERA in beacon.capabilities
             }
-            // Preflight BEFORE anything touches the phone's camera: every
-            // missing precondition is surfaced honestly through the banner.
             val preflight = node.cameraCoordinator.streamPreflight(
                 sessionConnected = session != null,
                 phoneCameraAdvertised = camAdvertised,
@@ -1003,14 +942,17 @@ class ContinuityHubController(
                 return@launch
             }
 
-            // Arm the phone's stream server over the AEAD-encrypted session:
-            // the Start envelope carries a fresh one-shot token the desktop
-            // will echo in its TCP handshake. No envelope, no stream.
             val streamToken = ContinuityCameraCoordinator.newStreamToken()
+            val wireFps = if (fps >= 45) 60 else 30
+            val wireResolution = if (resolution.lowercase() in CamDroidConstants.SUPPORTED_RESOLUTIONS) {
+                resolution.lowercase()
+            } else {
+                "1080p"
+            }
             val armCommand = CamDroidControlCommand.Start(
                 codec = codec,
-                resolution = resolution,
-                fps = fps.coerceIn(30, 60),
+                resolution = wireResolution,
+                fps = wireFps,
                 audio = audio,
                 token = streamToken,
             )
@@ -1021,7 +963,7 @@ class ContinuityHubController(
                     category = ContinuityCameraCoordinator.CATEGORY_CAMERA,
                 )
             } catch (e: Exception) {
-                _statusBanner.value = "Camera arm command failed on the engine session: ${e.message}"
+                _statusBanner.value = "Camera arm command failed: ${e.message}"
                 return@launch
             }
 
@@ -1040,10 +982,9 @@ class ContinuityHubController(
             )
             _statusBanner.value = when (status.state) {
                 CameraStreamState.STREAMING ->
-                    "Continuity Camera live: ${status.resolution}@${status.fps} ${status.codec} " +
-                        "($effectiveHost:$port -> ${status.v4l2DevicePath})"
+                    "Continuity Camera live: ${status.resolution}@${status.fps}fps → ${status.v4l2DevicePath}"
                 else -> status.reason
-                    ?: "Continuity Camera ${status.state.wireName} ($effectiveHost:$port -> ${status.v4l2DevicePath})"
+                    ?: "Continuity Camera ${status.state.wireName} → ${status.v4l2DevicePath}"
             }
         }
     }
@@ -1055,7 +996,7 @@ class ContinuityHubController(
             _statusBanner.value = if (ok) {
                 "Loaded v4l2loopback kernel module (/dev/video10 ready)"
             } else {
-                "v4l2loopback setup cancelled or failed. Command: ${node.cameraCoordinator.v4l2SetupCommand()}"
+                "v4l2loopback setup cancelled or failed. Run: ${node.cameraCoordinator.v4l2SetupCommand()}"
             }
         }
     }
@@ -1079,7 +1020,7 @@ class ContinuityHubController(
         return try {
             val installed = LinuxDesktopIntegrationGenerator.install()
             _statusBanner.value =
-                "Installed AirDrop context menus: ${installed.dolphinServiceMenu.name}, ${installed.nautilusScript.name}"
+                "Installed file manager menus: ${installed.dolphinServiceMenu.name}, ${installed.nautilusScript.name}"
             installed
         } catch (e: Exception) {
             _statusBanner.value = "Failed to install desktop integration: ${e.message}"
@@ -1131,9 +1072,14 @@ class ContinuityHubController(
         reconnectJob?.cancel()
         presenceBeaconJob?.cancel()
         presenceAuthJob?.cancel()
+        mprisPollJob?.cancel()
         clipboardWatchJob?.cancel()
         notifForwardJob?.cancel()
+        desktopNotifMonitorJob?.cancel()
         scrubJob?.cancel()
+        runCatching { desktopNotificationMonitor?.stop() }
+        runCatching { dbusMonitorProcessRef.getAndSet(null)?.destroyForcibly() }
+        runCatching { adaptiveInputSink.close() }
         runCatching { daemonIpcServer?.close() }
         node.close()
     }

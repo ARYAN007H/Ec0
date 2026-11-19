@@ -125,18 +125,34 @@ class ScrcpyMirrorCoordinator(
 
     /**
      * Builds the exact `scrcpy` command line after `adb connect` succeeds.
+     * Note: scrcpy >= 2.0 forwards audio by default, so `--no-audio` is appended
+     * only when [ScrcpyMirrorStartCommand.audioEnabled] is false (keeping the
+     * canonical default argv identical to Amendment 5).
      */
-    fun buildScrcpyArgs(cmd: ScrcpyMirrorStartCommand): List<String> = listOf(
-        scrcpyBinary,
-        "--serial",
-        cmd.serial,
-        "--window-title",
-        cmd.windowTitle,
-        "--max-fps",
-        cmd.maxFps.toString(),
-        "--video-bit-rate",
-        "${cmd.bitrateKbps}K",
-    )
+    fun buildScrcpyArgs(cmd: ScrcpyMirrorStartCommand): List<String> = buildList {
+        add(scrcpyBinary)
+        add("--serial")
+        add(cmd.serial)
+        add("--window-title")
+        add(cmd.windowTitle)
+        add("--max-fps")
+        add(cmd.maxFps.toString())
+        add("--video-bit-rate")
+        add("${cmd.bitrateKbps}K")
+        if (!cmd.audioEnabled) {
+            add("--no-audio")
+        }
+        if (cmd.turnScreenOff) {
+            add("--turn-screen-off")
+        }
+        if (cmd.stayAwake) {
+            add("--stay-awake")
+        }
+        if (cmd.maxSize > 0) {
+            add("--max-size")
+            add(cmd.maxSize.toString())
+        }
+    }
 
     /**
      * Executes the normative Amendment 5 sequence:

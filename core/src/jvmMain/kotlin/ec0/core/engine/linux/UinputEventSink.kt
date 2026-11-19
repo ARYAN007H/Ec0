@@ -1,40 +1,47 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * Direct /dev/uinput event sink — the B1 "real uinput virtual device" path.
+ * Direct /dev/uinput event sink — the real uinput virtual device path.
  *
  * Event EMISSION is plain write() of evdev `struct input_event` records
- * (24 bytes on 64-bit Linux: i64 tv_sec, i64 tv_usec, u16 type, u16 code,
- * i32 value) — no ioctls on the hot path. Device CREATION needs ioctls
- * (UI_SET_EVBIT/UI_DEV_CREATE …), which the JVM cannot issue, so the sink
- * invokes a generated one-shot python3-ctypes setup script ([UinputSetup.script()])
- * once — python3 is stdlib on every Linux desktop we target.
+ * (24 bytes on 64-bit Linux, little-endian: i64 tv_sec, i64 tv_usec,
+ * u16 type, u16 code, i32 value) — no ioctls on the hot path.
  *
- * Probe chain (in [selectSink]):
+ * Kernel lifecycle: a uinput virtual device only persists while the file
+ * descriptor that issued `UI_DEV_CREATE` stays open, and events must be
+ * written to that same fd. [UinputSetupScript.daemonScript] runs a tiny
+ * stdlib-only python3 helper that creates the virtual mouse+keyboard device,
+ * keeps `fd` open, and forwards 24-byte little-endian `struct input_event`
+ * frames piped from stdin directly into `fd` until EOF (then calls
+ * `UI_DEV_DESTROY`). [UinputEventSink] can write either to a direct channel
+ * (tests / pre-created fd) or to the persistent daemon's stdin pipe, and
+ * implements [InputEventSink] directly so [Ec0EngineNode] wires into it
+ * without spawning a subprocess per event.
+ *
+ * Probe chain (in [UinputSinkSelector.select]):
  *   1. /dev/uinput writable  → UINPUT_DIRECT (this sink, batched ≤8 ms)
  *   2. ydotoold socket live  → existing ydotool exec bridge (daemon owns uinput)
  *   3. neither               → honest setup hint (uinput perms + ydotoold install)
- *
- * Latency contract: incoming events append into a primitive LongArray ring
- * (stride 5 — zero boxing); a flush fires at most every [flushIntervalMs]
- * (default 8 ms) or when the ring is full, encoding into one reusable
- * ByteBuffer and issuing a single FileChannel.write.
  */
 package ec0.core.engine.linux
 
+import ec0.core.engine.protocol.InputKeyEvent
+import ec0.core.engine.protocol.InputPointerEvent
+import ec0.core.engine.protocol.InputProtocol
+import ec0.core.engine.services.InputEventSink
 import java.io.File
-import java.io.IOException
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.channels.Channels
 import java.nio.channels.FileChannel
 import java.nio.channels.WritableByteChannel
 import java.nio.file.StandardOpenOption
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Pure evdev encoding — golden-byte tested, no I/O. */
+/** Pure evdev encoding — golden-byte tested, little-endian, no I/O. */
 object UinputEvdevCodec {
     const val EV_SYN: Short = 0x00
     const val EV_KEY: Short = 0x01
@@ -49,13 +56,31 @@ object UinputEvdevCodec {
     const val BTN_RIGHT: Short = 0x111
     const val BTN_MIDDLE: Short = 0x112
 
+    // Navigation, editing & modifier keys (Linux input-event-codes.h)
+    const val KEY_ESC: Short = 0x01
+    const val KEY_BACKSPACE: Short = 0x0e
+    const val KEY_TAB: Short = 0x0f
+    const val KEY_ENTER: Short = 0x1c
+    const val KEY_LEFT_CTRL: Short = 0x1d
+    const val KEY_LEFT_SHIFT: Short = 0x2a
+    const val KEY_LEFT_ALT: Short = 0x38
+    const val KEY_SPACE: Short = 0x39
     const val KEY_F5: Short = 0x3f
+    const val KEY_UP: Short = 0x67
     const val KEY_LEFT: Short = 0x69
     const val KEY_RIGHT: Short = 0x6a
+    const val KEY_DOWN: Short = 0x6c
+    const val KEY_MUTE: Short = 0x71
+    const val KEY_VOLUMEDOWN: Short = 0x72
+    const val KEY_VOLUMEUP: Short = 0x73
+    const val KEY_LEFT_META: Short = 0x7d
+    const val KEY_NEXTSONG: Short = 0xa3
+    const val KEY_PLAYPAUSE: Short = 0xa4
+    const val KEY_PREVIOUSSONG: Short = 0xa5
 
-    /** Encodes one `struct input_event` (24 bytes, little-endian). */
+    /** Encodes one 64-bit Linux `struct input_event` (24 bytes, little-endian). */
     fun encodeEvent(timeSec: Long, timeUsec: Long, type: Short, code: Short, value: Int): ByteArray {
-        val buffer = ByteBuffer.allocate(24)
+        val buffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putLong(timeSec)
         buffer.putLong(timeUsec)
         buffer.putShort(type)
@@ -87,11 +112,11 @@ object UinputEvdevCodec {
     fun clickEvents(code: Short, timeSec: Long, timeUsec: Long): List<ByteArray> =
         keyEvents(code, true, timeSec, timeUsec) + keyEvents(code, false, timeSec, timeUsec)
 
-    /** UTF-8 ASCII text → evdev key events (shift applied for uppercase/symbols we know). */
+    /** UTF-8 ASCII text → evdev key events (shift applied for uppercase and shifted symbols). */
     fun textToKeyEvents(text: String, timeSec: Long, timeUsec: Long): List<ByteArray> {
         val out = mutableListOf<ByteArray>()
         for (ch in text) {
-            val (code, shift) = asciiToKey(ch) ?: continue // non-ASCII: skipped honestly
+            val (code, shift) = asciiToKey(ch) ?: continue
             if (shift) out += keyEvents(KEY_LEFT_SHIFT, true, timeSec, timeUsec)
             out += keyEvents(code, true, timeSec, timeUsec)
             out += keyEvents(code, false, timeSec, timeUsec)
@@ -100,66 +125,101 @@ object UinputEvdevCodec {
         return out
     }
 
-    const val KEY_LEFT_SHIFT: Short = 0x2a
-
-    /** Minimal US-ASCII → evdev key map (letters, digits, space, enter, common punctuation). */
+    /** Full US-ASCII → Linux evdev keycode + shift map (input-event-codes.h). */
     fun asciiToKey(ch: Char): Pair<Short, Boolean>? {
-        val lower = ch.lowercaseChar()
-        val shifted = ch != lower
-        val base = when (lower) {
-            'a' -> 0x1e; 'b' -> 0x30; 'c' -> 0x2e; 'd' -> 0x20; 'e' -> 0x12
-            'f' -> 0x21; 'g' -> 0x22; 'h' -> 0x23; 'i' -> 0x17; 'j' -> 0x24
-            'k' -> 0x25; 'l' -> 0x26; 'm' -> 0x32; 'n' -> 0x31; 'o' -> 0x18
-            'p' -> 0x19; 'q' -> 0x10; 'r' -> 0x13; 's' -> 0x1f; 't' -> 0x14
-            'u' -> 0x16; 'v' -> 0x2f; 'w' -> 0x11; 'x' -> 0x2d; 'y' -> 0x15
-            'z' -> 0x2c
-            ' ' -> 0x39
-            '\n', '\r' -> 0x58 // KEY_ENTER
-            else -> when (ch) {
-                '1' -> 0x02; '2' -> 0x03; '3' -> 0x04; '4' -> 0x05; '5' -> 0x06
-                '6' -> 0x07; '7' -> 0x08; '8' -> 0x09; '9' -> 0x0a; '0' -> 0x0b
-                '-' -> 0x0c; '=' -> 0x0d; '.' -> 0x33; ',' -> 0x36
+        if (ch in 'a'..'z' || ch in 'A'..'Z') {
+            val shifted = ch in 'A'..'Z'
+            val base = when (ch.lowercaseChar()) {
+                'a' -> 0x1e; 'b' -> 0x30; 'c' -> 0x2e; 'd' -> 0x20; 'e' -> 0x12
+                'f' -> 0x21; 'g' -> 0x22; 'h' -> 0x23; 'i' -> 0x17; 'j' -> 0x24
+                'k' -> 0x25; 'l' -> 0x26; 'm' -> 0x32; 'n' -> 0x31; 'o' -> 0x18
+                'p' -> 0x19; 'q' -> 0x10; 'r' -> 0x13; 's' -> 0x1f; 't' -> 0x14
+                'u' -> 0x16; 'v' -> 0x2f; 'w' -> 0x11; 'x' -> 0x2d; 'y' -> 0x15
+                'z' -> 0x2c
                 else -> return null
             }
+            return base.toShort() to shifted
         }
-        return base.toShort() to shifted
+        return when (ch) {
+            ' ' -> KEY_SPACE to false
+            '\n', '\r' -> KEY_ENTER to false
+            '\t' -> KEY_TAB to false
+            '1' -> 0x02.toShort() to false; '!' -> 0x02.toShort() to true
+            '2' -> 0x03.toShort() to false; '@' -> 0x03.toShort() to true
+            '3' -> 0x04.toShort() to false; '#' -> 0x04.toShort() to true
+            '4' -> 0x05.toShort() to false; '$' -> 0x05.toShort() to true
+            '5' -> 0x06.toShort() to false; '%' -> 0x06.toShort() to true
+            '6' -> 0x07.toShort() to false; '^' -> 0x07.toShort() to true
+            '7' -> 0x08.toShort() to false; '&' -> 0x08.toShort() to true
+            '8' -> 0x09.toShort() to false; '*' -> 0x09.toShort() to true
+            '9' -> 0x0a.toShort() to false; '(' -> 0x0a.toShort() to true
+            '0' -> 0x0b.toShort() to false; ')' -> 0x0b.toShort() to true
+            '-' -> 0x0c.toShort() to false; '_' -> 0x0c.toShort() to true
+            '=' -> 0x0d.toShort() to false; '+' -> 0x0d.toShort() to true
+            '[' -> 0x1a.toShort() to false; '{' -> 0x1a.toShort() to true
+            ']' -> 0x1b.toShort() to false; '}' -> 0x1b.toShort() to true
+            ';' -> 0x27.toShort() to false; ':' -> 0x27.toShort() to true
+            '\'' -> 0x28.toShort() to false; '"' -> 0x28.toShort() to true
+            '`' -> 0x29.toShort() to false; '~' -> 0x29.toShort() to true
+            '\\' -> 0x2b.toShort() to false; '|' -> 0x2b.toShort() to true
+            ',' -> 0x33.toShort() to false; '<' -> 0x33.toShort() to true
+            '.' -> 0x34.toShort() to false; '>' -> 0x34.toShort() to true
+            '/' -> 0x35.toShort() to false; '?' -> 0x35.toShort() to true
+            else -> null
+        }
     }
 }
 
 /**
- * One-shot privileged setup script (python3 + stdlib ctypes — no extra deps):
- * registers a combined mouse+keyboard uinput device. Generated by
- * [UinputSetupScript.generate]; run WITHOUT sudo when /dev/uinput is
- * group-writable, else with `sudo -n` (mirrors the camera pre-flight flow).
+ * Stdlib-only python3 uinput daemon script: opens `/dev/uinput`, registers all
+ * pointer/wheel/keyboard/media codes, issues `UI_DEV_CREATE`, and stays alive
+ * forwarding 24-byte little-endian `struct input_event` records from stdin to
+ * the kernel fd until stdin closes (at which point it calls `UI_DEV_DESTROY`).
  */
 object UinputSetupScript {
-    fun script(): String = """
-        import fcntl, struct, os
+    fun script(): String = daemonScript()
+
+    fun daemonScript(): String = """
+        import fcntl, struct, os, sys
         UINPUT = "/dev/uinput"
         UI_SET_EVBIT = 0x40045564
-        UI_SET_KEYBIT = 0x40045566
         UI_SET_RELBIT = 0x40045565
+        UI_SET_KEYBIT = 0x40045566
         UI_DEV_SETUP = 0x405c5503
         UI_DEV_CREATE = 0x5501
-        fd = os.open(UINPUT, os.O_WRONLY)
-        for bit in (0x02, 0x01):  # EV_REL, EV_KEY
-            fcntl.ioctl(fd, UI_SET_EVBIT, bit)
-        for code in (0x00, 0x01, 0x08, 0x06, 0x110, 0x111, 0x112, 0x2a, 0x39, 0x58, 0x3f, 0x69, 0x6a):
-            if code <= 0x06:
-                fcntl.ioctl(fd, UI_SET_RELBIT, code)
-            else:
-                fcntl.ioctl(fd, UI_SET_KEYBIT, code)
-        # uinput_user_setup: name[80], id[4] (bustype, vendor, product, version), ff_effects_max
-        name = b"ec0 virtual input"
-        setup = name.ljust(80, b"\x00") + struct.pack("<iHBBHHi", 0x06, 0x1ac0, 0x0001, 0x0001, 0x0001, 0)
-        fcntl.ioctl(fd, UI_DEV_SETUP, setup)
-        fcntl.ioctl(fd, UI_DEV_CREATE)
+        UI_DEV_DESTROY = 0x5502
+        fd = os.open(UINPUT, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            for bit in (0x01, 0x02):  # EV_KEY, EV_REL
+                fcntl.ioctl(fd, UI_SET_EVBIT, bit)
+            for rel in (0x00, 0x01, 0x06, 0x08):  # REL_X, REL_Y, REL_HWHEEL, REL_WHEEL
+                fcntl.ioctl(fd, UI_SET_RELBIT, rel)
+            for key in range(1, 249):  # Standard keyboard + media/volume keys
+                fcntl.ioctl(fd, UI_SET_KEYBIT, key)
+            for btn in (0x110, 0x111, 0x112):  # BTN_LEFT, BTN_RIGHT, BTN_MIDDLE
+                fcntl.ioctl(fd, UI_SET_KEYBIT, btn)
+            # struct uinput_setup { struct input_id id (4x u16); char name[80]; u32 ff_effects_max; }
+            setup = struct.pack("<HHHH80sI", 0x06, 0x1ac0, 0x0001, 0x0001, b"ec0 virtual input", 0)
+            fcntl.ioctl(fd, UI_DEV_SETUP, setup)
+            fcntl.ioctl(fd, UI_DEV_CREATE)
+            stdin = sys.stdin.buffer
+            while True:
+                chunk = stdin.read(24)
+                if not chunk or len(chunk) < 24:
+                    break
+                os.write(fd, chunk)
+        finally:
+            try:
+                fcntl.ioctl(fd, UI_DEV_DESTROY)
+            except Exception:
+                pass
+            os.close(fd)
     """.trimIndent()
 }
 
 /**
  * Direct-uinput [InputEventSink] with ≤8 ms batched flushes and zero
- * per-event allocation churn (primitive ring buffer, reused ByteBuffer).
+ * per-event allocation churn (primitive ring buffer, reused little-endian ByteBuffer).
  */
 class UinputEventSink(
     private val devicePath: String = "/dev/uinput",
@@ -175,14 +235,15 @@ class UinputEventSink(
             StandardOpenOption.WRITE,
         )
     },
+    private val onCloseExtra: () -> Unit = {},
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "uinput-flush").apply { isDaemon = true } },
-) : AutoCloseable {
+) : InputEventSink, AutoCloseable {
     private val stride = 5
     private val ring = LongArray(ringCapacity * stride)
     private var ringSize = 0
     private var usecAccumulator = 0L
-    private val buffer = ByteBuffer.allocateDirect(ringCapacity * 24)
+    private val buffer = ByteBuffer.allocateDirect(ringCapacity * 24).order(ByteOrder.LITTLE_ENDIAN)
     private var channel: WritableByteChannel? = null
     private val closed = AtomicBoolean(false)
     private val lock = Any()
@@ -192,7 +253,7 @@ class UinputEventSink(
 
     init {
         if (sinkAvailable) {
-            channel = openChannel(devicePath)
+            channel = runCatching { openChannel(devicePath) }.getOrNull()
         }
     }
 
@@ -207,6 +268,63 @@ class UinputEventSink(
         }
     }
 
+    // ---- InputEventSink wire-model overrides --------------------------------
+
+    override fun onPointerEvent(event: InputPointerEvent) {
+        onPointerEvent(
+            dx = event.dx,
+            dy = event.dy,
+            buttonsMask = event.buttonsMask,
+            scrollX = event.scrollX,
+            scrollY = event.scrollY,
+            action = event.action,
+        )
+    }
+
+    override fun onKeyEvent(event: InputKeyEvent) {
+        when (event.action) {
+            InputProtocol.KEY_ACTION_COMMIT_TEXT -> {
+                val text = event.text ?: return
+                onKeyEvent(code = 0, down = true, text = text)
+            }
+            InputProtocol.KEY_ACTION_DOWN -> {
+                val code = event.keyCode?.toShort() ?: return
+                applyModifiersAndKey(code, event.modifiers, down = true)
+            }
+            InputProtocol.KEY_ACTION_UP -> {
+                val code = event.keyCode?.toShort() ?: return
+                applyModifiersAndKey(code, event.modifiers, down = false)
+            }
+        }
+    }
+
+    private fun applyModifiersAndKey(code: Short, modifiers: Int, down: Boolean) {
+        if (!sinkAvailable || closed.get()) return
+        synchronized(lock) {
+            val now = timeSource()
+            val timeSec = now / 1_000_000_000L
+            val timeUsec = (usecAccumulator++ % 1_000_000)
+            val modKeys = buildList {
+                if ((modifiers and 1) != 0) add(UinputEvdevCodec.KEY_LEFT_SHIFT)
+                if ((modifiers and 2) != 0) add(UinputEvdevCodec.KEY_LEFT_CTRL)
+                if ((modifiers and 4) != 0) add(UinputEvdevCodec.KEY_LEFT_ALT)
+                if ((modifiers and 8) != 0) add(UinputEvdevCodec.KEY_LEFT_META)
+            }
+            if (down) {
+                modKeys.forEach { append(UinputEvdevCodec.EV_KEY, it, 1, timeSec, timeUsec) }
+                append(UinputEvdevCodec.EV_KEY, code, 1, timeSec, timeUsec)
+                append(UinputEvdevCodec.EV_SYN, 0, 0, timeSec, timeUsec + 1)
+            } else {
+                append(UinputEvdevCodec.EV_KEY, code, 0, timeSec, timeUsec)
+                modKeys.asReversed().forEach { append(UinputEvdevCodec.EV_KEY, it, 0, timeSec, timeUsec) }
+                append(UinputEvdevCodec.EV_SYN, 0, 0, timeSec, timeUsec + 1)
+            }
+        }
+        scheduleFlushIfDue()
+    }
+
+    // ---- Primitive fast-path overloads --------------------------------------
+
     fun onPointerEvent(dx: Int, dy: Int, buttonsMask: Int, scrollX: Int, scrollY: Int, action: String) {
         if (!sinkAvailable || closed.get()) return
         synchronized(lock) {
@@ -214,23 +332,29 @@ class UinputEventSink(
             val timeUsec = (usecAccumulator++ % 1_000_000)
             val timeSec = now / 1_000_000_000L
             when (action) {
-                "move" -> append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_X, dx, timeSec, timeUsec)
-                    .also { append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_Y, dy, timeSec, timeUsec + 1) }
-                "scroll" -> append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_WHEEL, -scrollY, timeSec, timeUsec)
+                "move" -> {
+                    append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_X, dx, timeSec, timeUsec)
+                    append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_Y, dy, timeSec, timeUsec + 1)
+                }
+                "scroll" -> {
+                    if (scrollY != 0) {
+                        append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_WHEEL, -scrollY, timeSec, timeUsec)
+                    }
+                    if (scrollX != 0) {
+                        append(UinputEvdevCodec.EV_REL, UinputEvdevCodec.REL_HWHEEL, scrollX, timeSec, timeUsec + 1)
+                    }
+                }
                 "click", "down", "up" -> {
                     val code = buttonCode(buttonsMask)
-                    val value = when (action) {
-                        "down" -> 1
-                        "up" -> 0
-                        else -> 1
-                    }
+                    val value = if (action == "up") 0 else 1
                     append(UinputEvdevCodec.EV_KEY, code, value, timeSec, timeUsec)
                     if (action == "click") {
-                        append(UinputEvdevCodec.EV_KEY, code, 0, timeSec, timeUsec + 1)
+                        append(UinputEvdevCodec.EV_SYN, 0, 0, timeSec, timeUsec + 1)
+                        append(UinputEvdevCodec.EV_KEY, code, 0, timeSec, timeUsec + 2)
                     }
                 }
             }
-            append(UinputEvdevCodec.EV_SYN, 0, 0, timeSec, timeUsec + 2)
+            append(UinputEvdevCodec.EV_SYN, 0, 0, timeSec, timeUsec + 3)
         }
         scheduleFlushIfDue()
     }
@@ -243,8 +367,6 @@ class UinputEventSink(
             val timeUsec = (usecAccumulator++ % 1_000_000)
             if (text != null) {
                 UinputEvdevCodec.textToKeyEvents(text, timeSec, timeUsec).forEach {
-                    // text events are pre-encoded; append raw via the 5-slot path is not
-                    // possible for pre-encoded bytes, so decode the ev fields back out
                     appendEncoded(it)
                 }
             } else {
@@ -256,11 +378,14 @@ class UinputEventSink(
     }
 
     /** Presentation mode: F5 to start, arrows to advance (to the focused window). */
-    fun sendPresentationKey(code: Short) = onKeyEvent(code, down = true)
+    fun sendPresentationKey(code: Short) {
+        onKeyEvent(code, down = true)
+        onKeyEvent(code, down = false)
+    }
 
     private fun buttonCode(buttonsMask: Int): Short = when (buttonsMask) {
         2 -> UinputEvdevCodec.BTN_RIGHT
-        3 -> UinputEvdevCodec.BTN_MIDDLE
+        3, 4 -> UinputEvdevCodec.BTN_MIDDLE
         else -> UinputEvdevCodec.BTN_LEFT
     }
 
@@ -279,10 +404,8 @@ class UinputEventSink(
     }
 
     private fun appendEncoded(encoded: ByteArray) {
-        // Pre-encoded events (text typing) bypass the ring: flush pending ring
-        // first, then write the bytes directly to keep ordering.
         flushLocked()
-        channel?.write(java.nio.ByteBuffer.wrap(encoded))
+        runCatching { channel?.write(ByteBuffer.wrap(encoded)) }
     }
 
     private fun flushLocked() {
@@ -301,8 +424,10 @@ class UinputEventSink(
             buffer.putInt(ring[base + 2].toInt())
         }
         buffer.flip()
-        while (buffer.hasRemaining()) {
-            ch.write(buffer)
+        runCatching {
+            while (buffer.hasRemaining()) {
+                ch.write(buffer)
+            }
         }
         ringSize = 0
         lastFlushNanos = timeSource()
@@ -315,10 +440,71 @@ class UinputEventSink(
         flush()
         scheduler.shutdownNow()
         runCatching { channel?.close() }
+        runCatching { onCloseExtra() }
+    }
+
+    companion object {
+        /**
+         * Launches the persistent python3 uinput helper process and returns a
+         * [UinputEventSink] streaming 24-byte little-endian evdev frames into it.
+         * Returns null when `/dev/uinput` is not writable or python3 is unavailable.
+         */
+        fun openWithPersistentHelper(): UinputEventSink? {
+            if (!File("/dev/uinput").canWrite()) return null
+            val proc = runCatching {
+                ProcessBuilder("python3", "-u", "-c", UinputSetupScript.daemonScript())
+                    .redirectErrorStream(false)
+                    .start()
+            }.getOrNull() ?: return null
+            if (!proc.isAlive) return null
+            val pipeChannel = Channels.newChannel(proc.outputStream)
+            return UinputEventSink(
+                forceChannel = true,
+                openChannel = { pipeChannel },
+                onCloseExtra = {
+                    runCatching { proc.outputStream.close() }
+                    runCatching { proc.destroy() }
+                },
+            )
+        }
     }
 }
 
-/** Selects the best available input sink per the B1 probe chain. */
+/**
+ * Adaptive Linux [InputEventSink] wired into [ContinuityHubController]:
+ * prefers zero-fork persistent `/dev/uinput` streaming when available and
+ * falls back seamlessly to [LinuxInputInjectionBridge] (`ydotool` / `xdotool`).
+ */
+class AdaptiveLinuxInputSink(
+    private val uinputSink: UinputEventSink? = UinputEventSink.openWithPersistentHelper(),
+    private val fallbackBridge: LinuxInputInjectionBridge = LinuxInputInjectionBridge(),
+) : InputEventSink, AutoCloseable {
+
+    val usingDirectUinput: Boolean
+        get() = uinputSink?.sinkAvailable == true
+
+    override fun onPointerEvent(event: InputPointerEvent) {
+        if (uinputSink != null && uinputSink.sinkAvailable) {
+            uinputSink.onPointerEvent(event)
+        } else {
+            fallbackBridge.onPointerEvent(event)
+        }
+    }
+
+    override fun onKeyEvent(event: InputKeyEvent) {
+        if (uinputSink != null && uinputSink.sinkAvailable) {
+            uinputSink.onKeyEvent(event)
+        } else {
+            fallbackBridge.onKeyEvent(event)
+        }
+    }
+
+    override fun close() {
+        runCatching { uinputSink?.close() }
+    }
+}
+
+/** Selects the best available input sink per the probe chain. */
 sealed interface InputSinkSelection {
     /** Direct /dev/uinput — real virtual device, batched. */
     data class Uinput(val sink: UinputEventSink) : InputSinkSelection
@@ -339,7 +525,7 @@ object UinputSinkSelector {
     fun select(
         uinputWritable: Boolean = File("/dev/uinput").canWrite(),
         ydotooldLive: Boolean = ydotooldSocketLive(),
-        sinkFactory: () -> UinputEventSink = { UinputEventSink() },
+        sinkFactory: () -> UinputEventSink = { UinputEventSink.openWithPersistentHelper() ?: UinputEventSink() },
     ): InputSinkSelection = when {
         uinputWritable -> InputSinkSelection.Uinput(sinkFactory())
         ydotooldLive -> InputSinkSelection.Ydotoold(LinuxInputBackend.YDOTOOL_WAYLAND)

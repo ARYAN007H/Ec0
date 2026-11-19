@@ -49,8 +49,7 @@ data class SmartConnectPairingQr(
 
 /**
  * ec0↔ec0 pairing QR (`ec0://pair?...`, engine PairingCoordinator) — rendered
- * by the onboarding screen for the phone's in-app scanner to capture. The URI
- * carries a single-use nonce that expires (~120 s); the host refreshes it.
+ * by the onboarding screen for the phone's in-app scanner to capture.
  */
 data class PairingQr(
     val uri: String,
@@ -59,9 +58,7 @@ data class PairingQr(
 )
 
 /**
- * A phone-side pinned peer for the device-management screen (A5). The ui layer
- * is core-free — the Android bridge maps `ec0.core.engine.crypto.PinnedPeer` +
- * live session state into these plain values.
+ * A pinned peer for the device-management surface on BOTH desktop and phone.
  */
 data class PairedPeerInfo(
     val deviceId: String,
@@ -75,31 +72,23 @@ data class PairedPeerInfo(
     val grantedCapabilities: Set<String>,
 )
 
-/** A5: unpair + per-device capability grants (Android side). */
+/** Unpair + per-device capability grants (supported on both desktop and Android). */
 interface PeerManagementBridge {
     val peers: StateFlow<List<PairedPeerInfo>>
-    /** Revokes the pin + LocalSend trust + best-effort wire unpair notice. */
+    /** Sends best-effort wire unpair notice, then revokes pin + session. */
     fun unpair(deviceId: String)
     /** Grant/revoke a per-device capability (wire name, e.g. "remote_input"). */
     fun setCapability(deviceId: String, wireName: String, granted: Boolean)
 }
 
-/** A1: remote-input senders — available only over a live negotiated session. */
+/** Remote-input senders — available over a live negotiated session. */
 interface RemoteInputBridge {
     val available: StateFlow<Boolean>
-    /** Platform opens the full-screen touchpad/keyboard/rocker screen. */
+    /** Platform opens the full-screen touchpad/keyboard/media controller. */
     fun openTouchpad()
 }
 
-/**
- * Phone-camera runtime-permission state for the phone's Settings row. The
- * desktop's camera tile renders from the phone's beacon `cam` capability,
- * which [ec0.android] advertises only while the OS grant is held — so the
- * grant flow lives entirely phone-side. Hosts render the pre-computed
- * [stateLine]/[detailLine] verbatim: the Android nuance (fresh ask vs.
- * declined vs. Android 11+ "stopped asking") is resolved where
- * `shouldShowRequestPermissionRationale` is observable, not in shared UI.
- */
+/** Phone-camera runtime-permission state for the phone's Settings row. */
 data class PhoneCameraGrant(
     val granted: Boolean,
     /** true → the system dialog auto-denies; Enable must bounce to app settings. */
@@ -115,26 +104,28 @@ interface PhoneCameraBridge {
     fun requestGrant()
 }
 
-/** Live link state to the trusted peer — drives the dashboard header and tile honesty. */
+/** Live link state to the trusted peer — drives the dashboard header and Hero Card. */
 data class PeerLinkState(
     val connected: Boolean,
-    /** e.g. "USB tunnel", "Wi-Fi TLS", "searching". */
+    /** e.g. "USB-C Direct", "Wi-Fi TLS", "searching". */
     val transport: String,
 )
 
-/** One phone notification relayed by the engine, shown on the dashboard tile. */
+/** One notification relayed by the engine, shown on the dashboard tile. */
 data class NotificationItem(
     val id: String,
     val appName: String,
     val title: String,
     val body: String,
     val canReply: Boolean,
+    val otpCode: String? = null,
+    val timestampMs: Long = 0L,
 )
 
 /**
  * Everything the shared UI needs from the host platform. Implementations are
- * thin: desktop wraps [ec0.desktop.state.AppState]-shaped state, Android wraps
- * its own state holder. File refs are opaque (java.io.File / android Uri).
+ * thin: desktop wraps [ec0.desktop.state.AppState] + [ec0.desktop.continuity.ContinuityHubController],
+ * Android wraps [ec0.android.AndroidAppState]. File refs are opaque (`File` / `List<File>` / `Uri` / `List<Uri>`).
  */
 interface UiBridge {
     val devices: StateFlow<List<UiDevice>>
@@ -143,13 +134,6 @@ interface UiBridge {
     val scanning: StateFlow<Boolean>
     val capabilities: Capabilities
 
-    /**
-     * Real toggles for the Sync & continuity cards. The defaults are per-access
-     * flows (the established seam idiom) — panels must remember them; hosts
-     * override with state-backed flows so the Switches reflect and change
-     * actual service state. [capabilities] answers "is this capability
-     * attached for the session?"; these answer "does the user want it on?".
-     */
     val clipboardSyncEnabled: StateFlow<Boolean> get() = MutableStateFlow(true)
     fun setClipboardSyncEnabled(enabled: Boolean) = Unit
 
@@ -158,52 +142,31 @@ interface UiBridge {
 
     fun startScan()
     fun cancelTransfer(id: String)
+    fun clearFinishedTransfers() {}
     fun updateSettings(transform: (SettingsState) -> SettingsState)
 
-    /** Send an opaque platform file handle to the device (host picks the real sender). */
+    /** Send an opaque platform file handle (single file or list of files) to the device. */
     fun sendFile(fileRef: Any, device: UiDevice)
 
-    /** Human label for the last raw protocol error on a transfer, or null. */
+    /** Send a file directly to a paired engine peer by deviceId (Hero Card quick action). */
+    fun sendFileToPairedPeer(fileRef: Any, deviceId: String) {}
+
     fun isDarkTheme(): Boolean = false
 
-    /**
-     * Deep-integration A5: Android-only peer-management surface (pin-store list,
-     * unpair, per-device capability grants). Null on the desktop — its device
-     * management is the desktop-side settings slice (agent-2).
-     */
     val peerManagement: PeerManagementBridge? get() = null
-
-    /**
-     * Deep-integration A1: Android-only remote-input senders (touchpad/keyboard
-     * for the PC). Null on the desktop — the desktop is the input RECEIVER side.
-     */
     val remoteInput: RemoteInputBridge? get() = null
-
-    /**
-     * Phone-camera runtime-permission surface (Settings "Phone camera" row).
-     * Null on the desktop — the desktop never holds the phone's camera grant;
-     * it only consumes the beacon capability the grant unlocks.
-     */
     val phoneCamera: PhoneCameraBridge? get() = null
 
-    /**
-     * Smart Connect pairing QR (`motorolardpconnection{...}`) rendered in Settings.
-     * Platforms without a Smart Connect PC listener keep this null.
-     */
     val smartConnectPairingQr: StateFlow<SmartConnectPairingQr?>
         get() = MutableStateFlow<SmartConnectPairingQr?>(null)
 
-    /**
-     * ec0↔ec0 pairing QR for the onboarding screen. Null while the engine's
-     * pairing service is unavailable (Android before the companion runtime).
-     */
     val pairingQr: StateFlow<PairingQr?> get() = MutableStateFlow<PairingQr?>(null)
-
-    /** Pinned (trusted) engine peers — 0 means this end has never paired. */
     val trustedPeerCount: StateFlow<Int> get() = MutableStateFlow(0)
 
-    // ---- Dashboard tiles (HOME). Desktop maps these from ContinuityHubController;
-    // platforms without the engine keep the defaults — tiles render honest OFF states. ----
+    // ---- Ecosystem Hero & Dashboard flows ----
+
+    /** Connected/pinned peers with live battery, transport, and verification metadata. */
+    val connectedPeers: StateFlow<List<ConnectedPeerSummary>> get() = MutableStateFlow(emptyList())
 
     /** Live link state to the trusted peer; null when no peer has ever paired. */
     val peerLink: StateFlow<PeerLinkState?> get() = MutableStateFlow(null)
@@ -211,11 +174,14 @@ interface UiBridge {
     /** Transient status/honest-error strip (mirror failures, scan results, …). */
     val statusBanner: StateFlow<String?> get() = MutableStateFlow(null)
 
-    /** scrcpy mirror running? */
+    /** Screen mirror running? */
     val mirrorRunning: StateFlow<Boolean> get() = MutableStateFlow(false)
 
     /** Camera pipeline state line (e.g. "idle" / "streaming → /dev/video10"), or null if unavailable. */
     val cameraStateText: StateFlow<String?> get() = MutableStateFlow(null)
+
+    /** Live camera studio controls (lens, torch, zoom, resolution, virtual mic). */
+    val cameraControls: StateFlow<CameraControlsState?> get() = MutableStateFlow(null)
 
     /** Last clipboard sync summary line. */
     val clipboardSummary: StateFlow<String> get() = MutableStateFlow("No clipboard items synced yet")
@@ -223,52 +189,67 @@ interface UiBridge {
     /** Whether local clipboard changes auto-sync to the trusted peer. */
     val autoSyncClipboard: StateFlow<Boolean> get() = MutableStateFlow(true)
 
-    /** Phone notifications relayed by the engine (bounded, newest-first). */
+    /** Relayed notifications (bounded, newest-first). */
     val relayedNotifications: StateFlow<List<NotificationItem>> get() = MutableStateFlow(emptyList())
+
+    /** Live remote media session (Now Playing) mirrored across devices. */
+    val mediaSession: StateFlow<MediaSessionUi?> get() = MutableStateFlow(null)
+
+    /** True while Find My Phone siren is actively ringing. */
+    val findMyRinging: StateFlow<Boolean> get() = MutableStateFlow(false)
+
+    /** True when USB-C adb tunnel is active (desktop). */
+    val usbTunnelActive: StateFlow<Boolean> get() = MutableStateFlow(false)
+
+    /** Active URL handoff received from peer, if any. */
+    val remoteHandoffUrl: StateFlow<String?> get() = MutableStateFlow(null)
+
+    /** Platform capability hints for Hero / Settings actions. */
+    val canRingPhone: Boolean get() = false
+    val canLockPc: Boolean get() = false
+    val hasUsbTunnelControl: Boolean get() = false
+    val hasDesktopIntegration: Boolean get() = false
 
     fun startScreenMirror() {}
     fun stopScreenMirror() {}
     fun startCamera() {}
     fun stopCamera() {}
+    fun switchCameraLens() {}
+    fun setCameraZoom(zoomX100: Int) {}
+    fun setCameraFlash(enabled: Boolean) {}
+    fun toggleVirtualMic() {}
     fun setAutoSyncClipboard(enabled: Boolean) {}
+    fun pushClipboardNow() {}
     fun sendNotificationReply(id: String, text: String) {}
+    fun dismissNotification(id: String) {}
+    fun copyOtpCode(code: String) {}
+    fun sendMediaControl(action: String, volumePct: Int? = null) {}
+    fun triggerFindMyPhone(start: Boolean) {}
+    fun lockRemoteWorkstation() {}
+    fun toggleUsbTunnel() {}
+    fun openRemoteHandoff() {}
+    fun sendHandoffUrl(url: String) {}
+    fun installDesktopIntegration() {}
     fun setupV4l2Loopback() {}
 
-    /**
-     * B3 dynamic tile registry — peer capabilities ∩ local support, ordered
-     * canonically, one tile per (capability, deviceId). Default: empty
-     * (registry-less hosts render their own static set).
-     */
+    /** Dynamic tile registry — peer capabilities ∩ local support. */
     val tiles: StateFlow<List<CapabilityTile>> get() = MutableStateFlow(emptyList())
 
-    /** DeviceId-scoped mirror start (registry actions). Default: no-op host. */
     fun startMirrorFor(deviceId: String) {}
-
-    /** DeviceId-scoped camera start (registry actions). Default: no-op host. */
     fun startCameraFor(deviceId: String) {}
 
-    /** Honest outcome of the last "Load v4l2" pre-flight (null = never run). */
+    /** Honest outcome of the last v4l2 pre-flight (null = never run). */
     val v4l2PreflightText: StateFlow<String?> get() = MutableStateFlow(null)
 
-    /** B6 VFS browser: current listing (null = nothing browsed yet). */
+    /** Phone file browser (VFS): current listing (null = nothing browsed yet). */
     val vfsBrowseState: StateFlow<VfsBrowseState?> get() = MutableStateFlow(null)
 
-    /** B6 VFS browser: request a directory listing from the phone. */
     fun vfsBrowse(path: String) {}
-
-    /** B6 VFS browser: stream a file from the phone ("download here"). */
     fun vfsDownload(path: String) {}
 
-    /**
-     * Incoming transfer awaiting the user's accept/decline decision —
-     * non-null while the dialog should show. Platforms without a receiver
-     * keep this null forever.
-     */
+    /** Incoming transfer awaiting accept/decline decision. */
     val incomingRequest: StateFlow<IncomingRequest?> get() = MutableStateFlow<IncomingRequest?>(null)
 
-    /** Accept the pending incoming transfer (all offered files), optionally trusting the sender. */
     fun acceptIncoming(trust: Boolean = false) {}
-
-    /** Decline the pending incoming transfer (→ 403 to the sender). */
     fun declineIncoming() {}
 }

@@ -62,6 +62,9 @@ class VfsDesktopService(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _lastDownloadedPath = MutableStateFlow<String?>(null)
+    val lastDownloadedPath: StateFlow<String?> = _lastDownloadedPath.asStateFlow()
+
     /** Dropped reply counter (rate-limit) — honest telemetry for the UI. */
     val droppedReplyCount: Long
         get() = droppedReplies.get()
@@ -79,12 +82,13 @@ class VfsDesktopService(
 
     /** Sends a browse request over the injected sender; writes the pending path. */
     fun browse(sender: (cmdType: String, body: JsonObject) -> Unit, path: String) {
-        _browseState.value = null
+        _error.value = null
         sender(VfsProtocol.CMD_VFS_LIST, buildListBody(path))
     }
 
     /** Sends a download request; chunks accumulate into the assembler. */
     fun download(sender: (cmdType: String, body: JsonObject) -> Unit, path: String) {
+        _error.value = null
         resetAssembler()
         downloadPath = path
         sender(VfsProtocol.CMD_VFS_DOWNLOAD, buildDownloadBody(path))
@@ -156,6 +160,7 @@ class VfsDesktopService(
                         java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
                     )
                     _downloadBytes.value = target.toString() to bytes
+                    _lastDownloadedPath.value = target.toString()
                     resetAssembler()
                 }
                 true

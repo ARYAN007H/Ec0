@@ -1,9 +1,8 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * UI-facing models shared by desktop and Android clients (moved from
- * ec0.desktop.state so the phone app reuses the exact same device model,
- * transfer queue and settings shape).
+ * UI-facing models shared by desktop and Android clients so both ends
+ * render one cohesive ecosystem experience.
  */
 package ec0.ui.models
 
@@ -46,6 +45,44 @@ data class TransferItem(
     val progressPct: Int = 0,
     val state: TransferState = TransferState.PENDING,
     val error: String? = null,
+    val speedText: String? = null,
+    val etaText: String? = null,
+    val encrypted: Boolean = false,
+)
+
+/** Live summary of a paired peer for the M3 Expressive Hero Card. */
+data class ConnectedPeerSummary(
+    val deviceId: String,
+    val alias: String,
+    val transport: String,
+    val connected: Boolean,
+    val batteryPct: Int? = null,
+    val isCharging: Boolean = false,
+    val screenOn: Boolean = true,
+    val fingerprintPrefix: String = "",
+    val usbActive: Boolean = false,
+)
+
+/** Live Now-Playing state mirrored from the paired device's media session. */
+data class MediaSessionUi(
+    val playerName: String,
+    val title: String,
+    val artist: String,
+    val album: String = "",
+    val playing: Boolean,
+    val volumePct: Int = 100,
+)
+
+/** Live Continuity Camera studio state surfaced directly in the native Camera card. */
+data class CameraControlsState(
+    val streaming: Boolean = false,
+    val stateLine: String = "idle",
+    val resolution: String = "1080p",
+    val fps: Int = 30,
+    val frontCamera: Boolean = false,
+    val flashEnabled: Boolean = false,
+    val zoomX100: Int = 100,
+    val virtualMicActive: Boolean = false,
 )
 
 /** User-controlled settings — persisted to disk by each platform bridge. */
@@ -59,7 +96,7 @@ data class SettingsState(
     val downloadDir: String = "",
     val requirePin: Boolean = false,
     val pin: String = "",
-    /** T4-gated Synergy probe — off until discovery constants land. */
+    /** Legacy probe toggle — kept for persisted JSON compatibility. */
     val synergyProbeEnabled: Boolean = false,
     /** null = follow system. */
     val darkTheme: Boolean? = null,
@@ -68,20 +105,22 @@ data class SettingsState(
     /** Peers whose incoming transfers are auto-accepted (user trusted them). */
     val trustedFingerprints: Set<String> = emptySet(),
     /**
-     * THIS device's LocalSend fingerprint. Peers trust THIS id — it must survive
-     * restarts (a per-boot random value makes every peer's stored trust stale on
-     * the next service start). Generated once, persisted by the platform bridge.
+     * THIS device's direct-LAN fingerprint. Generated once, persisted by the
+     * platform bridge so trust survives restarts.
      */
     val ownFingerprint: String = "",
     /** Desktop only: closing the window hides it to the tray instead of exiting. */
     val minimizeToTray: Boolean = true,
-    /** B5 mirror options — fps/bitrate wire through the mirror command today. */
+    /** Mirror options — fps, bitrate, audio forwarding, and screen-off mode. */
     val mirrorMaxFps: Int = 60,
     val mirrorBitrateMbps: Int = 8,
-    /** Pending coordinator support (ScrcpyMirrorCoordinator is protected). */
     val mirrorAudio: Boolean = true,
+    val mirrorTurnScreenOff: Boolean = false,
     val mirrorRotation: String = "auto",
-    /** B6 VFS browser state — read-only listing from the phone's granted roots. */
+    /** Continuity Camera default capture profile. */
+    val cameraResolution: String = "1080p",
+    val cameraFps: Int = 30,
+    /** Desktop→phone notification relay policy. */
     val notifRelayEnabled: Boolean = false,
     val notifRelayDisabledApps: Set<String> = emptySet(),
     val notifQuietHoursEnabled: Boolean = false,
@@ -102,23 +141,16 @@ data class VfsBrowseState(
     val path: String? = null,
     val entries: List<VfsEntry> = emptyList(),
     val error: String? = null,
+    val lastDownloadedPath: String? = null,
 )
 
-/**
- * Seam between the UI and the protocol stacks. [RealDeviceSource] (in
- * `ec0.core.localsend.client`) is the production source (LocalSend UDP :53317
- * works today; the Synergy probe is T4-gated). [DemoDeviceSource] remains
- * available for UI-only development.
- */
+/** Seam between the UI and the discovery transports. */
 interface DeviceSource {
     /** One discovery sweep over the configured transports. */
     suspend fun discover(): List<UiDevice>
 }
 
-/**
- * Deterministic sample devices for UI development. Explicitly a demo seam —
- * NOT real discovery.
- */
+/** Deterministic sample devices for UI development. */
 class DemoDeviceSource : DeviceSource {
     override suspend fun discover(): List<UiDevice> = listOf(
         UiDevice(

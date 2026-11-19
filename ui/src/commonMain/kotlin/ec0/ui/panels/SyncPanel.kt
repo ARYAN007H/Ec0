@@ -4,8 +4,8 @@
 package ec0.ui.panels
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,22 +16,31 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -43,33 +52,27 @@ import ec0.ui.theme.ec0Colors
 import ec0.ui.widgets.SectionHeader
 
 /**
- * Continuity features (clipboard / notifications / photos). Every card shows
- * the REAL live state from capabilities — an off feature says so honestly
- * with what turns it on, never fake data.
+ * Continuity features — Remote Input, Universal Clipboard, Bidirectional Notification Relay,
+ * USB-C Direct Tunnel, and Instant URL Handoff. Zero placeholder stubs.
  */
 @Composable
 fun SyncPanel(bridge: UiBridge) {
     val caps = bridge.capabilities
     val settings by bridge.settings.collectAsState()
 
-    // The toggle seams use the established per-access-flow default idiom —
-    // remember them so a host without an override still collects ONE flow.
     val clipboardSyncEnabled = remember { bridge.clipboardSyncEnabled }.collectAsState()
     val notificationRelayEnabled = remember { bridge.notificationRelayEnabled }.collectAsState()
+    val usbTunnelActive by bridge.usbTunnelActive.collectAsState()
+    val remoteHandoffUrl by bridge.remoteHandoffUrl.collectAsState()
 
-    // Conditional collection is stable here: remoteInput is null only on the
-    // desktop and non-null only on Android (platform-defined, never flips
-    // mid-session). Collected in the FUNCTION scope — on the phone the
-    // clipboard card's caps.clipboardSync derives from the same session-live
-    // flow as this availability, and a State read inside the Column lambda
-    // below would only recompose the remote-input card, leaving the clipboard
-    // LIVE dot stale until some other state happened to recompose the panel.
     val remoteInputLocal = bridge.remoteInput
     val remoteInputAvailable: Boolean = if (remoteInputLocal != null) {
         remoteInputLocal.available.collectAsState().value
     } else {
         false
     }
+
+    var handoffDraft by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -78,65 +81,221 @@ fun SyncPanel(bridge: UiBridge) {
             .padding(horizontal = 24.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        SectionHeader("Sync & continuity")
+        SectionHeader("Continuity")
 
-        // Deep-integration A1 (Android only): remote input senders.
+        // Remote input (Android touchpad/keyboard/media controller)
         bridge.remoteInput?.let { remoteInput ->
             FeatureCard(
                 icon = Icons.Filled.Mouse,
                 accent = ec0Colors().synergy,
-                title = "Remote input",
+                title = "Remote Input",
                 live = remoteInputAvailable,
                 onToggle = if (remoteInputAvailable) ({ _ -> remoteInput.openTouchpad() }) else null,
                 detail = if (remoteInputAvailable) {
-                    "Touchpad, keyboard and volume rocker for the paired desktop"
+                    "Precision trackpad, keyboard, presentation & media remote for your paired PC"
                 } else {
-                    "Connects when the desktop negotiates the remote-input capability"
+                    "Connects automatically when paired desktop is reachable"
                 },
             )
         }
 
+        // Universal Clipboard
         FeatureCard(
             icon = Icons.Filled.ContentCopy,
             accent = ec0Colors().synergy,
-            title = "Clipboard sync",
+            title = "Universal Clipboard",
             live = caps.clipboardSync && clipboardSyncEnabled.value,
             checked = clipboardSyncEnabled.value,
             onToggle = { bridge.setClipboardSyncEnabled(it) },
             detail = when {
-                !clipboardSyncEnabled.value -> "Sync paused — flip to resume"
-                caps.clipboardSync -> "Copy on one device, paste on the other — live"
-                else -> "Waiting for the peer link — sync resumes automatically"
+                !clipboardSyncEnabled.value -> "Clipboard sync paused — toggle to resume"
+                caps.clipboardSync -> "Copy on one device, paste on the other — sensitive OTPs auto-scrub in 30s"
+                else -> "Waiting for paired link — sync resumes automatically"
             },
         )
+
+        // Notification Relay (Phone ↔ Desktop)
         FeatureCard(
             icon = Icons.Filled.Notifications,
             accent = ec0Colors().localSend,
-            title = "Notification relay",
+            title = "Notification Relay",
             live = caps.notifications && notificationRelayEnabled.value,
             checked = notificationRelayEnabled.value,
             onToggle = { bridge.setNotificationRelayEnabled(it) },
-            // "Paused" is only honest when the capability is actually attached
-            // and the user turned it off (desktop). On the phone the checked
-            // state IS the system grant — a missing grant is not a pause, so
-            // the grant line shows instead.
             detail = when {
-                !notificationRelayEnabled.value && caps.notifications -> "Relay paused — flip to resume"
-                caps.notifications -> "Phone notifications mirrored to this device"
-                else -> "Needs the notification-listener grant on the sending device"
+                !notificationRelayEnabled.value && caps.notifications -> "Notification relay paused — toggle to resume"
+                caps.notifications -> "Notifications & inline replies mirrored over encrypted session"
+                else -> "Enable notification access on your phone to mirror alerts"
             },
         )
-        FeatureCard(
-            icon = Icons.Filled.PhotoLibrary,
-            accent = ec0Colors().kdeConnect,
-            title = "Photo backup",
-            live = caps.photoSync,
-            detail = if (caps.photoSync) {
-                "Camera roll syncs to the paired device automatically"
-            } else {
-                "Arrives with the photo-sync slice (Syncthing-backed, resumable)"
-            },
-        )
+
+        // Desktop-only: Desktop → Phone notification relay policy (privacy & quiet hours)
+        if (bridge.hasDesktopIntegration) {
+            Card(
+                shape = Ec0Shapes.card,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Mirror desktop alerts to phone",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                "Forwards Linux desktop notifications to your paired phone",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = settings.notifRelayEnabled,
+                            onCheckedChange = { enabled ->
+                                bridge.updateSettings { it.copy(notifRelayEnabled = enabled) }
+                            },
+                        )
+                    }
+                    if (settings.notifRelayEnabled) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Title-only privacy mode", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Hide notification message body on the phone",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = settings.notifTitleOnly,
+                                onCheckedChange = { titleOnly ->
+                                    bridge.updateSettings { it.copy(notifTitleOnly = titleOnly) }
+                                },
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Quiet hours (22:00 – 08:00)", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Pause desktop-to-phone notification forwarding overnight",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = settings.notifQuietHoursEnabled,
+                                onCheckedChange = { quiet ->
+                                    bridge.updateSettings { it.copy(notifQuietHoursEnabled = quiet) }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Desktop-only: USB-C Direct Tunnel (Tier-0 ultra-low-latency transport)
+        if (bridge.hasUsbTunnelControl) {
+            FeatureCard(
+                icon = Icons.Filled.Usb,
+                accent = MaterialTheme.colorScheme.tertiary,
+                title = "USB-C Direct Link",
+                live = usbTunnelActive,
+                checked = usbTunnelActive,
+                onToggle = { bridge.toggleUsbTunnel() },
+                detail = if (usbTunnelActive) {
+                    "Active over USB-C — ultra-low latency for files, webcam & mirroring"
+                } else {
+                    "Plug in your phone over USB-C for zero-Wi-Fi gigabit continuity"
+                },
+            )
+        }
+
+        // URL Handoff Card — send a link directly to the paired device's browser
+        Card(
+            shape = Ec0Shapes.card,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), Ec0Shapes.tile),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Link,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("URL Handoff", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Open any https:// link immediately on your paired device",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                val sendUrl = {
+                    val url = handoffDraft.trim()
+                    if (url.isNotEmpty()) {
+                        bridge.sendHandoffUrl(url)
+                        handoffDraft = ""
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedTextField(
+                        value = handoffDraft,
+                        onValueChange = { handoffDraft = it },
+                        placeholder = { Text("https://example.com") },
+                        singleLine = true,
+                        shape = Ec0Shapes.pill,
+                        keyboardActions = KeyboardActions(onSend = { sendUrl() }),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = sendUrl,
+                        enabled = handoffDraft.trim().startsWith("http://") || handoffDraft.trim().startsWith("https://"),
+                        shape = Ec0Shapes.pill,
+                    ) {
+                        Text("Send")
+                    }
+                }
+                remoteHandoffUrl?.takeIf { it.isNotBlank() }?.let { incomingUrl ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.OpenInBrowser,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            incomingUrl,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FilledTonalButton(onClick = bridge::openRemoteHandoff, shape = Ec0Shapes.pill) {
+                            Text("Open")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -172,7 +331,7 @@ private fun FeatureCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.width(8.dp))
-                    androidx.compose.material3.Surface(
+                    Surface(
                         shape = CircleShape,
                         color = (if (live) ec0Colors().success else MaterialTheme.colorScheme.outline)
                             .copy(alpha = 0.15f),
@@ -186,7 +345,6 @@ private fun FeatureCard(
                         )
                     }
                 }
-                Spacer(Modifier.width(0.dp))
                 Text(
                     detail,
                     style = MaterialTheme.typography.bodySmall,

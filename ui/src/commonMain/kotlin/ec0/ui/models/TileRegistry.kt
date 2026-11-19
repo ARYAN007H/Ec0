@@ -37,6 +37,8 @@ val CANONICAL_TILE_ORDER: List<String> = listOf(
     "clip",
     "notif",
     "input",
+    "media",
+    "find_my",
     "battery",
 )
 

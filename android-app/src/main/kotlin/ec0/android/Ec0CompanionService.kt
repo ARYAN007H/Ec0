@@ -882,6 +882,48 @@ class Ec0CompanionService : Service() {
                     listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
                 )
+
+                // Wire hardened phone-side VFS responder for desktop Files browser.
+                val vfsPhoneService = ec0.core.engine.services.VfsPhoneService(
+                    rootsProvider = { buildAndroidVfsRoots(appContext) },
+                    isAllowed = { hasExternalStorageAccess(appContext) },
+                )
+                runtime.node.controlEnvelopeInterceptor = { peerDeviceId, envelope ->
+                    val session = runtime.node.activeSessionFor(peerDeviceId)
+                    if (session != null) {
+                        vfsPhoneService.handleControlEnvelope(
+                            peerDeviceId = peerDeviceId,
+                            envelope = envelope,
+                            sendInfo = { infoType, body ->
+                                session.sendInfo(
+                                    infoType = infoType,
+                                    infoBody = body,
+                                    category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS,
+                                )
+                            },
+                        )
+                    } else {
+                        false
+                    }
+                }
+
+                // Wire incoming desktop → phone relayed notifications into a dedicated local channel.
+                val seenDesktopNotifs = java.util.Collections.synchronizedSet(HashSet<String>())
+                serviceScope.launch(Dispatchers.IO) {
+                    runtime.node.notifications.collect { list ->
+                        for (notif in list) {
+                            val pkgLower = notif.packageName.lowercase()
+                            val appLower = notif.appName.lowercase()
+                            // Echo-loop guard: never re-post notifications originating from ec0 itself.
+                            if (pkgLower == appContext.packageName.lowercase() || appLower == "ec0") continue
+                            val dedupeKey = "${notif.notifId}:${notif.timestampMs}"
+                            if (seenDesktopNotifs.add(dedupeKey)) {
+                                postRelayedDesktopNotification(appContext, notif)
+                            }
+                        }
+                    }
+                }
+
                 val clipboardWatcher = AndroidClipboardWatcher(
                     appContext = appContext,
                     runtime = runtime,
@@ -1044,6 +1086,88 @@ class Ec0CompanionService : Service() {
          */
         fun pushClipboardFromActivity(text: String, isSensitive: Boolean = false) {
             activeClipboardWatcher?.pushText(text, isSensitive)
+        }
+
+        private const val DESKTOP_RELAY_CHANNEL_ID = "ec0_desktop_relays"
+
+        private fun hasExternalStorageAccess(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                return runCatching { Environment.isExternalStorageManager() }.getOrDefault(false)
+            }
+            return runCatching {
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(false)
+        }
+
+        private fun buildAndroidVfsRoots(context: Context): Map<String, File> {
+            val roots = LinkedHashMap<String, File>()
+            val publicCandidates = listOf(
+                "Downloads" to Environment.DIRECTORY_DOWNLOADS,
+                "DCIM" to Environment.DIRECTORY_DCIM,
+                "Pictures" to Environment.DIRECTORY_PICTURES,
+                "Documents" to Environment.DIRECTORY_DOCUMENTS,
+            )
+            for ((name, dirType) in publicCandidates) {
+                runCatching {
+                    val dir = Environment.getExternalStoragePublicDirectory(dirType)
+                    if (dir != null && dir.isDirectory) {
+                        roots[name] = dir
+                    }
+                }
+            }
+            if (roots.isEmpty()) {
+                val appDownloads = File(
+                    context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
+                    "ec0",
+                )
+                if (appDownloads.isDirectory) {
+                    roots["Downloads"] = appDownloads
+                }
+            }
+            return roots
+        }
+
+        private fun postRelayedDesktopNotification(
+            context: Context,
+            notif: ec0.core.engine.protocol.NotificationPostInfo,
+        ) {
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.POST_NOTIFICATIONS,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (!granted) return
+                }
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+                val channel = NotificationChannel(
+                    DESKTOP_RELAY_CHANNEL_ID,
+                    "Desktop Notifications",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply {
+                    description = "Notifications mirrored from your paired Linux workstation."
+                }
+                nm.createNotificationChannel(channel)
+                val title = buildString {
+                    if (notif.appName.isNotBlank()) {
+                        append(notif.appName)
+                        if (notif.title.isNotBlank()) append(" · ")
+                    }
+                    append(notif.title)
+                }.ifBlank { "Desktop notification" }
+
+                val built = Notification.Builder(context, DESKTOP_RELAY_CHANNEL_ID)
+                    .setContentTitle(title)
+                    .setContentText(notif.body)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setAutoCancel(true)
+                    .build()
+                val androidId = (notif.notifId.hashCode() and 0x7fffffff).coerceAtLeast(10_000)
+                nm.notify(androidId, built)
+            }
         }
 
         internal fun shutdownActiveHost() {

@@ -13,6 +13,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import ec0.core.engine.crypto.EncryptedIdentityStore
+import ec0.core.engine.services.NotificationRelayPolicy
 import ec0.desktop.continuity.ContinuityHubController
 import ec0.desktop.continuity.ContinuitySystemTray
 import ec0.desktop.continuity.ContinuityTrayController
@@ -30,30 +32,32 @@ fun runApp() {
     val hub = ContinuityHubController(
         scope = scope,
         desktopAlias = appState.settings.value.alias,
+        desktopNotifRelayEnabledProvider = { appState.settings.value.notifRelayEnabled },
+        desktopNotificationPolicyProvider = {
+            val s = appState.settings.value
+            NotificationRelayPolicy(
+                disabledApps = s.notifRelayDisabledApps,
+                quietHoursEnabled = s.notifQuietHoursEnabled,
+                quietStartMinuteOfDay = s.notifQuietStartMin,
+                quietEndMinuteOfDay = s.notifQuietEndMin,
+                titleOnly = s.notifTitleOnly,
+            )
+        },
     )
     val smartConnectPort = runCatching {
         hub.node.startServer(startMdns = true)
         val port = hub.node.startSmartConnectServer(announceMdns = true)
-        runCatching {
-            File("/tmp/ec0-smartconnect-status.txt").writeText(
-                "status=running\nwsPort=$port\ndeviceName=${hub.node.smartConnectCoordinator.deviceName}\n" +
-                    "realId=${hub.node.smartConnectCoordinator.realDeviceIdBase64}\n"
-            )
-        }
+        writePrivateStatusFile(
+            "status=running\nwsPort=$port\ndeviceName=${hub.node.smartConnectCoordinator.deviceName}\n",
+        )
         port
     }.getOrElse { err ->
-        runCatching {
-            File("/tmp/ec0-smartconnect-status.txt").writeText("status=error\nerror=${err.stackTraceToString()}\n")
-        }
+        writePrivateStatusFile("status=error\nerror=${err.message ?: err.javaClass.simpleName}\n")
         hub.node.smartConnectCoordinator.boundPort
     }
     appState.startScan()
-    // Wake the hub's loops: clipboard watch, notification forwarding, IPC daemon,
-    // pairing-QR refresh and the trusted-peer reconnect supervisor.
     runCatching { hub.start(startMdns = false) }
     val trayController = ContinuityTrayController(hub)
-    // The tray lives outside the Compose application scope — quit is late-bound
-    // so the tray can still call exitApplication.
     val quitRef = java.util.concurrent.atomic.AtomicReference<() -> Unit>({})
     val systemTray = ContinuitySystemTray(
         controller = trayController,
@@ -61,12 +65,9 @@ fun runApp() {
             runCatching { hub.close() }
             quitRef.get().invoke()
         },
-        // "Send clipboard" guarantees the proven auto-sync pipeline is live —
-        // the watch loop (≤1.2 s) then pushes clipboard changes to the phone.
         onSendClipboard = { hub.setAutoSyncClipboard(true) },
     )
-    systemTray.attach() // silent no-op when SystemTray is unsupported
-    // Keep the tray policy in lockstep with the persisted setting.
+    systemTray.attach()
     scope.launch {
         appState.settings.collect { trayController.setMinimizeToTrayOnClose(it.minimizeToTray) }
     }
@@ -75,7 +76,7 @@ fun runApp() {
             runCatching { hub.close() }
             exitApplication()
         }
-        val windowState = rememberWindowState(width = 1080.dp, height = 720.dp)
+        val windowState = rememberWindowState(width = 1120.dp, height = 760.dp)
         val bridge = remember { DesktopBridge(appState, hub, smartConnectPort, scope) }
         val windowVisible by trayController.windowVisible.collectAsState()
         Window(
@@ -84,7 +85,6 @@ fun runApp() {
                     runCatching { hub.close() }
                     exitApplication()
                 }
-                // else: hidden to tray — the tray menu brings it back
             },
             visible = windowVisible,
             title = "ec0 — unified ecosystem",
@@ -99,11 +99,29 @@ fun runApp() {
     }
 }
 
-/** AWT file chooser → opaque handle for the shared UI. Blocks while open (AWT modal). */
+/**
+ * Audit M5: never write diagnostics or device identifiers to world-writable `/tmp`.
+ * Status is written atomically with 0600 permissions inside the 0700 user config dir.
+ */
+private fun writePrivateStatusFile(content: String) {
+    runCatching {
+        val dir = EncryptedIdentityStore.defaultConfigDir()
+        EncryptedIdentityStore.ensureDirectoryPermissions(dir)
+        EncryptedIdentityStore.atomicWriteText(File(dir, "smartconnect-status.txt"), content)
+    }
+}
+
+/** AWT multi-file chooser → opaque handle (`File` or `List<File>`) for the shared UI. */
 private fun pickFile(onPicked: (Any?) -> Unit) {
-    val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Send a file", java.awt.FileDialog.LOAD)
+    val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Send files", java.awt.FileDialog.LOAD)
+    dialog.isMultipleMode = true
     dialog.isVisible = true
-    val file = dialog.files.firstOrNull()
+    val selected = dialog.files?.toList().orEmpty()
     dialog.dispose()
-    onPicked(file)
+    val payload: Any? = when (selected.size) {
+        0 -> null
+        1 -> selected.first()
+        else -> selected
+    }
+    onPicked(payload)
 }

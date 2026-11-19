@@ -391,7 +391,7 @@ class Ec0EngineNode(
     private val _connectionStates = MutableStateFlow<Map<String, EngineConnectionState>>(emptyMap())
     val connectionStates: StateFlow<Map<String, EngineConnectionState>> = _connectionStates.asStateFlow()
 
-    private val _pinnedPeers = MutableStateFlow<List<PinnedPeer>>(emptyList())
+    private val _pinnedPeers = MutableStateFlow<List<PinnedPeer>>(pinStore.all())
     val pinnedPeers: StateFlow<List<PinnedPeer>> = _pinnedPeers.asStateFlow()
 
     val discoveredPeers: StateFlow<List<PeerInfo>> get() = mdnsDiscovery.peers

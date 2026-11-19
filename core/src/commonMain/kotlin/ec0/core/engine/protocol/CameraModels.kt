@@ -50,7 +50,7 @@ object CamDroidConstants {
     const val MSG_CAM_STATUS_INFO: String = "cam.status.info"
 
     val SUPPORTED_CODECS: Set<String> = setOf("h264", "h265", "hevc", "mjpeg")
-    val SUPPORTED_RESOLUTIONS: Set<String> = setOf("1080p", "1440p", "2k", "4k")
+    val SUPPORTED_RESOLUTIONS: Set<String> = setOf("720p", "1080p", "1440p", "2k", "4k")
     val SUPPORTED_FPS: Set<Int> = setOf(30, 60)
     val SUPPORTED_WHITE_BALANCE: Set<String> = setOf("auto", "daylight", "tungsten", "fluorescent", "cloudy")
 }

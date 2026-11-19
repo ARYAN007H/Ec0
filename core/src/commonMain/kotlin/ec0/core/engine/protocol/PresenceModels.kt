@@ -81,12 +81,17 @@ data class ScrcpyMirrorStartCommand(
     val maxFps: Int = 60,
     val bitrateKbps: Int = 8000,
     val windowTitle: String = "ec0 Mirror",
+    val audioEnabled: Boolean = true,
+    val turnScreenOff: Boolean = false,
+    val stayAwake: Boolean = false,
+    val maxSize: Int = 0,
 ) {
     init {
         require(host.isNotBlank()) { "Mirror host must not be blank" }
         require(adbPort in 1..65535) { "adbPort out of range: $adbPort" }
         require(maxFps in 1..240) { "maxFps out of range: $maxFps" }
         require(bitrateKbps in 500..100_000) { "bitrateKbps out of range: $bitrateKbps" }
+        require(maxSize == 0 || maxSize in 320..4096) { "maxSize out of range: $maxSize" }
     }
 
     val serial: String
@@ -94,9 +99,13 @@ data class ScrcpyMirrorStartCommand(
 
     fun toJsonObject(): JsonObject = buildJsonObject {
         put("adb_port", adbPort)
+        put("audio_enabled", audioEnabled)
         put("bitrate_kbps", bitrateKbps)
         put("host", host)
         put("max_fps", maxFps)
+        if (maxSize > 0) put("max_size", maxSize)
+        if (stayAwake) put("stay_awake", true)
+        if (turnScreenOff) put("turn_screen_off", true)
         put("window_title", windowTitle)
     }
 
@@ -108,12 +117,20 @@ data class ScrcpyMirrorStartCommand(
             val maxFps = (obj["max_fps"] as? JsonPrimitive)?.intOrNull ?: 60
             val bitrateKbps = (obj["bitrate_kbps"] as? JsonPrimitive)?.intOrNull ?: 8000
             val windowTitle = (obj["window_title"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "ec0 Mirror"
+            val audioEnabled = (obj["audio_enabled"] as? JsonPrimitive)?.booleanOrNull ?: true
+            val turnScreenOff = (obj["turn_screen_off"] as? JsonPrimitive)?.booleanOrNull ?: false
+            val stayAwake = (obj["stay_awake"] as? JsonPrimitive)?.booleanOrNull ?: false
+            val maxSize = (obj["max_size"] as? JsonPrimitive)?.intOrNull ?: 0
             return ScrcpyMirrorStartCommand(
                 host = host,
                 adbPort = adbPort,
                 maxFps = maxFps,
                 bitrateKbps = bitrateKbps,
                 windowTitle = windowTitle,
+                audioEnabled = audioEnabled,
+                turnScreenOff = turnScreenOff,
+                stayAwake = stayAwake,
+                maxSize = maxSize,
             )
         }
     }

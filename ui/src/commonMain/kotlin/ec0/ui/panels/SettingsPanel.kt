@@ -4,11 +4,11 @@
 package ec0.ui.panels
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,33 +19,42 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Button
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import ec0.core.localsend.DeviceType
 import ec0.ui.models.PairedPeerInfo
 import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Seed
@@ -55,22 +64,11 @@ import ec0.ui.widgets.SectionHeader
 
 @Composable
 fun SettingsPanel(bridge: UiBridge) {
-    val peerManagement = bridge.peerManagement
-    // Conditional collection is stable here: peerManagement is null only on the
-    // desktop and non-null only on Android (platform-defined, never flips mid-
-    // session). Local vals: smart cast is impossible on interface properties with
-    // custom getters.
     val peerManagementLocal = bridge.peerManagement
     val peers: List<PairedPeerInfo> = if (peerManagementLocal != null) {
         peerManagementLocal.peers.collectAsState().value
     } else {
         emptyList()
-    }
-    val remoteInputLocal = bridge.remoteInput
-    val remoteInputAvailable: Boolean = if (remoteInputLocal != null) {
-        remoteInputLocal.available.collectAsState().value
-    } else {
-        false
     }
     val settings by bridge.settings.collectAsState()
     val pairingQr by bridge.smartConnectPairingQr.collectAsState()
@@ -85,41 +83,72 @@ fun SettingsPanel(bridge: UiBridge) {
     ) {
         SectionHeader("Settings")
 
-        // Deep-integration A5 (Android only): paired-device management.
+        // Paired devices management — available on BOTH desktop and phone.
         if (peerManagementLocal != null) {
             SettingsCard("Paired devices") {
                 if (peers.isEmpty()) {
                     Text(
-                        "No pinned peers yet",
+                        "No paired devices yet",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                peers.forEach { peer ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                peers.forEachIndexed { idx, peer ->
+                    if (idx > 0) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                    }
+                    Column(
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(peer.alias, style = MaterialTheme.typography.bodyLarge)
-                            Spacer(Modifier.weight(1f))
                             Text(
-                                if (peer.connected) "connected" else "offline",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (peer.connected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                peer.alias,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Surface(
+                                shape = Ec0Shapes.pill,
+                                color = (if (peer.connected) ec0Colors().success else MaterialTheme.colorScheme.outline)
+                                    .copy(alpha = 0.14f),
+                            ) {
+                                Text(
+                                    if (peer.connected) "Connected" else "Offline",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (peer.connected) ec0Colors().success
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                                )
+                            }
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.VerifiedUser,
+                                contentDescription = null,
+                                tint = ec0Colors().success,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                "Ed25519 · ${peer.fingerprintPrefix}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Text(
-                            "fingerprint: " + peer.fingerprintPrefix,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                        Text(
-                            "trust: " + peer.trustLevel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Remote input", style = MaterialTheme.typography.bodySmall)
-                            Spacer(Modifier.weight(1f))
+                            Column(Modifier.weight(1f)) {
+                                Text("Allow remote input", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Pointer & keyboard injection from this paired device",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             Switch(
                                 checked = "remote_input" in peer.grantedCapabilities,
                                 onCheckedChange = { granted ->
@@ -127,22 +156,28 @@ fun SettingsPanel(bridge: UiBridge) {
                                 },
                             )
                         }
-                        Button(onClick = { peerManagementLocal.unpair(peer.deviceId) }) {
-                            Text("Unpair")
+                        Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                            FilledTonalButton(
+                                onClick = { peerManagementLocal.unpair(peer.deviceId) },
+                                shape = Ec0Shapes.pill,
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                ),
+                            ) {
+                                Text("Unpair device")
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Phone-camera runtime grant (Android only): the desktop's camera tile
-        // renders from the phone's beacon `cam` capability, advertised only while
-        // this OS grant is held. State + Enable action — declined stays calm,
-        // blocked routes to system settings, nothing nags.
+        // Phone-camera runtime grant (Android only).
         val phoneCameraLocal = bridge.phoneCamera
         if (phoneCameraLocal != null) {
             val cameraGrant by phoneCameraLocal.grant.collectAsState()
-            SettingsCard("Phone camera") {
+            SettingsCard("Continuity Camera permission") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Camera streaming", style = MaterialTheme.typography.titleSmall)
@@ -171,17 +206,47 @@ fun SettingsPanel(bridge: UiBridge) {
             }
         }
 
+        // Desktop-only: Linux File Manager context menus (Dolphin / Nautilus)
+        if (bridge.hasDesktopIntegration) {
+            SettingsCard("Desktop integration") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.FolderOpen,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("File manager context menus", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Adds \"Send via ec0\" to Dolphin & Nautilus right-click menus",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = bridge::installDesktopIntegration,
+                        shape = Ec0Shapes.pill,
+                    ) {
+                        Text("Install")
+                    }
+                }
+            }
+        }
+
+        // Optional Smart Connect pairing QR (only when coordinator is active on desktop)
         pairingQr?.let { qr ->
-            SettingsCard("Pair — Smart Connect") {
-                // QR scanners want a light field: always white, regardless of app theme —
-                // a dark surface behind black modules is unscannable in dark mode.
+            SettingsCard("Quick-pair QR (Smart Connect compatible)") {
                 val bgSurface = Color.White
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(20.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Canvas(modifier = Modifier.size(240.dp)) {
+                    Canvas(modifier = Modifier.size(200.dp)) {
                         drawRect(color = bgSurface)
                         val quietZone = 2
                         val totalModules = qr.size + quietZone * 2
@@ -209,17 +274,12 @@ fun SettingsPanel(bridge: UiBridge) {
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = "${qr.deviceName} · wss port ${qr.wsPort}",
+                            text = "${qr.deviceName} · port ${qr.wsPort}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            text = "Scan this QR with the stock Motorola Smart Connect app on your phone to pair over TLS-pinned WebSocket (/readyfor/).",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = "Profile: WIN_UNLOCKED (os=6, type=4, scType=2) — required by the stock Smart Connect APK to unlock PC feature tiles.",
+                            text = "Optional interoperability QR for TLS-pinned Smart Connect clients on your local network.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -228,25 +288,24 @@ fun SettingsPanel(bridge: UiBridge) {
             }
         }
 
-        SettingsCard("Profile") {
+        SettingsCard("Device profile") {
             OutlinedTextField(
                 value = aliasDraft,
                 onValueChange = { aliasDraft = it },
-                label = { Text("Device alias") },
+                label = { Text("Device name") },
                 singleLine = true,
                 shape = Ec0Shapes.chip,
                 modifier = Modifier.fillMaxWidth(),
                 trailingIcon = {
                     if (aliasDraft != settings.alias) {
-                        androidx.compose.material3.TextButton(onClick = {
+                        TextButton(onClick = {
                             bridge.updateSettings { it.copy(alias = aliasDraft.trim().ifBlank { "ec0" }) }
                         }) { Text("Save") }
                     }
                 },
             )
-            Spacer(Modifier.width(0.dp))
             Text(
-                "How peers see this device on the network",
+                "Shown to nearby and paired devices on your network",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -254,7 +313,7 @@ fun SettingsPanel(bridge: UiBridge) {
 
         SettingsCard("Appearance") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Color theme", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Text("Accent palette", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 Ec0Seed.entries.forEach { seed ->
                     val selected = Ec0Seed.fromId(settings.themeSeed) == seed
                     Box(
@@ -264,7 +323,7 @@ fun SettingsPanel(bridge: UiBridge) {
                             .clip(CircleShape)
                             .background(seed.swatch)
                             .border(
-                                width = if (selected) 2.dp else 1.dp,
+                                width = if (selected) 2.5.dp else 1.dp,
                                 color = if (selected) {
                                     MaterialTheme.colorScheme.onSurface
                                 } else {
@@ -276,7 +335,7 @@ fun SettingsPanel(bridge: UiBridge) {
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Theme", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 val options = listOf("System", "Light", "Dark")
@@ -290,11 +349,13 @@ fun SettingsPanel(bridge: UiBridge) {
                             },
                             onClick = {
                                 bridge.updateSettings {
-                                    it.copy(darkTheme = when (label) {
-                                        "System" -> null
-                                        "Light" -> false
-                                        else -> true
-                                    })
+                                    it.copy(
+                                        darkTheme = when (label) {
+                                            "System" -> null
+                                            "Light" -> false
+                                            else -> true
+                                        },
+                                    )
                                 }
                             },
                             shape = SegmentedButtonDefaults.itemShape(index, options.size),
@@ -302,30 +363,31 @@ fun SettingsPanel(bridge: UiBridge) {
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Minimize to tray on close", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "Closing the window keeps ec0 running in the system tray",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            if (bridge.hasDesktopIntegration) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Minimize to tray on close", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Closing the window keeps ec0 running in the system tray",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.minimizeToTray,
+                        onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(minimizeToTray = checked) } },
                     )
                 }
-                Switch(
-                    checked = settings.minimizeToTray,
-                    onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(minimizeToTray = checked) } },
-                )
             }
         }
-        Spacer(modifier = Modifier.height(14.dp))
 
         SettingsCard("Security") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Require receive PIN", style = MaterialTheme.typography.titleSmall)
+                    Text("Require PIN for unpaired transfers", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "Peers must enter a PIN before sending to this device",
+                        "Unpaired LAN devices must enter a PIN before sending files",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -347,42 +409,26 @@ fun SettingsPanel(bridge: UiBridge) {
             }
         }
 
-        SettingsCard("Protocols") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Synergy (O+ Connect) probe", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "Probe O+ Connect peers — enabled after the T4 capture lands",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(
-                    checked = settings.synergyProbeEnabled,
-                    onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(synergyProbeEnabled = checked) } },
-                )
-            }
-        }
-
         SettingsCard("About") {
-            Text("ec0 — unified cross-device ecosystem", style = MaterialTheme.typography.titleSmall)
+            Text("ec0 — unified cross-device ecosystem", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Text(
-                "ec0 direct share over LAN · ec0-engine (Ed25519 + AEAD) · Synergy RPC seam\nGPL-3.0 — clean-room interoperability",
+                "Self-contained continuity suite · Ed25519 + X25519 + ChaCha20-Poly1305 end-to-end encryption · GPL-3.0",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.width(0.dp))
+        Spacer(Modifier.height(12.dp))
     }
 }
 
 @Composable
-private fun SettingsCard(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
-    androidx.compose.material3.Card(
+private fun SettingsCard(
+    title: String,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Card(
         shape = Ec0Shapes.card,
-        colors = androidx.compose.material3.CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

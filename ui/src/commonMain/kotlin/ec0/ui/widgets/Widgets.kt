@@ -6,13 +6,13 @@
 package ec0.ui.widgets
 
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,10 +23,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.TabletMac
 import androidx.compose.material3.Icon
@@ -44,14 +45,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
 import ec0.ui.models.ProtocolFamily
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
 import ec0.ui.models.TransferState
+import ec0.ui.theme.Ec0Motion
 import ec0.ui.theme.Ec0Shapes
-import ec0.ui.theme.protocolAccent
+import ec0.ui.theme.ec0Colors
 
 object DeviceTypeIcon {
     fun forDevice(device: ec0.ui.models.UiDevice): ImageVector = when (device.deviceType) {
@@ -61,6 +64,20 @@ object DeviceTypeIcon {
     }
 }
 
+/** Formats raw byte counts cleanly (e.g., "14.2 MB", "820 KB"). */
+fun formatByteSize(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> {
+        val tenths = (bytes * 10L) / (1L shl 30)
+        "${tenths / 10}.${tenths % 10} GB"
+    }
+    bytes >= 1L shl 20 -> {
+        val tenths = (bytes * 10L) / (1L shl 20)
+        "${tenths / 10}.${tenths % 10} MB"
+    }
+    bytes >= 1L shl 10 -> "${bytes / (1L shl 10)} KB"
+    else -> "$bytes B"
+}
+
 @Composable
 fun ProtocolChip(protocol: ProtocolFamily, accent: Color) {
     Surface(
@@ -68,12 +85,11 @@ fun ProtocolChip(protocol: ProtocolFamily, accent: Color) {
         color = accent.copy(alpha = 0.15f),
     ) {
         Text(
-            // Branding rule: the wire stays LocalSend-compatible, the UI never says the
-            // upstream's name — LOCALSEND reads as our direct LAN share.
+            // Self-contained ec0 UX: never expose third-party/upstream tool names in chips.
             when (protocol) {
-                ProtocolFamily.LOCALSEND -> "Direct"
-                ProtocolFamily.SYNERGY -> "O+ probe"
-                ProtocolFamily.KDECONNECT -> "KDE"
+                ProtocolFamily.LOCALSEND -> "Direct LAN"
+                ProtocolFamily.SYNERGY -> "ec0 Link"
+                ProtocolFamily.KDECONNECT -> "LAN Peer"
             },
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
@@ -115,19 +131,19 @@ fun SectionHeader(title: String, badge: String? = null, trailing: @Composable ((
     }
 }
 
-/** Animated expressive progress bar — sweeping shimmer on indeterminate feel. */
+/** Spring-smoothed expressive progress bar. */
 @Composable
 fun Ec0Progress(value: Float, accent: Color, modifier: Modifier = Modifier) {
     val animated by animateFloatAsState(
         targetValue = value.coerceIn(0f, 1f),
-        animationSpec = tween(280),
+        animationSpec = Ec0Motion.snappy(),
         label = "transferProgress",
     )
     LinearProgressIndicator(
         progress = { animated },
         modifier = modifier
             .fillMaxWidth()
-            .height(10.dp),
+            .height(9.dp),
         color = accent,
         trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
         strokeCap = StrokeCap.Round,
@@ -135,12 +151,13 @@ fun Ec0Progress(value: Float, accent: Color, modifier: Modifier = Modifier) {
     )
 }
 
-/** Compact transfer row used in the dashboard strip and the Transfers panel. */
+/** Expressive transfer row used in the dashboard strip and Transfers panel. */
 @Composable
 fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
     val accent = when (item.state) {
         TransferState.FAILED -> MaterialTheme.colorScheme.error
         TransferState.CANCELLED -> MaterialTheme.colorScheme.outline
+        TransferState.DONE -> ec0Colors().success
         else -> MaterialTheme.colorScheme.primary
     }
     val indeterminate = item.state == TransferState.RUNNING && item.progressPct == 0
@@ -148,11 +165,32 @@ fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
         val t = rememberInfiniteTransition(label = "shimmer")
         val v by t.animateFloat(
             0f, 0.35f,
-            infiniteRepeatable(tween(700, easing = LinearEasing), androidx.compose.animation.core.RepeatMode.Reverse),
+            infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse),
             label = "shimmerValue",
         )
         v
     } else 1f
+
+    val metaLine = buildString {
+        append(if (item.direction == TransferDirection.INCOMING) "from " else "to ")
+        append(item.peerAlias)
+        if (item.sizeBytes > 0) {
+            append(" · ")
+            append(formatByteSize(item.sizeBytes))
+        }
+        if (!item.speedText.isNullOrBlank()) {
+            append(" · ")
+            append(item.speedText)
+        }
+        if (!item.etaText.isNullOrBlank()) {
+            append(" · ")
+            append(item.etaText)
+        }
+        if (!item.error.isNullOrBlank()) {
+            append(" — ")
+            append(item.error)
+        }
+    }
 
     Surface(
         shape = Ec0Shapes.tile,
@@ -164,30 +202,42 @@ fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
                 Surface(
                     shape = Ec0Shapes.chip,
                     color = accent.copy(alpha = 0.14f),
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(38.dp),
                 ) {
                     Icon(
                         Icons.Filled.InsertDriveFile,
                         contentDescription = null,
                         tint = accent,
-                        modifier = Modifier.padding(8.dp),
+                        modifier = Modifier.padding(9.dp),
                     )
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            item.fileName,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (item.encrypted) {
+                            Icon(
+                                Icons.Filled.Lock,
+                                contentDescription = "Encrypted",
+                                tint = ec0Colors().success,
+                                modifier = Modifier.size(13.dp),
+                            )
+                        }
+                    }
                     Text(
-                        item.fileName,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                    )
-                    Text(
-                        "${if (item.direction == TransferDirection.INCOMING) "from" else "to"} ${item.peerAlias}" +
-                            (item.error?.let { " — $it" } ?: ""),
+                        metaLine,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (item.error != null) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 Spacer(Modifier.width(10.dp))
@@ -199,17 +249,18 @@ fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.errorContainer,
                     ) {
-                        Text(
-                            "✕",
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(8.dp),
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Cancel transfer",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(7.dp).size(16.dp),
                         )
                     }
                 }
             }
             if (item.state == TransferState.RUNNING || item.state == TransferState.PENDING) {
                 Spacer(Modifier.height(10.dp))
-                Ec0Progress(item.progressPct / 100f * shimmer, accent)
+                Ec0Progress((item.progressPct / 100f) * shimmer, accent)
             }
         }
     }
@@ -218,12 +269,12 @@ fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
 @Composable
 private fun StateBadge(state: TransferState, progressPct: Int) {
     val (label, color) = when (state) {
-        TransferState.DONE -> "done" to MaterialTheme.colorScheme.primary
-        TransferState.FAILED -> "failed" to MaterialTheme.colorScheme.error
-        TransferState.CANCELLED -> "cancelled" to MaterialTheme.colorScheme.outline
-        TransferState.PENDING -> "queued" to MaterialTheme.colorScheme.secondary
+        TransferState.DONE -> "Done" to ec0Colors().success
+        TransferState.FAILED -> "Failed" to MaterialTheme.colorScheme.error
+        TransferState.CANCELLED -> "Cancelled" to MaterialTheme.colorScheme.outline
+        TransferState.PENDING -> "Queued" to MaterialTheme.colorScheme.secondary
         TransferState.RUNNING -> "$progressPct%" to MaterialTheme.colorScheme.primary
-        TransferState.PAUSED -> "paused" to ec0.ui.theme.ec0Colors().warning
+        TransferState.PAUSED -> "Paused" to ec0Colors().warning
     }
     Surface(
         shape = Ec0Shapes.chip,
@@ -239,7 +290,7 @@ private fun StateBadge(state: TransferState, progressPct: Int) {
     }
 }
 
-/** Horizontal strip of recent transfers (Home dashboard bottom). */
+/** Recent transfers strip (Home dashboard bottom). */
 @Composable
 fun TransferStrip(transfers: List<TransferItem>) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -263,7 +314,7 @@ fun EmptyState(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(36.dp),
+            modifier = Modifier.fillMaxWidth().padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Surface(shape = CircleShape, color = accent.copy(alpha = 0.14f)) {
@@ -271,7 +322,7 @@ fun EmptyState(
                     icon,
                     contentDescription = null,
                     tint = accent,
-                    modifier = Modifier.padding(18.dp).size(30.dp),
+                    modifier = Modifier.padding(16.dp).size(28.dp),
                 )
             }
             Spacer(Modifier.height(14.dp))
@@ -287,9 +338,8 @@ fun EmptyState(
 }
 
 /**
- * Scannable QR renderer — always a light field with dark modules (scanner
- * contrast rule; see SettingsPanel) and a 2-module quiet zone. Callers own
- * sizing and rounding via [modifier].
+ * Scannable QR renderer — always a light field with dark modules and a
+ * 2-module quiet zone. Callers own sizing and rounding via [modifier].
  */
 @Composable
 fun QrCodeCanvas(
@@ -298,7 +348,7 @@ fun QrCodeCanvas(
     modifier: Modifier = Modifier,
     quietZone: Int = 2,
 ) {
-    androidx.compose.foundation.Canvas(modifier = modifier) {
+    Canvas(modifier = modifier) {
         drawRect(color = Color.White)
         val total = size + quietZone * 2
         if (size > 0 && modules.size >= size * size) {

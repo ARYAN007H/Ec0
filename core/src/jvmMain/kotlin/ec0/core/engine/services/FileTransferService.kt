@@ -50,6 +50,7 @@ data class TransferProgressSnapshot(
     val totalFiles: Int,
     val completedFiles: Int,
     val failureReason: String? = null,
+    val displayName: String = "",
 )
 
 class FileTransferService(
@@ -204,9 +205,27 @@ class FileTransferService(
                 transferredBytes = 0L,
                 totalFiles = offer.files.size,
                 completedFiles = 0,
+                displayName = offerDisplayName(offer),
             ),
         )
         return offer
+    }
+
+    /** Removes completed, failed, or cancelled transfers from the visible queue. */
+    fun clearFinishedTransfers() {
+        stateLock.withLock {
+            val remaining = _transfers.value.filterValues { !it.state.isTerminal }
+            if (remaining.size != _transfers.value.size) {
+                _transfers.value = remaining
+            }
+        }
+        evictTerminalIncomingTransfers()
+    }
+
+    private fun offerDisplayName(offer: FileOfferCommand): String {
+        val first = offer.files.firstOrNull()?.relativePath?.substringAfterLast('/')
+            ?.takeIf { it.isNotBlank() } ?: offer.transferId.take(8)
+        return if (offer.files.size <= 1) first else "$first (+${offer.files.size - 1} more)"
     }
 
     /**
@@ -354,6 +373,7 @@ class FileTransferService(
                 transferredBytes = alreadyReceivedBytes,
                 totalFiles = offer.files.size,
                 completedFiles = 0,
+                displayName = offerDisplayName(offer),
             ),
         )
 
@@ -620,6 +640,7 @@ class FileTransferService(
                 totalFiles = offer.files.size,
                 completedFiles = 0,
                 failureReason = reason,
+                displayName = offerDisplayName(offer),
             ),
         )
     }
