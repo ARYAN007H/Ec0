@@ -1005,7 +1005,11 @@ class ContinuityHubController(
             // fallback for a phone WITHOUT CamDroid — and must NOT run
             // concurrently (it would fight CamDroid for the camera device).
             if (CamDroidOrchestration.serverReachable(host, port, camdroidProbeTimeoutMs)) {
-                val consumer = CamDroidOrchestration.resolveDesktopConsumer(homeDir = homeDir)
+                val consumer = CamDroidOrchestration.resolveDesktopConsumer(
+                    host = host,
+                    port = port,
+                    homeDir = homeDir,
+                )
                 if (consumer == null) {
                     _statusBanner.value =
                         "CamDroid detected on the phone ($host:$port) but no desktop consumer found — " +
