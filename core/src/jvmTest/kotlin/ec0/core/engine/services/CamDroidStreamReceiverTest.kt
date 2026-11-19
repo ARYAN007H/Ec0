@@ -10,6 +10,7 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.services.camdroid.CamDroidCapabilities
+import ec0.core.engine.services.camdroid.CamDroidCapabilities
 import ec0.core.engine.services.camdroid.CamDroidSessionMessages
 import ec0.core.engine.services.camdroid.CamDroidV2
 import java.io.BufferedInputStream
@@ -231,7 +232,7 @@ class CamDroidStreamReceiverTest {
     @Test
     fun ffmpegArgvTargetsLoopbackWithYuyv() {
         val receiver = CamDroidStreamReceiver(v4l2DevicePath = "/dev/video10")
-        val argv = receiver.buildFfmpegArgv(CamDroidStreamConfig(1920, 1080, 30, "h264"))
+        val argv = receiver.buildFfmpegArgv(CamDroidStreamConfig("h264", 1920, 1080, 30))
         assertEquals("ffmpeg", argv.first())
         assertTrue(argv.contains("-f") && argv.contains("h264"), "the v2 stream is hardware H.264")
         assertTrue(argv.contains("-pix_fmt") && argv.contains("yuyv422"))

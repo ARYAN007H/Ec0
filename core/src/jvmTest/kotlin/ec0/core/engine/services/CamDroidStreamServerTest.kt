@@ -10,6 +10,8 @@ package ec0.core.engine.services
 
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CamDroidV1Codec
+import ec0.core.engine.services.camdroid.CamDroidCapabilities
+import ec0.core.engine.services.camdroid.CamDroidModeResolver
 import ec0.core.engine.services.camdroid.CamDroidSessionMessages
 import ec0.core.engine.services.camdroid.CamDroidV2
 import ec0.core.engine.services.camdroid.CamDroidVideoMode
