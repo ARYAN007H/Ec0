@@ -1,15 +1,17 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * JVM tests for the desktop-side CamDroid stream receiver: token handshake on
- * the wire, config-driven ffmpeg sink launch, pre-config frame drops, silence
- * watchdog auto-stop, stop-always-works semantics, and honest failure reasons.
+ * JVM tests for the desktop-side CamDroid v2 stream receiver: token handshake
+ * on the wire (v2 Hello with `ec0|<token>`), capability negotiation →
+ * StreamAccepted config, ffmpeg H.264 sink launch, pre-handshake drops,
+ * silence watchdog auto-stop, stop-always-works semantics, honest failures,
+ * and the upstream heartbeats the phone's watchdog depends on.
  */
 package ec0.core.engine.services
 
-import ec0.core.engine.protocol.CamDroidMediaKind
-import ec0.core.engine.protocol.CamDroidV1Codec
-import ec0.core.engine.protocol.CamDroidV1Packet
+import ec0.core.engine.services.camdroid.CamDroidCapabilities
+import ec0.core.engine.services.camdroid.CamDroidSessionMessages
+import ec0.core.engine.services.camdroid.CamDroidV2
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -62,8 +64,26 @@ class CamDroidStreamReceiverTest {
             runCatching {
                 val client = server.accept()
                 val input = DataInputStream(BufferedInputStream(client.getInputStream()))
-                val handshake = readPacket(input)
-                handshakeSeen.set(handshake.payload.decodeToString())
+                // v2 session: hello (token) → capabilities → start → accepted.
+                val hello = readPacket(input)
+                handshakeSeen.set(hello.payload.decodeToString())
+                val helloData = CamDroidSessionMessages.parseType(hello.payload)!!.second
+                val clientField = helloData["client"]!!.toString().trim('"')
+                CamDroidV2.Packet(
+                    kind = CamDroidV2.KIND_METADATA,
+                    flags = 0,
+                    sessionId = 0,
+                    sequence = 0,
+                    captureTimestampNs = 0,
+                    payload = CamDroidSessionMessages.capabilities(
+                        CamDroidCapabilities(
+                            codecs = listOf("h264"),
+                            videoModes = listOf(
+                                ec0.core.engine.services.camdroid.CamDroidVideoMode(1920, 1080, 30, 1_000_000L, 50_000_000L),
+                            ),
+                        ),
+                    ).toString().encodeToByteArray(),
+                ).writeTo(client.getOutputStream())
                 val start = readPacket(input)
                 startSeen.set(start.payload.decodeToString())
                 // Background drain: capture the receiver's live control packets.
@@ -71,10 +91,10 @@ class CamDroidStreamReceiverTest {
                     runCatching {
                         while (!client.isClosed) {
                             val extra = readPacket(input)
-                            if (extra.kind == CamDroidMediaKind.CONTROL) {
+                            if (extra.kind == CamDroidV2.KIND_CONTROL) {
                                 controlPackets.add(extra.payload.decodeToString())
                             }
-                            if (extra.kind == CamDroidMediaKind.HEARTBEAT) {
+                            if (extra.kind == CamDroidV2.KIND_HEARTBEAT) {
                                 heartbeatsSeen.incrementAndGet()
                             }
                         }
@@ -101,30 +121,47 @@ class CamDroidStreamReceiverTest {
         }
 
         inner class FakePhoneSession(val socket: Socket) {
-            fun send(packet: CamDroidV1Packet) {
-                socket.getOutputStream().write(CamDroidV1Codec.encode(packet))
-                socket.getOutputStream().flush()
+            fun send(packet: CamDroidV2.Packet) {
+                packet.writeTo(socket.getOutputStream())
             }
 
-            fun sendConfig(width: Int = 640, height: Int = 480, fps: Int = 30) {
+            /** The v2 StreamAccepted: carries the negotiated capture config. */
+            fun sendConfig(width: Int = 1920, height: Int = 1080, fps: Int = 30) {
                 send(
-                    CamDroidV1Packet(
-                        CamDroidMediaKind.METADATA,
-                        CamDroidStreamConfig(width, height, fps, "mjpeg").toJsonObject().toString()
-                            .encodeToByteArray(),
+                    CamDroidV2.Packet(
+                        kind = CamDroidV2.KIND_METADATA,
+                        flags = 0,
+                        sessionId = 42,
+                        sequence = 0,
+                        captureTimestampNs = 0,
+                        payload = CamDroidSessionMessages.streamAccepted(
+                            sessionId = 42,
+                            codec = "h264",
+                            mode = ec0.core.engine.services.camdroid.CamDroidVideoMode(
+                                width, height, fps, 1_000_000L, 50_000_000L,
+                            ),
+                            bitrateBps = 8_000_000L,
+                        ).toString().encodeToByteArray(),
+                    ),
+                )
+            }
+
+            fun sendVideo(data: ByteArray) {
+                send(
+                    CamDroidV2.Packet(
+                        kind = CamDroidV2.KIND_VIDEO,
+                        flags = 0,
+                        sessionId = 42,
+                        sequence = 1,
+                        captureTimestampNs = 0,
+                        payload = data,
                     ),
                 )
             }
         }
 
         companion object {
-            fun readPacket(input: DataInputStream): CamDroidV1Packet {
-                val kindByte = input.readByte()
-                val length = Integer.reverseBytes(input.readInt())
-                val payload = ByteArray(length)
-                input.readFully(payload)
-                return CamDroidV1Packet(CamDroidMediaKind.fromWireValue(kindByte), payload)
-            }
+            fun readPacket(input: DataInputStream): CamDroidV2.Packet = CamDroidV2.readPacket(input)
         }
     }
 
@@ -154,35 +191,35 @@ class CamDroidStreamReceiverTest {
     // ---- happy path --------------------------------------------------------
 
     @Test
-    fun pipesConfiguredMjpegIntoSinkWithTokenHandshake() {
+    fun pipesConfiguredH264IntoSinkWithTokenHandshake() {
         val sink = RecordingSink()
-        val frame1 = ByteArray(32) { 0x11 }
-        val frame2 = ByteArray(32) { 0x22 }
+        val nal1 = ByteArray(32) { 0x11 }
+        val nal2 = ByteArray(32) { 0x22 }
         val phone = FakePhoneServer(expectedToken = "tok123") { session ->
             session.sendConfig()
-            // Give start() a beat to attach the sink after the config latch.
+            // Give start() a beat to attach the sink after the accepted latch.
             Thread.sleep(150)
-            session.send(CamDroidV1Packet(CamDroidMediaKind.VIDEO, frame1))
-            session.send(CamDroidV1Packet(CamDroidMediaKind.VIDEO, frame2))
+            session.sendVideo(nal1)
+            session.sendVideo(nal2)
         }
         phone.start()
         val receiver = newReceiver(phone.port, sink)
         val snapshot = receiver.start("127.0.0.1", phone.port, streamToken = "tok123", requestedFps = 30)
 
         assertEquals(CamDroidReceiverState.STREAMING, snapshot.state)
-        assertEquals(640, snapshot.config?.width)
+        assertEquals(1920, snapshot.config?.width)
         assertEquals(30, snapshot.config?.fps)
+        assertEquals("h264", snapshot.config?.codec)
 
-        // The phone saw the arm token in the TCP handshake and the mjpeg Start.
+        // The phone saw the arm token inside the v2 hello's client identity.
         val handshake = phone.handshakeSeen.get()
-        assertTrue(handshake?.contains("\"token\":\"tok123\"") == true, "handshake must carry the arm token: $handshake")
-        assertTrue(phone.startSeen.get()?.contains("\"cmd\":\"start\"") == true)
-        assertTrue(phone.startSeen.get()?.contains("mjpeg") == true)
+        assertTrue(handshake?.contains("ec0|tok123") == true, "hello must carry the arm token: $handshake")
+        assertTrue(phone.startSeen.get()?.contains("\"type\":\"start\"") == true)
 
         // Every video byte reached the "ffmpeg" stdin.
         assertTrue(
-            await { sink.written.size() == frame1.size + frame2.size },
-            "sink stdin must receive both frames, got ${sink.written.size()}",
+            await { sink.written.size() == nal1.size + nal2.size },
+            "sink stdin must receive both NAL units, got ${sink.written.size()}",
         )
         assertEquals(2L, receiver.snapshot.value.framesReceived)
         receiver.stop()
@@ -194,9 +231,9 @@ class CamDroidStreamReceiverTest {
     @Test
     fun ffmpegArgvTargetsLoopbackWithYuyv() {
         val receiver = CamDroidStreamReceiver(v4l2DevicePath = "/dev/video10")
-        val argv = receiver.buildFfmpegArgv(CamDroidStreamConfig(640, 480, 30, "mjpeg"))
+        val argv = receiver.buildFfmpegArgv(CamDroidStreamConfig(1920, 1080, 30, "h264"))
         assertEquals("ffmpeg", argv.first())
-        assertTrue(argv.contains("-f") && argv.contains("mjpeg"))
+        assertTrue(argv.contains("-f") && argv.contains("h264"), "the v2 stream is hardware H.264")
         assertTrue(argv.contains("-pix_fmt") && argv.contains("yuyv422"))
         assertEquals("/dev/video10", argv.last())
     }
@@ -209,13 +246,13 @@ class CamDroidStreamReceiverTest {
         val early = ByteArray(16) { 0x33 }
         val late = ByteArray(16) { 0x44 }
         val phone = FakePhoneServer(expectedToken = "tok") { session ->
-            // Two frames BEFORE the config: bounded policy must drop them.
-            session.send(CamDroidV1Packet(CamDroidMediaKind.VIDEO, early))
-            session.send(CamDroidV1Packet(CamDroidMediaKind.VIDEO, early))
+            // Two frames BEFORE the StreamAccepted: bounded policy must drop them.
+            session.sendVideo(early)
+            session.sendVideo(early)
             session.sendConfig()
             // Post-sink frame, after start() has attached the sink.
             Thread.sleep(150)
-            session.send(CamDroidV1Packet(CamDroidMediaKind.VIDEO, late))
+            session.sendVideo(late)
         }
         phone.start()
         val receiver = newReceiver(phone.port, sink)

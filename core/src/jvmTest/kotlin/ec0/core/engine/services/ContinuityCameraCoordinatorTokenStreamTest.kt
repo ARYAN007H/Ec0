@@ -8,10 +8,11 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.protocol.CamDroidControlCommand
-import ec0.core.engine.protocol.CamDroidMediaKind
 import ec0.core.engine.protocol.CamDroidV1Codec
 import ec0.core.engine.protocol.CamDroidV1Packet
 import ec0.core.engine.protocol.CameraBackend
+import ec0.core.engine.services.camdroid.CamDroidSessionMessages
+import ec0.core.engine.services.camdroid.CamDroidV2
 import ec0.core.engine.protocol.CameraStreamState
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -68,34 +69,59 @@ class ContinuityCameraCoordinatorTokenStreamTest {
             runCatching {
                 val client = server.accept()
                 val input = DataInputStream(BufferedInputStream(client.getInputStream()))
-                val handshake = readPacket(input)
-                assertTrue(handshake.payload.decodeToString().contains("\"token\":\"abcd\""))
-                val start = readPacket(input)
-                assertTrue(start.payload.decodeToString().contains("\"cmd\":\"start\""))
+                // v2 session: hello carries the token in the client identity.
+                val hello = CamDroidV2.readPacket(input)
+                assertTrue(hello.payload.decodeToString().contains("ec0|abcd"))
+                CamDroidV2.Packet(
+                    kind = CamDroidV2.KIND_METADATA,
+                    flags = 0,
+                    sessionId = 0,
+                    sequence = 0,
+                    captureTimestampNs = 0,
+                    payload = CamDroidSessionMessages.capabilities(
+                        CamDroidCapabilities(
+                            codecs = listOf("h264"),
+                            videoModes = listOf(
+                                ec0.core.engine.services.camdroid.CamDroidVideoMode(1920, 1080, 30, 1_000_000L, 50_000_000L),
+                            ),
+                        ),
+                    ).toString().encodeToByteArray(),
+                ).writeTo(client.getOutputStream())
+                val start = CamDroidV2.readPacket(input)
+                assertTrue(start.payload.decodeToString().contains("\"type\":\"start\""))
                 // Control drain
                 Thread {
                     runCatching {
                         while (!client.isClosed) {
-                            val p = readPacket(input)
-                            if (p.kind == CamDroidMediaKind.CONTROL) {
+                            val p = CamDroidV2.readPacket(input)
+                            if (p.kind == CamDroidV2.KIND_CONTROL) {
                                 controlPackets.add(p.payload.decodeToString())
                             }
                         }
                     }
                 }.apply { isDaemon = true }.start()
-                client.getOutputStream().write(
-                    CamDroidV1Codec.encode(
-                        CamDroidV1Packet(
-                            CamDroidMediaKind.METADATA,
-                            CamDroidStreamConfig(640, 480, 30, "mjpeg")
-                                .toJsonObject().toString().encodeToByteArray(),
-                        ),
-                    ),
-                )
-                client.getOutputStream().flush()
+                CamDroidV2.Packet(
+                    kind = CamDroidV2.KIND_METADATA,
+                    flags = 0,
+                    sessionId = 7,
+                    sequence = 0,
+                    captureTimestampNs = 0,
+                    payload = CamDroidSessionMessages.streamAccepted(
+                        sessionId = 7,
+                        codec = "h264",
+                        mode = ec0.core.engine.services.camdroid.CamDroidVideoMode(1920, 1080, 30, 1_000_000L, 50_000_000L),
+                        bitrateBps = 8_000_000L,
+                    ).toString().encodeToByteArray(),
+                ).writeTo(client.getOutputStream())
                 Thread.sleep(200)
-                client.getOutputStream().write(CamDroidV1Codec.encode(CamDroidV1Packet(CamDroidMediaKind.VIDEO, frame)))
-                client.getOutputStream().flush()
+                CamDroidV2.Packet(
+                    kind = CamDroidV2.KIND_VIDEO,
+                    flags = 0,
+                    sessionId = 7,
+                    sequence = 1,
+                    captureTimestampNs = 0,
+                    payload = frame,
+                ).writeTo(client.getOutputStream())
                 Thread.sleep(300)
                 runCatching { client.close() }
             }
@@ -121,9 +147,9 @@ class ContinuityCameraCoordinatorTokenStreamTest {
         )
 
         assertEquals(CameraStreamState.STREAMING, status.state)
-        assertEquals("640x480", status.resolution)
+        assertEquals("1920x1080", status.resolution)
         assertEquals(30, status.fps)
-        assertEquals("mjpeg", status.codec)
+        assertEquals("h264", status.codec)
         assertEquals(CameraBackend.CAMDROID_NATIVE, status.backend)
         assertTrue(
             await { sink.written.size() == frame.size },
