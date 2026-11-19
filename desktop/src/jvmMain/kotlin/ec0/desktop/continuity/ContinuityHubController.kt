@@ -61,9 +61,13 @@ import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
+import ec0.core.engine.services.CamDroidOrchestration
+import ec0.core.engine.services.ExternalProcessLauncher
 import ec0.core.engine.services.LocalDaemonIpcServer
 import ec0.core.engine.services.ContinuityCameraCoordinator
 import ec0.core.engine.services.MprisDesktopMediaSource
+import ec0.core.engine.services.RunningProcessHandle
+import ec0.core.engine.services.SystemProcessLauncher
 import ec0.core.engine.services.resolveMirrorSerial
 import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.services.TransferSpeedSample
@@ -119,6 +123,12 @@ class ContinuityHubController(
     private val notificationBridge: LinuxNotificationBridge = LinuxNotificationBridge(),
     private val environmentProbe: LinuxEnvironmentProbe = LinuxEnvironmentProbe(),
     private val inputInjectionBridge: LinuxInputInjectionBridge = LinuxInputInjectionBridge(),
+    /** Spawns the CamDroid desktop consumer (CLI/AppImage) when orchestrating. */
+    private val processLauncher: ExternalProcessLauncher = SystemProcessLauncher,
+    /** Injected for orchestration tests; production uses the real home. */
+    private val homeDir: String = System.getProperty("user.home"),
+    /** CamDroid server probe budget; refused returns instantly anyway. */
+    private val camdroidProbeTimeoutMs: Long = 600L,
 ) : Closeable {
 
     val node: Ec0EngineNode = Ec0EngineNode(
@@ -145,6 +155,7 @@ class ContinuityHubController(
     private var daemonIpcServer: LocalDaemonIpcServer? = null
     private var pairingQrRefreshJob: Job? = null
     private var reconnectJob: Job? = null
+    private var camdroidConsumer: RunningProcessHandle? = null
     private var presenceBeaconJob: Job? = null
     private var presenceAuthJob: Job? = null
 
@@ -987,6 +998,37 @@ class ContinuityHubController(
         audio: Boolean = false,
     ) {
         scope.launch(Dispatchers.IO) {
+            // Continuity Camera prefers the owner's proven CamDroid stack
+            // (hardware H.264/H.265 up to 4K60): when the phone's CamDroid
+            // server is reachable on :4747, launch the desktop consumer and
+            // get out of the way. The in-app MJPEG streamer below stays the
+            // fallback for a phone WITHOUT CamDroid — and must NOT run
+            // concurrently (it would fight CamDroid for the camera device).
+            if (CamDroidOrchestration.serverReachable(host, port, camdroidProbeTimeoutMs)) {
+                val consumer = CamDroidOrchestration.resolveDesktopConsumer(
+                    host = host,
+                    port = port,
+                    homeDir = homeDir,
+                )
+                if (consumer == null) {
+                    _statusBanner.value =
+                        "CamDroid detected on the phone ($host:$port) but no desktop consumer found — " +
+                            "install camdroid-client or the CamDroid Studio AppImage"
+                    return@launch
+                }
+                runCatching { camdroidConsumer?.close() }
+                camdroidConsumer = processLauncher.spawnProcess(consumer)
+                _statusBanner.value = when (consumer.firstOrNull()?.substringAfterLast('/')) {
+                    "camdroid-client" ->
+                        "Continuity Camera: CamDroid hardware H.264 streaming " +
+                            "$host:$port -> ${CamDroidConstants.DEFAULT_V4L2_DEVICE}"
+                    else ->
+                        "Continuity Camera: CamDroid Studio opened — connect to $host:$port " +
+                            "(hardware H.264)"
+                }
+                return@launch
+            }
+
             val session = activeSessionOrNull()
             val camAdvertised = node.peerPresence.value.values.any { beacon ->
                 EngineCapability.CAMERA in beacon.capabilities
@@ -1069,6 +1111,8 @@ class ContinuityHubController(
 
     fun stopContinuityCamera() {
         scope.launch(Dispatchers.IO) {
+            runCatching { camdroidConsumer?.close() }
+            camdroidConsumer = null
             val activeSession = activeSessionOrNull()
             node.cameraCoordinator.stopCameraStream(activeSession)
             _statusBanner.value = "Continuity Camera stopped"
