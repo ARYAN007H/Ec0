@@ -886,7 +886,7 @@ class Ec0CompanionService : Service() {
                 // Wire hardened phone-side VFS responder for desktop Files browser.
                 val vfsPhoneService = ec0.core.engine.services.VfsPhoneService(
                     rootsProvider = { buildAndroidVfsRoots(appContext) },
-                    isAllowed = { hasExternalStorageAccess(appContext) },
+                    accessGranted = { hasExternalStorageAccess(appContext) },
                 )
                 runtime.node.controlEnvelopeInterceptor = { peerDeviceId, envelope ->
                     val session = runtime.node.activeSessionFor(peerDeviceId)
