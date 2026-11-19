@@ -49,8 +49,10 @@ class CamDroidStreamReceiverTest {
         /** How long the socket stays open after the script finishes. */
         private val holdOpenMs: Long = 400,
         private val script: (FakePhoneSession) -> Unit,
+        /** 0 = pick an ephemeral port; non-zero binds THAT port (arm→bind race tests). */
+        bindPort: Int = 0,
     ) {
-        val server = ServerSocket(0).apply { reuseAddress = true }
+        val server = ServerSocket(bindPort).apply { reuseAddress = true }
         val handshakeSeen = AtomicReference<String?>(null)
         val startSeen = AtomicReference<String?>(null)
         val controlPackets = CopyOnWriteArrayList<String>()
@@ -360,5 +362,75 @@ class CamDroidStreamReceiverTest {
     fun sendControlWithoutSessionReturnsFalse() {
         val receiver = CamDroidStreamReceiver(sinkLauncher = { RecordingSink() })
         assertEquals(false, receiver.sendControl(ec0.core.engine.protocol.CamDroidControlCommand.Stop))
+    }
+
+    // ---- arm→bind race (dial retry) ---------------------------------------
+
+    /**
+     * The desktop arms the phone over the engine session, then dials :4747 —
+     * but the phone's stream server only OPENS after it processes that arm, a
+     * few milliseconds later. A single immediate dial loses the race every
+     * time (observed live on the A03: 'Connection refused' while the phone
+     * logged 'armed on :4747 — awaiting token handshake'). The bounded retry
+     * must reach a server that appears mid-window.
+     */
+    @Test
+    fun dialRetryReachesAPhoneThatBindsLate() {
+        val sink = RecordingSink()
+        // Reserve a port, then RELEASE it: for the first ~450ms nothing listens
+        // (the receiver's attempts at 0ms and 300ms refuse), then the phone's
+        // server appears on the same port and the ~600ms attempt connects.
+        val port = ServerSocket(0).also { it.close() }.localPort
+        var phone: FakePhoneServer? = null
+        val lateBind = Thread {
+            Thread.sleep(450L)
+            phone = FakePhoneServer(
+                expectedToken = "tok-late",
+                bindPort = port,
+            ) { session ->
+                session.sendConfig()
+                Thread.sleep(150)
+            }.also { it.start() }
+        }.apply { isDaemon = true }
+        lateBind.start()
+        try {
+            val receiver = newReceiver(port, sink)
+            val snapshot = receiver.start("127.0.0.1", port, streamToken = "tok-late", requestedFps = 30)
+            assertEquals(
+                CamDroidReceiverState.STREAMING,
+                snapshot.state,
+                "the bounded dial retry must reach a late-binding phone, got: ${snapshot.reason}",
+            )
+            receiver.close()
+        } finally {
+            phone?.close()
+        }
+    }
+
+    @Test
+    fun permanentlyClosedPortFailsHonestlyAfterBoundedRetries() {
+        val sink = RecordingSink()
+        val port = ServerSocket(0).also { it.close() }.localPort
+        val receiver = CamDroidStreamReceiver(
+            sinkLauncher = { sink },
+            v4l2DevicePath = "/dev/video10",
+            connectTimeoutMs = 500,
+            silenceTimeoutMs = 700,
+            configAwaitMs = 500,
+            bindRetryAttempts = 3,
+            bindRetryIntervalMs = 60,
+        )
+        val startedAt = System.currentTimeMillis()
+        val snapshot = receiver.start("127.0.0.1", port, streamToken = "tok-x", requestedFps = 30)
+        val elapsed = System.currentTimeMillis() - startedAt
+        assertEquals(CamDroidReceiverState.ERROR, snapshot.state)
+        assertTrue(
+            snapshot.reason.orEmpty().contains("unreachable"),
+            "the failure must stay honest about the unreachable phone, got: ${snapshot.reason}",
+        )
+        assertTrue(
+            elapsed < 3_000,
+            "the bounded retry must not hang the caller ($elapsed ms)",
+        )
     }
 }

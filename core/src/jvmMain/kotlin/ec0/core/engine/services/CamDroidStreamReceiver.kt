@@ -110,6 +110,15 @@ class CamDroidStreamReceiver(
     private val silenceTimeoutMs: Long = 5_000L,
     /** The phone's config METADATA must arrive within this window after start. */
     private val configAwaitMs: Long = 4_000L,
+    /**
+     * Arm→bind race: the phone opens :4747 only AFTER the arm envelope is
+     * processed over the engine session, so an immediate single dial can beat
+     * the bind by a few milliseconds (observed live: every attempt refused
+     * while the phone logged 'armed on :4747 — awaiting token handshake').
+     * Dial [bindRetryAttempts] times spaced [bindRetryIntervalMs] apart.
+     */
+    private val bindRetryAttempts: Int = 6,
+    private val bindRetryIntervalMs: Long = 300L,
 ) : Closeable {
 
     private val lock = Any()
@@ -147,6 +156,28 @@ class CamDroidStreamReceiver(
      * waits for the phone's config metadata, and launches the v4l2 sink.
      * Synchronous — returns once the pipeline is live or definitively failed.
      */
+    /**
+     * Bounded dial retry for the arm→bind race above. 'Connection refused'
+     * returns instantly, so the full window costs ~[bindRetryAttempts] ×
+     * [bindRetryIntervalMs]; an unreachable HOST still pays per-attempt
+     * [connectTimeoutMs] — bounded by the attempt count.
+     */
+    private fun dialWithBindRetry(host: String, port: Int): Socket {
+        var lastError: Exception? = null
+        repeat(bindRetryAttempts) { attempt ->
+            if (attempt > 0) Thread.sleep(bindRetryIntervalMs)
+            try {
+                return Socket().apply {
+                    tcpNoDelay = true
+                    connect(InetSocketAddress(host, port), connectTimeoutMs)
+                }
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IllegalStateException("dial failed without an error")
+    }
+
     fun start(
         host: String,
         port: Int = CamDroidConstants.DEFAULT_TCP_PORT,
@@ -160,10 +191,7 @@ class CamDroidStreamReceiver(
         }
         update { CamDroidReceiverSnapshot(state = CamDroidReceiverState.CONNECTING) }
         val sock = try {
-            Socket().apply {
-                tcpNoDelay = true
-                connect(InetSocketAddress(host, port), connectTimeoutMs)
-            }
+            dialWithBindRetry(host, port)
         } catch (e: Exception) {
             return failLocked("Phone camera stream unreachable at $host:$port — ${e.message}")
         }
