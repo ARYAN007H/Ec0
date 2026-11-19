@@ -233,10 +233,12 @@ object CamDroidModeResolver {
             ?: capabilities.codecs.firstOrNull()
             ?: return null
         val wantedPixels = desiredWidth.toLong() * desiredHeight
-        val mode = capabilities.videoModes.minByOrNull {
-            val pixels = it.width.toLong() * it.height
-            kotlin.math.abs(pixels - wantedPixels) to kotlin.math.abs(it.fps - desiredFps)
-        } ?: return null
+        val mode = capabilities.videoModes.minWithOrNull(
+            compareBy(
+                { kotlin.math.abs(it.width.toLong() * it.height - wantedPixels) },
+                { kotlin.math.abs(it.fps - desiredFps) },
+            ),
+        ) ?: return null
         // The codec choice is reflected by the server's encoder config; the
         // returned mode carries the honest geometry/fps/bitrate bounds.
         return mode
@@ -250,7 +252,7 @@ object CamDroidSessionMessages {
     fun hello(client: String): JsonObject = buildJsonObject {
         put("type", "hello")
         putJsonObject("data") {
-            putJsonArray("protocol_versions") { add(2) }
+            putJsonArray("protocol_versions") { add(kotlinx.serialization.json.JsonPrimitive(2)) }
             put("client", client)
         }
     }
