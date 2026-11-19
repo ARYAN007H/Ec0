@@ -48,9 +48,9 @@ class CamDroidStreamReceiverTest {
         private val expectedToken: String?,
         /** How long the socket stays open after the script finishes. */
         private val holdOpenMs: Long = 400,
-        private val script: (FakePhoneSession) -> Unit,
         /** 0 = pick an ephemeral port; non-zero binds THAT port (arm→bind race tests). */
         bindPort: Int = 0,
+        private val script: (FakePhoneSession) -> Unit,
     ) {
         val server = ServerSocket(bindPort).apply { reuseAddress = true }
         val handshakeSeen = AtomicReference<String?>(null)
