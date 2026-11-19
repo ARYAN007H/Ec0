@@ -1,45 +1,41 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * ec0's phone-side Continuity Camera stream server (CamDroid ProtocolHandler v1
- * wire-compatible, TCP :4747): a *transient, token-gated* server that only
- * exists while an explicit `cam.control.cmd` Start — signed and AEAD-encrypted
- * over the paired ec0-engine session — has armed it.
+ * ec0's phone-side Continuity Camera stream server — CamDroid wire protocol
+ * v2 ("CMD2"), ported from ARYAN007H/CamDroid's proven engine with ec0's
+ * walled-garden posture layered on top:
+ *   - TRANSIENT: the socket opens only after an arm(token) — the token was
+ *     delivered by the desktop over the AEAD-encrypted engine session. Between
+ *     streams there is nothing to scan for.
+ *   - TOKEN-GATED: the client's v2 Hello must carry `client: "ec0|<token>"`;
+ *     the comparison is constant-time. CamDroid's own clients (which send no
+ *     token) are rejected honestly — only a paired ec0 desktop can stream.
+ *   - SILENCE ENDS IT: no inbound packet (heartbeat included) for
+ *     clientSilenceTimeoutMs ends the session and disarms — a vanished peer
+ *     can never leave the camera hot. The server feeds the same watchdog
+ *     downstream so the desktop's side never starves either.
+ *   - CAPABILITY-CLAMPED: the advertised modes come from the frame source's
+ *     REAL encoder limits and the client's Start is resolved against them.
+ *     Requesting 60fps from a 30fps encoder used to crash MediaCodec.configure
+ *     (the A03) — an un-advertised mode is now rejected, never configured.
  *
- * Security posture (the phone camera is its most sensitive device):
- *   - NOT permanently listening: the socket opens on `arm(token)` and closes on
- *     session end, on arm TTL expiry, or on `disarm()`. Nothing to scan for
- *     between streams.
- *   - The desktop's TCP METADATA handshake must carry the SAME token the arm
- *     command delivered over the encrypted session (constant-time compare).
- *   - Client silence (no inbound packet for [clientSilenceTimeoutMs]) ends the
- *     session and disarms — a vanished peer can never leave the camera hot.
- *   - `stop` control command and socket teardown always stop capture, even
- *     when the client side is already gone.
- *
- * Media: bounded single-slot MJPEG handoff from the platform frame source
- * (newest frame wins, stale frames are explicitly dropped), paced at
- * [frameIntervalMs], with HEARTBEAT keepalive in both directions.
+ * Media: hardware H.264 NAL units from the frame source, bounded single-slot
+ * handoff (newest frame wins), paced at the negotiated fps.
  */
 package ec0.core.engine.services
 
 import ec0.core.engine.EngineEncoding
 import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.protocol.CamDroidControlCommand
-import ec0.core.engine.protocol.CamDroidMediaKind
-import ec0.core.engine.protocol.CamDroidV1Codec
-import ec0.core.engine.protocol.CamDroidV1Packet
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
+import ec0.core.engine.services.camdroid.CamDroidCapabilities
+import ec0.core.engine.services.camdroid.CamDroidModeResolver
+import ec0.core.engine.services.camdroid.CamDroidSessionMessages
+import ec0.core.engine.services.camdroid.CamDroidV2
+import ec0.core.engine.services.camdroid.CamDroidVideoMode
 import java.io.BufferedInputStream
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.EOFException
-import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -48,16 +44,37 @@ import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
-/** JPEG payload a platform capture source hands to [CamDroidStreamServer]. */
-interface CamDroidFrameSource : Closeable {
+/** One encoded H.264 unit from the capture engine. */
+interface CamDroidH264Sink {
     /**
-     * Starts capture. The server calls [sink] from the capture thread whenever a
-     * fresh JPEG frame is available; implementations MUST be non-blocking and
-     * apply their own latest-wins drop policy (the server slot is bounded, so a
-     * slow consumer never grows a queue). [onError] ends the session honestly.
+     * Called from the capture thread for every encoder output unit:
+     * [data] is a NAL unit (or the SPS/PPS [isConfig] bundle), [isKeyFrame]
+     * marks an IDR, [ptsNs] is the capture timestamp in nanoseconds.
+     * Implementations MUST be non-blocking (bounded handoff downstream).
      */
-    fun start(sink: (ByteArray) -> Unit, onError: (String) -> Unit)
+    fun onEncoded(data: ByteArray, isConfig: Boolean, isKeyFrame: Boolean, ptsNs: Long)
+}
+
+/**
+ * The capture engine behind the server: queries its own honest limits, then
+ * produces hardware-encoded H.264 NAL units when started with a negotiated,
+ * clamped mode.
+ */
+interface CamDroidH264FrameSource : Closeable {
+    /** The modes this device ACTUALLY supports — advertised verbatim. */
+    fun supportedModes(): List<CamDroidVideoMode>
+
+    /** Preferred codec label from the device ("h264" expected, "h265" legal). */
+    fun preferredCodec(): String = "h264"
+
+    /**
+     * Starts capture with a mode ALREADY resolved against [supportedModes].
+     * [sink] receives NAL units from the capture thread; [onError] ends the
+     * session honestly.
+     */
+    fun start(mode: CamDroidVideoMode, bitrateBps: Long, sink: CamDroidH264Sink, onError: (String) -> Unit)
 
     override fun close()
 }
@@ -90,63 +107,58 @@ data class CamDroidServerSnapshot(
 )
 
 /**
- * Token-gated CamDroid v1 stream server. One armed session at a time; the
+ * Token-gated CamDroid v2 stream server. One armed session at a time; the
  * phone's ec0 companion owns a single instance per process.
  */
 class CamDroidStreamServer(
-    private val frameSourceFactory: () -> CamDroidFrameSource,
+    private val frameSourceFactory: () -> CamDroidH264FrameSource,
     private val port: Int = CamDroidConstants.DEFAULT_TCP_PORT,
-    private val width: Int = 640,
-    private val height: Int = 480,
-    private val targetFps: Int = 30,
-    private val codec: String = "mjpeg",
     /** Auto-disarm when no client completed the handshake within this window. */
     private val armTtlMs: Long = 10_000L,
     /** End the session when the client sends nothing for this long. */
     private val clientSilenceTimeoutMs: Long = 5_000L,
-    /** Handshake must complete within this window after TCP accept. */
+    /** Session setup (hello + start) must complete within this window. */
     private val handshakeTimeoutMs: Long = 3_000L,
     private val heartbeatIntervalMs: Long = 2_000L,
     /** Defensive cap on one frame's payload before it goes on the wire. */
-    private val maxFrameBytes: Int = 2 * 1024 * 1024,
+    private val maxFrameBytes: Int = 4 * 1024 * 1024,
 ) : Closeable {
 
     private val lock = Any()
     private var serverSocket: ServerSocket? = null
-    private var acceptThread: Thread? = null
-    private var armedToken: ByteArray? = null
-
-    private val sessionEnded = AtomicBoolean(true)
     private var sessionSocket: Socket? = null
-    private var frameSource: CamDroidFrameSource? = null
-
-    /** Bounded latest-wins slot: the capture thread overwrites, the writer drains. */
-    private val latestFrame = AtomicReference<ByteArray?>(null)
-    private val framesSent = AtomicLong(0)
-    private val framesDropped = AtomicLong(0)
+    private var frameSource: CamDroidH264FrameSource? = null
+    private var armedToken: String? = null
+    private var acceptThread: Thread? = null
+    private val sessionEnded = AtomicBoolean(true)
     private val writeLock = Any()
-
-    /** Live control commands from the desktop (zoom/switch/...) for the owner. */
-    @Volatile
-    var onControlCommand: ((CamDroidControlCommand) -> Unit)? = null
 
     private val _snapshot = AtomicReference(
         CamDroidServerSnapshot(state = CamDroidServerState.IDLE),
     )
     val snapshot: CamDroidServerSnapshot get() = _snapshot.get()
 
+    /** Live camera controls (zoom/switch/flash) from the stream client. */
+    var onControlCommand: ((CamDroidControlCommand) -> Unit)? = null
+
+    private val framesSent = AtomicLong(0)
+    private val framesDropped = AtomicLong(0)
+    private val latestFrame = AtomicReference<ByteArray?>(null)
+    private val latestFrameIsKey = AtomicBoolean(false)
+
     private fun update(update: (CamDroidServerSnapshot) -> CamDroidServerSnapshot) {
         _snapshot.updateAndGet(update)
     }
 
     /**
-     * Arms the server with [token] (hex, delivered by the desktop over the
-     * AEAD-encrypted engine session). Re-arming closes any previous window.
+     * Opens the listening socket and stores the one-shot token. [token] MUST
+     * be non-blank — the callers deliver it to the desktop over the encrypted
+     * engine session, and the handshake is worthless without it.
      */
     fun arm(token: String): CamDroidArmResult = synchronized(lock) {
-        if (token.isBlank()) return CamDroidArmResult.Failed("Empty stream token — refusing to arm")
+        if (token.isBlank()) return CamDroidArmResult.Failed("arm refused: blank token")
         disarmLocked()
-        val socket = try {
+        val server = try {
             ServerSocket().apply {
                 reuseAddress = true
                 bind(InetSocketAddress(port), 1)
@@ -154,282 +166,264 @@ class CamDroidStreamServer(
         } catch (e: Exception) {
             return CamDroidArmResult.Failed("Cannot bind camera stream server on :$port — ${e.message}")
         }
-        serverSocket = socket
-        armedToken = token.encodeToByteArray()
-        update {
-            CamDroidServerSnapshot(
-                state = CamDroidServerState.ARMED,
-                port = socket.localPort,
-            )
-        }
-        val thread = Thread(
-            {
-                runCatching { acceptLoop(socket) }
-            },
-            "ec0-camdroid-server-accept",
-        )
-        thread.isDaemon = true
-        acceptThread = thread
-        thread.start()
-        CamDroidArmResult.Armed(socket.localPort)
+        serverSocket = server
+        armedToken = token
+        sessionEnded.set(false)
+        update { CamDroidServerSnapshot(state = CamDroidServerState.ARMED, port = port) }
+        acceptThread = thread(name = "ec0-camdroid-accept", isDaemon = true) { acceptLoop(server) }
+        CamDroidArmResult.Armed(port)
     }
 
-    /**
-     * Closes the listening socket and any live session. Always succeeds and
-     * always lands the server in IDLE — a disarmed server holds nothing.
-     */
-    fun disarm() = synchronized(lock) {
-        disarmLocked()
-        update { snap ->
-            CamDroidServerSnapshot(
-                state = CamDroidServerState.IDLE,
-                port = null,
-                framesSent = snap.framesSent,
-                framesDropped = snap.framesDropped,
-                reason = snap.reason,
-            )
-        }
-    }
+    fun disarm() = synchronized(lock) { disarmLocked() }
 
     private fun disarmLocked() {
-        armedToken = null
         runCatching { serverSocket?.close() }
         serverSocket = null
+        armedToken = null
         acceptThread = null
-        if (!sessionEnded.get()) {
-            endSessionLocked("server disarmed")
-        }
     }
 
     private fun acceptLoop(server: ServerSocket) {
         val deadline = System.currentTimeMillis() + armTtlMs
-        while (System.currentTimeMillis() < deadline) {
-            val remaining = (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(1)
-            val client = try {
-                server.soTimeout = remaining
-                server.accept()
-            } catch (_: SocketTimeoutException) {
-                break // armed window expired with no client
-            } catch (_: Exception) {
-                return // disarmed / closed
+        try {
+            while (System.currentTimeMillis() < deadline && !sessionEnded.get()) {
+                server.soTimeout = 500
+                val client = try {
+                    server.accept()
+                } catch (_: SocketTimeoutException) {
+                    continue
+                }
+                if (sessionSocket != null) {
+                    // One session at a time: refuse a second client honestly.
+                    runCatching { client.close() }
+                    continue
+                }
+                beginSession(client)
             }
-            // Exactly one client: anything arriving while a session is live is
-            // rejected outright (walled garden, no second consumer of the camera).
             if (!sessionEnded.get()) {
-                runCatching { client.close() }
-                continue
-            }
-            client.soTimeout = handshakeTimeoutMs.coerceIn(100, 30_000).toInt()
-            // One buffered stream for the WHOLE session: the desktop sends its
-            // handshake and Start command back-to-back, often in a single TCP
-            // segment — a fresh stream after the handshake would swallow them.
-            val sessionInput = DataInputStream(BufferedInputStream(client.getInputStream()))
-            val handshake = try {
-                readPacketFrom(sessionInput)
-            } catch (_: SocketTimeoutException) {
-                runCatching { client.close() }
+                // TTL expired: nothing connected, close the door again.
                 synchronized(lock) { disarmLocked() }
-                update { it.copy(state = CamDroidServerState.IDLE, reason = "Handshake never arrived — disarmed") }
-                return
-            } catch (_: Exception) {
-                runCatching { client.close() }
-                synchronized(lock) { disarmLocked() }
-                update { it.copy(state = CamDroidServerState.IDLE, reason = "Handshake failed — disarmed") }
-                return
+                update { CamDroidServerSnapshot(state = CamDroidServerState.IDLE, reason = "arm TTL expired") }
             }
-            if (!handshakeValid(handshake)) {
-                runCatching { client.close() }
-                synchronized(lock) { disarmLocked() }
-                update { it.copy(state = CamDroidServerState.IDLE, reason = "Rejected camera stream handshake: bad token") }
-                return
-            }
-            beginSession(client, sessionInput)
-            return
-        }
-        // TTL expired: nothing connected, close the door again.
-        synchronized(lock) {
-            runCatching { server.close() }
-            if (serverSocket === server) {
-                serverSocket = null
-                armedToken = null
-                acceptThread = null
-                update { it.copy(state = CamDroidServerState.IDLE, reason = "Arm window expired — nobody connected") }
-            }
-        }
-    }
-
-    private fun handshakeValid(packet: CamDroidV1Packet): Boolean {
-        if (packet.kind != CamDroidMediaKind.METADATA) return false
-        val token = armedToken ?: return false
-        val provided = runCatching {
-            parseHandshakeToken(packet.payload.decodeToString())
-        }.getOrNull() ?: return false
-        return EngineEncoding.constantTimeEquals(token, provided.encodeToByteArray())
-    }
-
-    private fun beginSession(client: Socket, sessionInput: DataInputStream) {
-        synchronized(lock) {
-            sessionSocket = client
-            sessionEnded.set(false)
-            framesSent.set(0)
-            framesDropped.set(0)
-            latestFrame.set(null)
-            update { it.copy(state = CamDroidServerState.STREAMING, port = client.localPort) }
-
-            val source = frameSourceFactory()
-            frameSource = source
-            val started = runCatching {
-                source.start(
-                    sink = { frame -> offerFrame(frame) },
-                    onError = { msg -> endSession("capture failed: $msg", error = true) },
-                )
-            }
-            if (started.isFailure) {
-                // Capture unavailable (permission revoked, camera busy, ...):
-                // end honestly instead of streaming heartbeats forever.
-                endSessionLocked(
-                    "capture could not start: ${started.exceptionOrNull()?.message}",
-                    error = true,
-                )
-            }
-
-            val writer = Thread({ writerLoop(client) }, "ec0-camdroid-server-writer").apply {
-                isDaemon = true
-            }
-            writer.start()
-
-            val reader = Thread({ readerLoop(client, sessionInput) }, "ec0-camdroid-server-reader").apply {
-                isDaemon = true
-            }
-            reader.start()
+        } catch (_: Exception) {
+            if (!sessionEnded.get()) endSession("accept loop failed", error = true)
         }
     }
 
     /**
-     * Latest-wins bounded handoff: overwrite any unconsumed frame. The
-     * overwritten bytes are counted as explicitly dropped — capture NEVER
-     * queues behind a slow consumer.
+     * v2 session setup on the accepted socket:
+     *   1. client Hello — `client` field MUST be `ec0|<armed token>`.
+     *   2. server Capabilities — the frame source's real modes.
+     *   3. client Start — resolved against the modes; unsupported = rejected.
+     *   4. server StreamAccepted — then media flows.
      */
-    private fun offerFrame(frame: ByteArray) {
-        if (frame.size > maxFrameBytes) {
-            framesDropped.incrementAndGet()
-            return
-        }
-        val previous = latestFrame.getAndSet(frame)
-        if (previous != null) {
-            framesDropped.incrementAndGet()
-        }
-    }
-
-    private fun writerLoop(client: Socket) {
+    private fun beginSession(client: Socket) {
+        sessionSocket = client
+        client.tcpNoDelay = true
         try {
-            val out = client.getOutputStream()
-            // Send the actual capture config FIRST so the desktop sink launches
-            // with the real dimensions/framerate (honest telemetry, no guessing).
-            val config = CamDroidStreamConfig(
-                width = width,
-                height = height,
-                fps = targetFps,
-                codec = codec,
-            ).toJsonObject().toString()
-            synchronized(writeLock) {
-                out.write(CamDroidV1Codec.encode(CamDroidV1Packet(CamDroidMediaKind.METADATA, config.encodeToByteArray())))
-                out.flush()
+            client.soTimeout = handshakeTimeoutMs.coerceIn(100, 60_000).toInt()
+            val input = DataInputStream(BufferedInputStream(client.getInputStream()))
+
+            val hello = CamDroidV2.readPacket(input)
+            require(hello.kind == CamDroidV2.KIND_METADATA) { "expected a METADATA hello" }
+            val helloBody = CamDroidSessionMessages.parseType(hello.payload)
+                ?: throw IllegalArgumentException("hello is not a session message")
+            require(helloBody.first == "hello") { "expected a hello, got ${helloBody.first}" }
+            val clientField = helloBody.second["client"]?.toString()?.trim('"')
+                ?: throw IllegalArgumentException("hello carries no client identity")
+            val presentedToken = clientField.removePrefix("ec0|")
+            if (clientField == presentedToken) {
+                throw IllegalArgumentException("hello client identity lacks the ec0 token prefix")
+            }
+            val expected = armedToken ?: throw IllegalArgumentException("server is not armed")
+            if (!EngineEncoding.constantTimeEquals(presentedToken, expected)) {
+                throw IllegalArgumentException("stream token rejected")
             }
 
-            val frameIntervalMs = (1000L / targetFps.coerceIn(1, 60)).coerceAtLeast(1L)
-            var nextFrameDeadline = System.currentTimeMillis() + frameIntervalMs
-            var lastHeartbeatSent = System.currentTimeMillis()
-            while (!sessionEnded.get()) {
-                val now = System.currentTimeMillis()
-                if (now >= nextFrameDeadline) {
-                    nextFrameDeadline = now + frameIntervalMs
-                    val frame = latestFrame.getAndSet(null)
-                    if (frame != null) {
-                        synchronized(writeLock) {
-                            out.write(CamDroidV1Codec.encode(CamDroidV1Packet(CamDroidMediaKind.VIDEO, frame)))
-                            out.flush()
-                        }
-                        framesSent.incrementAndGet()
-                        // Keep the observable snapshot's counters in lockstep.
-                        update { it.copy(framesSent = framesSent.get(), framesDropped = framesDropped.get()) }
-                    }
-                }
-                if (now - lastHeartbeatSent >= heartbeatIntervalMs) {
-                    synchronized(writeLock) {
-                        out.write(CamDroidV1Codec.encode(CamDroidV1Codec.heartbeatPacket()))
-                        out.flush()
-                    }
-                    lastHeartbeatSent = now
-                }
-                val sleepMs = minOf(
-                    nextFrameDeadline - System.currentTimeMillis(),
-                    heartbeatIntervalMs,
-                ).coerceAtLeast(1L)
-                Thread.sleep(sleepMs)
-            }
-        } catch (_: Exception) {
-            if (!sessionEnded.get()) {
-                endSession("client connection lost", error = true)
-            }
-        }
-    }
+            val source = frameSourceFactory().also { frameSource = it }
+            val capabilities = CamDroidCapabilities(
+                codecs = listOf(source.preferredCodec()),
+                videoModes = source.supportedModes(),
+            )
+            CamDroidV2.Packet(
+                kind = CamDroidV2.KIND_METADATA,
+                flags = 0,
+                sessionId = 0,
+                sequence = 0,
+                captureTimestampNs = 0,
+                payload = CamDroidSessionMessages.capabilities(capabilities).toString().encodeToByteArray(),
+            ).writeTo(client.getOutputStream())
 
-    private fun readerLoop(client: Socket, input: DataInputStream) {
-        try {
-            // A silent client ends the session: the read timeout IS the watchdog.
+            // Start: mode resolution happens HERE — the client's desired shape
+            // is clamped to the advertised modes (the A03 60fps crash lesson).
+            val start = CamDroidV2.readPacket(input)
+            require(start.kind == CamDroidV2.KIND_METADATA) { "expected a METADATA start" }
+            val startBody = CamDroidSessionMessages.parseType(start.payload)
+                ?: throw IllegalArgumentException("start is not a session message")
+            require(startBody.first == "start") { "expected a start, got ${startBody.first}" }
+            val config = startBody.second["config"] as? JsonObject
+                ?: throw IllegalArgumentException("start carries no config")
+            val desiredCodec = config["codec"]?.toString()?.trim('"') ?: source.preferredCodec()
+            val desiredW = config["width"]?.toString()?.trim('"')?.toIntOrNull() ?: 1920
+            val desiredH = config["height"]?.toString()?.trim('"')?.toIntOrNull() ?: 1080
+            val desiredFps = config["fps"]?.toString()?.trim('"')?.toIntOrNull() ?: 30
+
+            val codec = capabilities.codecs.firstOrNull { it.equals(desiredCodec, ignoreCase = true) }
+                ?: capabilities.codecs.firstOrNull()
+                ?: throw IllegalArgumentException("the device advertises no video codecs")
+            val mode = CamDroidModeResolver.resolve(
+                capabilities, codec, desiredW, desiredH, desiredFps,
+            ) ?: throw IllegalArgumentException("the device advertises no video modes")
+            val bitrate = CamDroidModeResolver.recommendedBitrate(mode.width, mode.height, mode.fps, codec)
+                .coerceIn(mode.minBitrateBps, mode.maxBitrateBps)
+            val sessionId = System.currentTimeMillis()
+
+            CamDroidV2.Packet(
+                kind = CamDroidV2.KIND_METADATA,
+                flags = 0,
+                sessionId = sessionId,
+                sequence = 0,
+                captureTimestampNs = 0,
+                payload = CamDroidSessionMessages.streamAccepted(sessionId, codec, mode, bitrate)
+                    .toString().encodeToByteArray(),
+            ).writeTo(client.getOutputStream())
+
+            update { it.copy(state = CamDroidServerState.STREAMING, port = port) }
+
+            // Media session is live: watchdogs hand over to the session cadence.
             client.soTimeout = clientSilenceTimeoutMs.coerceIn(100, 60_000).toInt()
-            while (!sessionEnded.get()) {
-                val packet = readPacketFrom(input)
-                when (packet.kind) {
-                    CamDroidMediaKind.HEARTBEAT -> Unit
-                    CamDroidMediaKind.CONTROL -> handleControl(packet)
-                    else -> Unit // video/audio/metadata are upstream-only: ignore
+            startMedia(client, source, sessionId, mode, bitrate)
+        } catch (t: Throwable) {
+            runCatching { client.close() }
+            sessionSocket = null
+            runCatching { frameSource?.close() }
+            frameSource = null
+            endSession("handshake failed — ${t.message}", error = true)
+        }
+    }
+
+    private fun startMedia(
+        client: Socket,
+        source: CamDroidH264FrameSource,
+        sessionId: Long,
+        mode: CamDroidVideoMode,
+        bitrate: Long,
+    ) {
+        val out = client.getOutputStream()
+        val writer = thread(name = "ec0-camdroid-writer", isDaemon = true) {
+            try {
+                val frameIntervalMs = (1000L / mode.fps.coerceIn(1, 60)).coerceAtLeast(1L)
+                var nextFrameDeadline = System.currentTimeMillis() + frameIntervalMs
+                var lastHeartbeatSent = System.currentTimeMillis()
+                var sequence = 1L
+                while (!sessionEnded.get()) {
+                    val now = System.currentTimeMillis()
+                    if (now >= nextFrameDeadline) {
+                        nextFrameDeadline = now + frameIntervalMs
+                        val frame = latestFrame.getAndSet(null)
+                        if (frame != null && frame.size <= maxFrameBytes) {
+                            val isKey = latestFrameIsKey.getAndSet(false)
+                            val flags = if (isKey) CamDroidV2.FLAG_KEY_FRAME else 0
+                            synchronized(writeLock) {
+                                CamDroidV2.Packet(
+                                    kind = CamDroidV2.KIND_VIDEO,
+                                    flags = flags,
+                                    sessionId = sessionId,
+                                    sequence = sequence++,
+                                    captureTimestampNs = System.nanoTime(),
+                                    payload = frame,
+                                ).writeTo(out)
+                            }
+                            framesSent.incrementAndGet()
+                            update { it.copy(framesSent = framesSent.get(), framesDropped = framesDropped.get()) }
+                        }
+                    }
+                    if (now - lastHeartbeatSent >= heartbeatIntervalMs) {
+                        synchronized(writeLock) {
+                            CamDroidV2.Packet.heartbeat(sessionId, sequence++).writeTo(out)
+                        }
+                        lastHeartbeatSent = now
+                    }
+                    Thread.sleep(
+                        minOf(
+                            nextFrameDeadline - System.currentTimeMillis(),
+                            heartbeatIntervalMs,
+                        ).coerceAtLeast(1L),
+                    )
                 }
+            } catch (_: Exception) {
+                if (!sessionEnded.get()) endSession("media writer failed", error = true)
             }
-        } catch (_: SocketTimeoutException) {
-            if (!sessionEnded.get()) {
-                endSession("client silent for ${clientSilenceTimeoutMs}ms — auto-stopped", error = true)
-            }
-        } catch (_: EOFException) {
-            if (!sessionEnded.get()) {
-                endSession("desktop closed the stream socket", error = true)
-            }
-        } catch (_: SocketException) {
-            if (!sessionEnded.get()) {
-                endSession("client connection lost", error = true)
-            }
-        } catch (_: Exception) {
-            if (!sessionEnded.get()) {
-                endSession("client stream error", error = true)
+        }
+
+        source.start(
+            mode = mode,
+            bitrateBps = bitrate,
+            sink = object : CamDroidH264Sink {
+                override fun onEncoded(data: ByteArray, isConfig: Boolean, isKeyFrame: Boolean, ptsNs: Long) {
+                    if (sessionEnded.get()) return
+                    if (isConfig) {
+                        // SPS/PPS: send immediately, marked CONFIGURATION.
+                        synchronized(writeLock) {
+                            runCatching {
+                                CamDroidV2.Packet(
+                                    kind = CamDroidV2.KIND_VIDEO_CONFIG,
+                                    flags = CamDroidV2.FLAG_CONFIGURATION,
+                                    sessionId = sessionId,
+                                    sequence = 0,
+                                    captureTimestampNs = ptsNs,
+                                    payload = data,
+                                ).writeTo(out)
+                            }
+                        }
+                        return
+                    }
+                    // Capture thread: park the newest NAL in the bounded slot.
+                    if (data.size > maxFrameBytes) {
+                        framesDropped.incrementAndGet()
+                        return
+                    }
+                    latestFrame.set(data)
+                    latestFrameIsKey.set(isKeyFrame)
+                }
+            },
+            onError = { reason -> if (!sessionEnded.get()) endSession("capture engine: $reason", error = true) },
+        )
+
+        // Reader: consumes the client's heartbeats/controls; the read timeout
+        // IS the silence watchdog — a vanished desktop ends the session.
+        thread(name = "ec0-camdroid-reader", isDaemon = true) {
+            try {
+                val input = DataInputStream(BufferedInputStream(client.getInputStream()))
+                while (!sessionEnded.get()) {
+                    val packet = CamDroidV2.readPacket(input)
+                    when (packet.kind) {
+                        CamDroidV2.KIND_HEARTBEAT -> Unit
+                        else -> Unit // media kinds are upstream-only inbound
+                    }
+                }
+            } catch (_: SocketTimeoutException) {
+                if (!sessionEnded.get()) endSession("client silent for ${clientSilenceTimeoutMs}ms — auto-stopped", error = true)
+            } catch (_: EOFException) {
+                if (!sessionEnded.get()) endSession("desktop closed the stream socket", error = true)
+            } catch (_: SocketException) {
+                if (!sessionEnded.get()) endSession("client connection lost", error = true)
+            } catch (_: Exception) {
+                if (!sessionEnded.get()) endSession("client reader failed", error = true)
+            } finally {
+                runCatching { writer.join(1_000) }
+                if (!sessionEnded.get()) endSession("session reader ended", error = false)
             }
         }
     }
 
-    private fun handleControl(packet: CamDroidV1Packet) {
-        // TCP control plane carries the raw CamDroid wire JSON, not the
-        // engine-envelope representation — parse accordingly.
-        val command = CamDroidControlCommand.fromCamDroidWireJson(packet.payload.decodeToString())
-            ?: return
-        if (command is CamDroidControlCommand.Stop) {
-            endSession("stopped by desktop")
-            return
-        }
-        onControlCommand?.invoke(command)
-    }
-
-    /**
-     * Ends the live session and disarms. Synchronous, network-independent —
-     * safe to call from any thread, safe when the peer already vanished.
-     */
     fun endSession(reason: String, error: Boolean = false) = synchronized(lock) {
         endSessionLocked(reason, error)
     }
 
     private fun endSessionLocked(reason: String, error: Boolean = false) {
         if (!sessionEnded.compareAndSet(false, true)) {
-            // Already ended — keep the FIRST reason (e.g. "stopped by desktop"),
-            // not whichever teardown thread got here last.
+            // Already ended — keep the FIRST reason, not the last teardown's.
             return
         }
         runCatching { sessionSocket?.close() }
@@ -453,68 +447,9 @@ class CamDroidStreamServer(
     }
 
     override fun close() = synchronized(lock) {
+        endSessionLocked("server closed")
         disarmLocked()
-        update { it.copy(state = CamDroidServerState.IDLE) }
     }
 
-    /** Telemetry hook: frames dropped by the bounded slot or the size guard. */
     fun droppedFrameCount(): Long = framesDropped.get()
-
-    private companion object {
-        fun parseHandshakeToken(json: String): String? {
-            val obj = Json.decodeFromString(JsonObject.serializer(), json)
-            val client = obj["client"]?.jsonPrimitive?.contentOrNull ?: return null
-            if (client.isBlank()) return null
-            return obj["token"]?.jsonPrimitive?.contentOrNull
-        }
-
-        /** Incremental v1-framing reader over one session stream. */
-        fun readPacketFrom(input: DataInputStream): CamDroidV1Packet {
-            val kindByte = input.readByte()
-            val length = Integer.reverseBytes(input.readInt()) // LE on-wire
-            require(length in 0..CamDroidConstants.MAX_PAYLOAD_BYTES) {
-                "Invalid CamDroid v1 payload length: $length"
-            }
-            val payload = ByteArray(length)
-            input.readFully(payload)
-            return CamDroidV1Packet(
-                kind = CamDroidMediaKind.fromWireValue(kindByte),
-                payload = payload,
-            )
-        }
-    }
-}
-
-/** Actual capture config the phone reports right after the handshake (`METADATA`). */
-data class CamDroidStreamConfig(
-    val width: Int,
-    val height: Int,
-    val fps: Int,
-    val codec: String,
-) {
-    fun toJsonObject(): JsonObject = buildJsonObject {
-        put("type", "config")
-        put("width", width.toLong())
-        put("height", height.toLong())
-        put("fps", fps.toLong())
-        put("codec", codec)
-    }
-
-    companion object {
-        /** Defensive bound on the config metadata payload. */
-        const val MAX_JSON_BYTES: Int = 4096
-
-        fun fromJson(json: String): CamDroidStreamConfig? = runCatching {
-            val obj = Json.decodeFromString(JsonObject.serializer(), json)
-            CamDroidStreamConfig(
-                width = obj["width"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return null,
-                height = obj["height"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return null,
-                fps = obj["fps"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return null,
-                codec = obj["codec"]?.jsonPrimitive?.contentOrNull ?: "mjpeg",
-            )
-        }.getOrNull()?.takeIf {
-            it.width in 1..4096 && it.height in 1..4096 && it.fps in 1..60 &&
-                it.width * it.height <= 4096L * 2160L
-        }
-    }
 }
