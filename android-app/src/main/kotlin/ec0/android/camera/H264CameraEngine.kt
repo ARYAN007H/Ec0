@@ -34,7 +34,7 @@ import android.util.Log
 import android.view.Surface
 import ec0.core.engine.services.CamDroidH264FrameSource
 import ec0.core.engine.services.CamDroidH264Sink
-import ec0.core.engine.services.CamDroidVideoMode
+import ec0.core.engine.services.camdroid.CamDroidVideoMode
 
 /** ec0's camera engine: hardware H.264 NAL units for the CamDroid v2 wire. */
 class H264CameraEngine(
