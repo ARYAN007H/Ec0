@@ -56,6 +56,7 @@ class CamDroidStreamReceiverTest {
         val handshakeSeen = AtomicReference<String?>(null)
         val startSeen = AtomicReference<String?>(null)
         val controlPackets = CopyOnWriteArrayList<String>()
+        val heartbeatsSeen = java.util.concurrent.atomic.AtomicInteger(0)
         val clientClosed = CountDownLatch(1)
         private val thread = Thread {
             runCatching {
@@ -72,6 +73,9 @@ class CamDroidStreamReceiverTest {
                             val extra = readPacket(input)
                             if (extra.kind == CamDroidMediaKind.CONTROL) {
                                 controlPackets.add(extra.payload.decodeToString())
+                            }
+                            if (extra.kind == CamDroidMediaKind.HEARTBEAT) {
+                                heartbeatsSeen.incrementAndGet()
                             }
                         }
                     }
@@ -138,11 +142,13 @@ class CamDroidStreamReceiverTest {
         sink: RecordingSink,
         silenceMs: Long = 700,
         configAwaitMs: Long = 2_000,
+        heartbeatMs: Long = 2_000,
     ) = CamDroidStreamReceiver(
         sinkLauncher = { sink },
         v4l2DevicePath = "/dev/video10",
         silenceTimeoutMs = silenceMs,
         configAwaitMs = configAwaitMs,
+        heartbeatIntervalMs = heartbeatMs,
     )
 
     // ---- happy path --------------------------------------------------------
@@ -432,5 +438,33 @@ class CamDroidStreamReceiverTest {
             elapsed < 3_000,
             "the bounded retry must not hang the caller ($elapsed ms)",
         )
+    }
+
+    // ---- upstream heartbeats (the phone's client-silence watchdog) ---------
+
+    /**
+     * The phone's server auto-stops when its CLIENT is silent for 5s — and the
+     * desktop only READS the stream, so without upstream heartbeats every
+     * session died ~5s after connect (observed live: banner went live, then
+     * the sink died and OBS showed black). The wire doc promised 'HEARTBEAT
+     * keepalive in BOTH directions'; the downstream leg existed, this pins the
+     * upstream one.
+     */
+    @Test
+    fun sendsUpstreamHeartbeatsToFeedThePhonesWatchdog() {
+        val sink = RecordingSink()
+        val phone = FakePhoneServer(expectedToken = "tok-hb") { session ->
+            session.sendConfig()
+            Thread.sleep(1_200) // hold the session across several HB intervals
+        }
+        phone.start()
+        val receiver = newReceiver(phone.port, sink, heartbeatMs = 300)
+        val snapshot = receiver.start("127.0.0.1", phone.port, streamToken = "tok-hb", requestedFps = 30)
+        assertEquals(CamDroidReceiverState.STREAMING, snapshot.state)
+        assertTrue(
+            await(3_000L) { phone.heartbeatsSeen.get() >= 2 },
+            "the desktop must send periodic heartbeats upstream, saw ${phone.heartbeatsSeen.get()}",
+        )
+        receiver.close()
     }
 }
