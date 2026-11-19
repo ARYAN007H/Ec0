@@ -103,8 +103,10 @@ class H264CameraEngine(
             for (candidate in listOf(1920 to 1080, 1280 to 720, 640 to 480)) {
                 val (w, h) = candidate
                 if (!videoCaps.isSizeSupported(w, h)) continue
+                // getSupportedFrameRatesFor(w, h): the per-size fps Range —
+                // a flat supportedFrameRatesFor property does not exist.
                 val fps = (1..minOf(30, lensFpsCeiling))
-                    .lastOrNull { videoCaps.supportedFrameRatesFor.contains(it) } ?: continue
+                    .lastOrNull { videoCaps.getSupportedFrameRatesFor(w, h).contains(it) } ?: continue
                 modes.add(
                     CamDroidVideoMode(
                         width = w,
