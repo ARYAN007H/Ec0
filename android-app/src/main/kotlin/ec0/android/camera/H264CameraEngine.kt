@@ -33,6 +33,8 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import ec0.core.engine.services.CamDroidH264FrameSource
+import ec0.core.engine.services.CamDroidVideoMode
+import ec0.core.engine.services.CamDroidH264FrameSource
 import ec0.core.engine.services.CamDroidH264Sink
 import ec0.core.engine.services.CamDroidVideoMode
 
