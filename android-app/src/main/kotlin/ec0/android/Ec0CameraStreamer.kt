@@ -46,8 +46,9 @@ import ec0.core.engine.protocol.CameraBackend
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.CameraStreamState
 import ec0.core.engine.protocol.CamDroidConstants
+import ec0.android.camera.H264CameraEngine
 import ec0.core.engine.services.CamDroidArmResult
-import ec0.core.engine.services.CamDroidFrameSource
+import ec0.core.engine.services.CamDroidH264FrameSource
 import ec0.core.engine.services.CamDroidStreamServer
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
@@ -83,7 +84,7 @@ class Ec0CameraStreamer(
     private var frontCameraRequested: Boolean = false
 
     @Volatile
-    private var liveSource: CameraXFrameSource? = null
+    private var liveSource: CamDroidH264FrameSource? = null
 
     /** Re-promote hook: Ec0CompanionService upgrades its FGS type on arming. */
     @Volatile
@@ -116,17 +117,16 @@ class Ec0CameraStreamer(
                 )
             }
             is CamDroidControlCommand.SwitchCamera -> {
+                // Live lens flip needs a capture-session reconfigure; the
+                // engine honours the preference on the next arm. Honest no-op
+                // for now rather than a half-working switch.
                 frontCameraRequested = !frontCameraRequested
-                liveSource?.setFacing(back = !frontCameraRequested)
+                currentStatusLocked(reason = "lens preference applies on next stream start")
+            }
+            is CamDroidControlCommand.SetZoom, is CamDroidControlCommand.SetFlash -> {
+                // Hardware zoom/torch controls land with the engine's second
+                // iteration — acknowledge honestly without pretending.
                 currentStatusLocked(reason = null)
-            }
-            is CamDroidControlCommand.SetZoom -> {
-                liveSource?.setZoom(command.zoomX100 / 100.0)
-                currentStatusLocked(reason = null)?.copy(zoomX100 = command.zoomX100)
-            }
-            is CamDroidControlCommand.SetFlash -> {
-                liveSource?.setTorch(command.enabled)
-                currentStatusLocked(reason = null)?.copy(flashEnabled = command.enabled)
             }
             else -> null
         }
@@ -169,21 +169,13 @@ class Ec0CameraStreamer(
         disarmLocked("re-armed by a new start command")
         android.util.Log.i("ec0.camera", "arming stream server (token received, fps=${command.fps.coerceAtMost(maxFps)})")
 
-        val source = CameraXFrameSource(
-            appContext = appContext,
-            width = captureWidth,
-            height = captureHeight,
-            fps = command.fps.coerceAtMost(maxFps),
-            jpegQuality = jpegQuality,
-            startBackCamera = !frontCameraRequested,
-        )
+        // The imported CamDroid engine: hardware H.264, capability-clamped to
+        // the device's REAL encoder limits (the A03 1080p@30 lesson — the old
+        // 60fps MJPEG path crashed MediaCodec.configure on this phone).
+        val source = H264CameraEngine(appContext, preferFrontCamera = frontCameraRequested)
         val newServer = CamDroidStreamServer(
             frameSourceFactory = { source },
             port = streamPort,
-            width = captureWidth,
-            height = captureHeight,
-            targetFps = command.fps.coerceAtMost(maxFps),
-            codec = "mjpeg",
         )
         newServer.onControlCommand = { cmd ->
             // Route live controls (zoom/switch/flash) through the same handler.
@@ -199,8 +191,8 @@ class Ec0CameraStreamer(
                     backend = CameraBackend.CAMDROID_NATIVE,
                     port = armResult.port,
                     v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
-                    codec = "mjpeg",
-                    resolution = "${captureWidth}x${captureHeight}",
+                    codec = "h264",
+                    resolution = "1080p",
                     fps = command.fps.coerceAtMost(maxFps),
                     audioEnabled = false,
                     frontCamera = frontCameraRequested,
