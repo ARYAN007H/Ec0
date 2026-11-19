@@ -25,6 +25,7 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.EngineEncoding
+import kotlinx.serialization.json.JsonObject
 import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.services.camdroid.CamDroidCapabilities
@@ -236,7 +237,7 @@ class CamDroidStreamServer(
                 throw IllegalArgumentException("hello client identity lacks the ec0 token prefix")
             }
             val expected = armedToken ?: throw IllegalArgumentException("server is not armed")
-            if (!EngineEncoding.constantTimeEquals(presentedToken, expected)) {
+            if (!EngineEncoding.constantTimeEquals(presentedToken.encodeToByteArray(), expected.encodeToByteArray())) {
                 throw IllegalArgumentException("stream token rejected")
             }
 

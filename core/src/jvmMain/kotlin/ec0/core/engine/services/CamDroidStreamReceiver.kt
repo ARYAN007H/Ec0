@@ -438,7 +438,7 @@ class CamDroidStreamReceiver(
             synchronized(writeLock) {
                 val out = sock.getOutputStream()
                 val payload = buildJsonObject {
-                    put("message", CamDroidControlCommand.toJsonObject(command))
+                    put("message", command.toJsonObject())
                 }
                 CamDroidV2.Packet(
                     kind = CamDroidV2.KIND_CONTROL,
