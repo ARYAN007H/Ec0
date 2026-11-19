@@ -35,6 +35,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -119,6 +121,15 @@ class CamDroidStreamReceiver(
      */
     private val bindRetryAttempts: Int = 6,
     private val bindRetryIntervalMs: Long = 300L,
+    /**
+     * Upstream HEARTBEAT cadence. The phone's server enforces a 5s CLIENT-silence
+     * watchdog — and the desktop only ever READS (frames/heartbeats flow
+     * downstream), so without these the phone kills every session ~5s after
+     * connect (observed live: stream banner goes live, then the sink dies and
+     * OBS shows black). The wire doc says 'HEARTBEAT keepalive in BOTH
+     * directions'; the downstream leg existed, this is the upstream one.
+     */
+    private val heartbeatIntervalMs: Long = 2_000L,
 ) : Closeable {
 
     private val lock = Any()
@@ -134,6 +145,7 @@ class CamDroidStreamReceiver(
     private var sink: CamDroidSinkHandle? = null
 
     private val sessionEnded = AtomicBoolean(true)
+    private var heartbeatExecutor: ScheduledExecutorService? = null
     private val receivedConfig = AtomicReference<CamDroidStreamConfig?>(null)
     /** Unblocks `start()` once the phone's config METADATA has been parsed. */
     @Volatile
@@ -232,6 +244,24 @@ class CamDroidStreamReceiver(
             }
         } catch (e: Exception) {
             return failLocked("Camera stream handshake failed — ${e.message}")
+        }
+
+        // Upstream heartbeat: feeds the phone's client-silence watchdog. Must
+        // start BEFORE the config await — the watchdog runs from connect.
+        heartbeatExecutor = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "ec0-camdroid-hb").apply { isDaemon = true }
+        }.also { hb ->
+            hb.scheduleAtFixedRate({
+                if (sessionEnded.get()) return@scheduleAtFixedRate
+                runCatching {
+                    val sock = socket ?: return@scheduleAtFixedRate
+                    synchronized(writeLock) {
+                        val out = sock.getOutputStream()
+                        out.write(CamDroidV1Codec.encode(CamDroidV1Codec.heartbeatPacket()))
+                        out.flush()
+                    }
+                }
+            }, heartbeatIntervalMs, heartbeatIntervalMs, TimeUnit.MILLISECONDS)
         }
 
         val reader = Thread({ readerLoop(sock) }, "ec0-camdroid-receiver").apply {
@@ -432,6 +462,8 @@ class CamDroidStreamReceiver(
         if (!sessionEnded.get()) {
             endSessionLocked("superseded by a new stream")
         }
+        runCatching { heartbeatExecutor?.shutdownNow() }
+        heartbeatExecutor = null
         runCatching { socket?.close() }
         socket = null
         runCatching { sink?.close() }
