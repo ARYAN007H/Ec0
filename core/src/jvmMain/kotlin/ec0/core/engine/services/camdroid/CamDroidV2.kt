@@ -25,7 +25,10 @@
 package ec0.core.engine.services.camdroid
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -95,7 +98,7 @@ object CamDroidV2 {
         }
     }
 
-    fun readPacket(input: InputStream): Packet {
+    fun readPacket(input: java.io.DataInputStream): Packet {
         val header = ByteArray(HEADER_LEN)
         input.readFully(header)
         require(String(header, 0, 4, Charsets.US_ASCII) == MAGIC) { "invalid v2 protocol magic" }
@@ -182,8 +185,8 @@ data class CamDroidCapabilities(
     val videoModes: List<CamDroidVideoMode>,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
-        putJsonArray("protocol_versions") { add(2) }
-        putJsonArray("codecs") { codecs.forEach { add(it) } }
+        putJsonArray("protocol_versions") { add(JsonPrimitive(2)) }
+        putJsonArray("codecs") { codecs.forEach { add(JsonPrimitive(it)) } }
         put("video_modes", buildJsonArray { videoModes.forEach { add(it.toJson()) } })
         putJsonArray("audio_codecs") { /* none yet — ec0 streams video-only */ }
     }
@@ -196,8 +199,8 @@ data class CamDroidCapabilities(
             } ?: emptyList(),
         )
 
-        private fun kotlinx.serialization.JsonElement.jsonArrayOrEmpty() =
-            this as? kotlinx.serialization.json.JsonArray ?: kotlinx.serialization.json.JsonArray(emptyList())
+        private fun JsonElement.jsonArrayOrEmpty(): JsonArray =
+            this as? JsonArray ?: JsonArray(emptyList())
     }
 }
 
