@@ -1,30 +1,42 @@
 /*
  * Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
  *
- * Desktop-side Continuity Camera receiver: speaks CamDroid ProtocolHandler v1
- * framing over TCP :4747 to the phone's token-gated stream server, then pipes
- * the inbound MJPEG frames into `ffmpeg -f mjpeg -i pipe:0 -pix_fmt yuyv422
- * -f v4l2 /dev/video10` so any Linux app sees an "ec0 camera" webcam.
+ * Desktop-side Continuity Camera receiver: speaks CamDroid wire protocol v2
+ * ("CMD2") over TCP :4747 to the phone's token-gated stream server — Hello
+ * (carrying the arm token as `ec0|<token>`) → Capabilities → Start (resolved
+ * against the phone's advertised modes) → StreamAccepted — then pipes the
+ * inbound hardware-H.264 NAL stream into `ffmpeg -f h264 -i pipe:0
+ * -pix_fmt yuyv422 -f v4l2 /dev/video10` so any Linux app sees an "ec0
+ * camera" webcam.
  *
  * Resilience contract:
  *   - `stop()` is synchronous and network-independent: it always closes the
  *     socket and kills the ffmpeg sink, even when the phone has vanished.
  *   - A silent peer (no packet — including HEARTBEAT — for
  *     [silenceTimeoutMs]) auto-stops the stream with an honest ERROR reason.
- *   - Frames arriving before the capture config are dropped (bounded, never
- *     queued): the sink is launched with the phone's ACTUAL config metadata.
+ *   - Upstream HEARTBEATs feed the phone's client-silence watchdog (both
+ *     directions of the keepalive are mandatory).
+ *   - Media arriving before the StreamAccepted handshake is dropped (bounded,
+ *     never queued): the sink is launched with the phone's ACTUAL config.
  */
 package ec0.core.engine.services
 
 import ec0.core.engine.protocol.CamDroidConstants
 import ec0.core.engine.protocol.CamDroidControlCommand
-import ec0.core.engine.protocol.CamDroidMediaKind
-import ec0.core.engine.protocol.CamDroidV1Codec
-import ec0.core.engine.protocol.CamDroidV1Packet
+import ec0.core.engine.services.camdroid.CamDroidModeResolver
+import ec0.core.engine.services.camdroid.CamDroidSessionMessages
+import ec0.core.engine.services.camdroid.CamDroidV2
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.Closeable
@@ -41,6 +53,39 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * The negotiated capture config the phone reports in its v2 StreamAccepted —
+ * drives the ffmpeg sink's demux/format expectations. Bounds are honest:
+ * a hostile config never reaches the sink.
+ */
+data class CamDroidStreamConfig(
+    val codec: String,
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+) {
+    fun toJsonObject(): JsonObject = buildJsonObject {
+        put("codec", codec)
+        put("width", width)
+        put("height", height)
+        put("fps", fps)
+    }
+
+    companion object {
+        const val MAX_JSON_BYTES: Int = 4 * 1024
+
+        fun fromJson(json: String): CamDroidStreamConfig? = runCatching {
+            val obj = Json.parseToJsonElement(json).jsonObject
+            val codec = obj["codec"]?.jsonPrimitive?.content ?: return null
+            val width = obj["width"]?.jsonPrimitive?.longOrNull?.toInt() ?: return null
+            val height = obj["height"]?.jsonPrimitive?.longOrNull?.toInt() ?: return null
+            val fps = obj["fps"]?.jsonPrimitive?.longOrNull?.toInt() ?: return null
+            if (width !in 1..8192 || height !in 1..8192 || fps !in 1..120) return null
+            CamDroidStreamConfig(codec = codec, width = width, height = height, fps = fps)
+        }.getOrNull()
+    }
+}
 
 /** Lifecycle of the desktop-side receiver. */
 enum class CamDroidReceiverState(val wireName: String) {
@@ -217,30 +262,18 @@ class CamDroidStreamReceiver(
 
         try {
             val out = sock.getOutputStream()
-            // Handshake MUST carry the arm token the desktop delivered to the
-            // phone over the AEAD-encrypted engine session.
-            val handshake =
-                """{"version":"1.0","client":"ec0-desktop","token":"${streamToken}"}"""
+            // The v2 Hello MUST carry the arm token the desktop delivered to
+            // the phone over the AEAD-encrypted engine session (`ec0|<token>`).
             synchronized(writeLock) {
-                out.write(
-                    CamDroidV1Codec.encode(
-                        CamDroidV1Packet(CamDroidMediaKind.METADATA, handshake.encodeToByteArray()),
-                    ),
-                )
-                out.flush()
-                out.write(
-                    CamDroidV1Codec.encode(
-                        CamDroidV1Codec.controlCommandPacket(
-                            CamDroidControlCommand.Start(
-                                codec = "mjpeg",
-                                resolution = "1080p",
-                                fps = requestedFps.coerceIn(30, 60),
-                                audio = false,
-                            ),
-                        ),
-                    ),
-                )
-                out.flush()
+                CamDroidV2.Packet(
+                    kind = CamDroidV2.KIND_METADATA,
+                    flags = 0,
+                    sessionId = 0,
+                    sequence = 0,
+                    captureTimestampNs = 0,
+                    payload = CamDroidSessionMessages.hello("ec0|$streamToken")
+                        .toString().encodeToByteArray(),
+                ).writeTo(out)
             }
         } catch (e: Exception) {
             return failLocked("Camera stream handshake failed — ${e.message}")
@@ -256,9 +289,7 @@ class CamDroidStreamReceiver(
                 runCatching {
                     val sock = socket ?: return@scheduleAtFixedRate
                     synchronized(writeLock) {
-                        val out = sock.getOutputStream()
-                        out.write(CamDroidV1Codec.encode(CamDroidV1Codec.heartbeatPacket()))
-                        out.flush()
+                        CamDroidV2.Packet.heartbeat(sessionId = 0, sequence = 0).writeTo(sock.getOutputStream())
                     }
                 }
             }, heartbeatIntervalMs, heartbeatIntervalMs, TimeUnit.MILLISECONDS)
@@ -299,13 +330,12 @@ class CamDroidStreamReceiver(
         return _snapshot.value
     }
 
-    /** The exact ffmpeg pipeline: MJPEG demux -> YUYV raw frames -> v4l2loopback. */
+    /** The exact ffmpeg pipeline: H.264 Annex B demux -> YUYV raw frames -> v4l2loopback. */
     fun buildFfmpegArgv(config: CamDroidStreamConfig): List<String> = listOf(
         ffmpegBinary,
         "-hide_banner",
         "-loglevel", "error",
-        "-f", "mjpeg",
-        "-framerate", config.fps.toString(),
+        "-f", "h264",
         "-i", "pipe:0",
         "-pix_fmt", "yuyv422",
         "-f", "v4l2",
@@ -319,12 +349,11 @@ class CamDroidStreamReceiver(
             sock.soTimeout = silenceTimeoutMs.coerceIn(100, 60_000).toInt()
             val input = DataInputStream(BufferedInputStream(sock.getInputStream()))
             while (!sessionEnded.get()) {
-                val packet = readPacketFrom(input)
+                val packet = CamDroidV2.readPacket(input)
                 when (packet.kind) {
-                    CamDroidMediaKind.METADATA -> handleMetadata(packet)
-                    CamDroidMediaKind.VIDEO -> handleVideo(packet)
-                    CamDroidMediaKind.HEARTBEAT -> Unit
-                    CamDroidMediaKind.CONTROL -> handleControl(packet)
+                    CamDroidV2.KIND_METADATA -> handleSessionMetadata(packet)
+                    CamDroidV2.KIND_VIDEO, CamDroidV2.KIND_VIDEO_CONFIG -> handleVideo(packet)
+                    CamDroidV2.KIND_HEARTBEAT -> Unit
                     else -> Unit
                 }
             }
@@ -346,22 +375,34 @@ class CamDroidStreamReceiver(
         }
     }
 
-    private fun handleMetadata(packet: CamDroidV1Packet) {
+    /**
+     * Session metadata: the awaited [CamDroidSessionMessages.streamAccepted]
+     * (carries the negotiated capture config). Late Capabilities are ignored.
+     */
+    private fun handleSessionMetadata(packet: CamDroidV2.Packet) {
         if (packet.payload.size > CamDroidStreamConfig.MAX_JSON_BYTES) {
-            endSession("Phone config metadata exceeds ${CamDroidStreamConfig.MAX_JSON_BYTES} bytes", error = true)
+            endSession("Phone session metadata exceeds ${CamDroidStreamConfig.MAX_JSON_BYTES} bytes", error = true)
             return
         }
-        val config = CamDroidStreamConfig.fromJson(packet.payload.decodeToString())
-        if (config == null) {
-            endSession("Phone sent an unparsable capture config", error = true)
+        val parsed = CamDroidSessionMessages.parseType(packet.payload) ?: return
+        if (parsed.first != "stream_accepted") return
+        val data = parsed.second
+        val configJson = data["config"] as? JsonObject ?: run {
+            endSession("Phone sent a StreamAccepted without a capture config", error = true)
             return
         }
+        val config = CamDroidStreamConfig(
+            codec = configJson["codec"]?.toString()?.trim('"') ?: "h264",
+            width = configJson["width"]?.toString()?.trim('"')?.toIntOrNull() ?: 0,
+            height = configJson["height"]?.toString()?.trim('"')?.toIntOrNull() ?: 0,
+            fps = configJson["fps"]?.toString()?.trim('"')?.toIntOrNull() ?: 0,
+        )
         receivedConfig.set(config)
         update { it.copy(config = config) }
         configLatchField?.countDown()
     }
 
-    private fun handleVideo(packet: CamDroidV1Packet) {
+    private fun handleVideo(packet: CamDroidV2.Packet) {
         val activeSink = sink // volatile read — MUST NOT take [lock] (see field doc)
         if (activeSink == null || receivedConfig.get() == null) {
             // Bounded pre-config policy: drop, never queue.
@@ -386,15 +427,6 @@ class CamDroidStreamReceiver(
         }
     }
 
-    private fun handleControl(packet: CamDroidV1Packet) {
-        // TCP control plane carries the raw CamDroid wire JSON.
-        val command = CamDroidControlCommand.fromCamDroidWireJson(packet.payload.decodeToString())
-            ?: return
-        if (command is CamDroidControlCommand.Stop) {
-            endSession("Phone stopped the camera stream")
-        }
-    }
-
     /**
      * Sends a live control command (zoom/switch/...) on the stream socket.
      * Best-effort: returns false when no session is live.
@@ -405,8 +437,17 @@ class CamDroidStreamReceiver(
         return try {
             synchronized(writeLock) {
                 val out = sock.getOutputStream()
-                out.write(CamDroidV1Codec.encode(CamDroidV1Codec.controlCommandPacket(command)))
-                out.flush()
+                val payload = buildJsonObject {
+                    put("message", CamDroidControlCommand.toJsonObject(command))
+                }
+                CamDroidV2.Packet(
+                    kind = CamDroidV2.KIND_CONTROL,
+                    flags = 0,
+                    sessionId = 0,
+                    sequence = 0,
+                    captureTimestampNs = 0,
+                    payload = payload.toString().encodeToByteArray(),
+                ).writeTo(out)
             }
             true
         } catch (_: Exception) {
@@ -480,22 +521,5 @@ class CamDroidStreamReceiver(
 
     override fun close() {
         stop("receiver closed")
-    }
-
-    private companion object {
-        /** Incremental v1-framing reader over one session stream. */
-        fun readPacketFrom(input: DataInputStream): CamDroidV1Packet {
-            val kindByte = input.readByte()
-            val length = Integer.reverseBytes(input.readInt()) // LE on-wire
-            require(length in 0..CamDroidConstants.MAX_PAYLOAD_BYTES) {
-                "Invalid CamDroid v1 payload length: $length"
-            }
-            val payload = ByteArray(length)
-            input.readFully(payload)
-            return CamDroidV1Packet(
-                kind = CamDroidMediaKind.fromWireValue(kindByte),
-                payload = payload,
-            )
-        }
     }
 }
