@@ -21,6 +21,7 @@ import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CamDroidMediaKind
 import ec0.core.engine.protocol.CamDroidV1Codec
 import ec0.core.engine.protocol.CamDroidV1Packet
+import ec0.core.engine.protocol.CameraEffectsCommand
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -65,6 +66,8 @@ interface CamDroidSinkHandle : Closeable {
     val stdin: OutputStream
     val isAlive: Boolean
     fun exitCode(): Int?
+    /** Bounded trailing stderr/stdout lines for honest diagnostics if ffmpeg exits. */
+    fun lastDiagnosticOutput(): String? = null
     override fun close()
 }
 
@@ -73,18 +76,46 @@ fun interface CamDroidSinkLauncher {
     fun launch(argv: List<String>): CamDroidSinkHandle
 }
 
-/** Default launcher: real `ffmpeg` writing raw YUYV into the loopback device. */
+/**
+ * Default launcher: real `ffmpeg` writing raw YUYV into the loopback device.
+ *
+ * CRITICAL: Always drains `proc.inputStream` with `redirectErrorStream(true)` on a
+ * daemon thread into a bounded 16-line ring buffer. Leaving ffmpeg's stderr pipe
+ * unread causes an OS pipe deadlock after 64 KiB of log output (freezing OBS black!).
+ */
 object FfmpegV4l2SinkLauncher : CamDroidSinkLauncher {
+    private const val MAX_LOG_LINES = 16
+
     override fun launch(argv: List<String>): CamDroidSinkHandle {
         val proc = ProcessBuilder(argv)
-            .redirectErrorStream(false)
+            .redirectErrorStream(true)
             .start()
-        val stdin = BufferedOutputStream(proc.getOutputStream())
+        val logRing = ArrayDeque<String>(MAX_LOG_LINES)
+        val drainer = Thread({
+            runCatching {
+                proc.inputStream.bufferedReader().useLines { lines ->
+                    for (line in lines) {
+                        val trimmed = line.trim()
+                        if (trimmed.isEmpty()) continue
+                        synchronized(logRing) {
+                            if (logRing.size >= MAX_LOG_LINES) logRing.removeFirst()
+                            logRing.addLast(trimmed.take(240))
+                        }
+                    }
+                }
+            }
+        }, "ec0-ffmpeg-sink-log").apply { isDaemon = true }
+        drainer.start()
+
+        val stdin = BufferedOutputStream(proc.getOutputStream(), 128 * 1024)
         return object : CamDroidSinkHandle {
             override val stdin: OutputStream = stdin
             override val isAlive: Boolean
                 get() = proc.isAlive
             override fun exitCode(): Int? = if (proc.isAlive) null else proc.exitValue()
+            override fun lastDiagnosticOutput(): String? = synchronized(logRing) {
+                logRing.takeLast(4).joinToString(" | ").ifBlank { null }
+            }
             override fun close() {
                 runCatching { stdin.flush() }
                 runCatching { stdin.close() }
@@ -130,6 +161,7 @@ class CamDroidStreamReceiver(
      * directions'; the downstream leg existed, this is the upstream one.
      */
     private val heartbeatIntervalMs: Long = 2_000L,
+    private val effectsProvider: () -> CameraEffectsCommand = { CameraEffectsCommand() },
 ) : Closeable {
 
     private val lock = Any()
@@ -153,6 +185,15 @@ class CamDroidStreamReceiver(
     private val framesReceived = AtomicLong(0)
     private val framesDropped = AtomicLong(0)
     private val writeLock = Any()
+    private val sinkWriteLock = Any()
+    /**
+     * Most recent H.264 Annex-B SPS/PPS/IDR keyframe received on this session.
+     * Primed into freshly launched ffmpeg sinks (both initial startup when the first
+     * keyframe arrives before ffmpeg finishes spawning, and live Studio Effects reloads)
+     * so ffmpeg NEVER attempts to decode a P-slice without SPS/PPS/IDR.
+     */
+    @Volatile
+    private var lastH264Keyframe: ByteArray? = null
 
     private val _snapshot = MutableStateFlow(
         CamDroidReceiverSnapshot(state = CamDroidReceiverState.IDLE),
@@ -289,13 +330,26 @@ class CamDroidStreamReceiver(
         }
         try {
             val handle = sinkLauncher.launch(buildFfmpegArgv(config))
-            synchronized(lock) { sink = handle }
+            synchronized(lock) {
+                synchronized(sinkWriteLock) {
+                    if (config.codec.equals("h264", ignoreCase = true)) {
+                        lastH264Keyframe?.let { cachedKey ->
+                            runCatching {
+                                handle.stdin.write(cachedKey)
+                                handle.stdin.flush()
+                                framesReceived.incrementAndGet()
+                            }
+                        }
+                    }
+                    sink = handle
+                }
+            }
             update {
                 CamDroidReceiverSnapshot(
                     state = CamDroidReceiverState.STREAMING,
                     config = config,
-                    framesReceived = it.framesReceived,
-                    framesDropped = it.framesDropped,
+                    framesReceived = framesReceived.get(),
+                    framesDropped = framesDropped.get(),
                 )
             }
         } catch (e: Exception) {
@@ -305,28 +359,82 @@ class CamDroidStreamReceiver(
     }
 
     /**
+     * Hot-restarts ONLY the local ffmpeg v4l2 sink (keeping the phone TCP media socket open)
+     * so Studio Effects (Center Stage / Portrait Blur / Desk View) apply live in OBS.
+     */
+    fun reconfigureSinkForEffects(): Boolean = synchronized(lock) {
+        if (sessionEnded.get()) return false
+        val config = receivedConfig.get() ?: return false
+        return try {
+            val replacement = sinkLauncher.launch(buildFfmpegArgv(config, effectsProvider()))
+            val previous = synchronized(sinkWriteLock) {
+                if (config.codec.equals("h264", ignoreCase = true)) {
+                    lastH264Keyframe?.let { cachedKey ->
+                        runCatching {
+                            replacement.stdin.write(cachedKey)
+                            replacement.stdin.flush()
+                        }
+                    }
+                }
+                val prev = sink
+                sink = replacement
+                prev
+            }
+            runCatching { previous?.close() }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Builds the strict allowlisted ffmpeg pipeline for either hardware H.264
      * Annex-B (`-f h264`) or MJPEG (`-f mjpeg`) piped into `v4l2loopback`.
+     *
+     * Always enforces even output dimensions and explicit `format=yuyv422` so
+     * OBS / Chrome / Zoom never receive dark/misaligned frames on v4l2loopback.
      */
-    fun buildFfmpegArgv(config: CamDroidStreamConfig): List<String> {
+    fun buildFfmpegArgv(
+        config: CamDroidStreamConfig,
+        effects: CameraEffectsCommand = effectsProvider(),
+    ): List<String> {
         val safeInputFormat = when (config.codec.lowercase()) {
             "h264" -> "h264"
             else -> "mjpeg"
         }
-        val safeFps = config.fps.coerceIn(1, 120)
+        val safeFps = config.fps.coerceIn(1, 60)
+        val studioFilters = CameraStudioEffectsController().buildStudioVideoFilterChain(effects)
+        val filterChain = buildList {
+            addAll(studioFilters)
+            // Guarantee even width/height & clean YUYV 4:2:2 conversion for v4l2loopback
+            add("scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=fast_bilinear")
+            add("format=yuyv422")
+        }.joinToString(",")
+
         return buildList {
             add(ffmpegBinary)
             add("-hide_banner")
             add("-loglevel"); add("error")
+            add("-fflags"); add("nobuffer")
+            add("-flags"); add("low_delay")
+            add("-use_wallclock_as_timestamps"); add("1")
             if (safeInputFormat == "h264") {
-                add("-fflags"); add("nobuffer")
-                add("-flags"); add("low_delay")
+                when (effects.hwDecodePreference) {
+                    "vaapi" -> {
+                        add("-hwaccel"); add("vaapi")
+                        add("-hwaccel_device"); add("/dev/dri/renderD128")
+                    }
+                    "nvdec" -> {
+                        add("-hwaccel"); add("cuda")
+                    }
+                }
                 add("-f"); add("h264")
             } else {
                 add("-f"); add("mjpeg")
-                add("-framerate"); add(safeFps.toString())
             }
             add("-i"); add("pipe:0")
+            add("-vf"); add(filterChain)
+            add("-r"); add(safeFps.toString())
             add("-pix_fmt"); add("yuyv422")
             add("-f"); add("v4l2")
             add(v4l2DevicePath)
@@ -383,28 +491,36 @@ class CamDroidStreamReceiver(
     }
 
     private fun handleVideo(packet: CamDroidV1Packet) {
-        val activeSink = sink // volatile read — MUST NOT take [lock] (see field doc)
-        if (activeSink == null || receivedConfig.get() == null) {
-            // Bounded pre-config policy: drop, never queue.
-            framesDropped.incrementAndGet()
-            update { it.copy(framesDropped = it.framesDropped + 1) }
-            return
+        val cfg = receivedConfig.get()
+        val isH264 = cfg?.codec?.equals("h264", ignoreCase = true) == true
+        var failureReason: String? = null
+        synchronized(sinkWriteLock) {
+            if (isH264 && CamDroidStreamServer.isAnnexBKeyOrConfig(packet.payload)) {
+                lastH264Keyframe = packet.payload
+            }
+            val activeSink = sink // volatile read — MUST NOT take [lock] (see field doc)
+            if (activeSink == null || cfg == null) {
+                // Bounded pre-config/pre-sink policy: drop (keyframe is cached above for H.264), never queue.
+                framesDropped.incrementAndGet()
+                update { it.copy(framesDropped = it.framesDropped + 1) }
+                return
+            }
+            if (!activeSink.isAlive) {
+                val diag = activeSink.lastDiagnosticOutput()?.let { " ($it)" }.orEmpty()
+                failureReason =
+                    "ffmpeg v4l2 sink exited (code ${activeSink.exitCode()})$diag — is the loopback device writable?"
+            } else {
+                try {
+                    activeSink.stdin.write(packet.payload)
+                    activeSink.stdin.flush()
+                    framesReceived.incrementAndGet()
+                    update { it.copy(framesReceived = it.framesReceived + 1) }
+                } catch (e: Exception) {
+                    failureReason = "Writing to the v4l2 sink failed — ${e.message}"
+                }
+            }
         }
-        if (!activeSink.isAlive) {
-            endSession(
-                "ffmpeg v4l2 sink exited (code ${activeSink.exitCode()}) — is the loopback device writable?",
-                error = true,
-            )
-            return
-        }
-        try {
-            activeSink.stdin.write(packet.payload)
-            activeSink.stdin.flush()
-            framesReceived.incrementAndGet()
-            update { it.copy(framesReceived = it.framesReceived + 1) }
-        } catch (e: Exception) {
-            endSession("Writing to the v4l2 sink failed — ${e.message}", error = true)
-        }
+        failureReason?.let { endSession(it, error = true) }
     }
 
     private fun handleControl(packet: CamDroidV1Packet) {
@@ -452,6 +568,7 @@ class CamDroidStreamReceiver(
         socket = null
         runCatching { sink?.close() }
         sink = null
+        lastH264Keyframe = null
         configLatchField?.countDown() // unblock a start() waiting for config
         update { snap ->
             CamDroidReceiverSnapshot(

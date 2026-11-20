@@ -63,11 +63,30 @@ class ContinuityCaptureService(
     private val pending = ConcurrentHashMap<String, PendingCaptureRequest>()
     private val rng = SecureRandom()
 
+    @Volatile
+    var onRemoteCaptureRequestHandler: ((CaptureRequestCommand, Ec0Session?) -> Unit)? = null
+
+    @Volatile
+    var onCaptureDeliveredHandler: ((ReceivedCapturePayload) -> Unit)? = null
+
     private val _activePendingRequest = MutableStateFlow<PendingCaptureRequest?>(null)
     val activePendingRequest: StateFlow<PendingCaptureRequest?> = _activePendingRequest.asStateFlow()
 
     private val _lastDeliveredCapture = MutableStateFlow<CaptureResultInfo?>(null)
     val lastDeliveredCapture: StateFlow<CaptureResultInfo?> = _lastDeliveredCapture.asStateFlow()
+
+    fun sendCaptureResult(
+        result: CaptureResultInfo,
+        session: Ec0Session,
+        timestampMs: Long = clockMs(),
+    ) {
+        session.sendInfo(
+            infoType = ContinuityCaptureProtocol.INFO_CAPTURE_RESULT,
+            infoBody = result.toJsonObject(),
+            category = ContinuityCaptureProtocol.CATEGORY_CAPTURE,
+            timestampMs = timestampMs,
+        )
+    }
 
     fun requestCaptureFromPhone(
         mode: String,
@@ -101,12 +120,17 @@ class ContinuityCaptureService(
         return cmd
     }
 
-    fun handleControlEnvelope(envelope: Ec0Envelope): Boolean {
+    fun handleControlEnvelope(envelope: Ec0Envelope, session: Ec0Session? = null): Boolean {
         val body = envelope.innerBodyObject ?: (envelope.msgBody as? JsonObject) ?: return false
         return when (envelope.bodyType) {
             ContinuityCaptureProtocol.CMD_CAPTURE_REQUEST -> {
                 val cmd = CaptureRequestCommand.fromJsonObject(body)
-                onRemoteCaptureRequest(cmd)
+                val custom = onRemoteCaptureRequestHandler
+                if (custom != null) {
+                    custom(cmd, session)
+                } else {
+                    onRemoteCaptureRequest(cmd)
+                }
                 true
             }
             ContinuityCaptureProtocol.INFO_CAPTURE_RESULT -> {
@@ -122,13 +146,13 @@ class ContinuityCaptureService(
                 val actualSha = Sha256.digest(raw).toHex()
                 if (!actualSha.equals(info.sha256Hex, ignoreCase = true)) return true
                 _lastDeliveredCapture.value = info
-                onCaptureDelivered(
-                    ReceivedCapturePayload(
-                        info = info,
-                        bytes = raw,
-                        autoPasteRequested = req.autoPaste,
-                    ),
+                val delivered = ReceivedCapturePayload(
+                    info = info,
+                    bytes = raw,
+                    autoPasteRequested = req.autoPaste,
                 )
+                onCaptureDelivered(delivered)
+                onCaptureDeliveredHandler?.invoke(delivered)
                 true
             }
             else -> false
@@ -171,11 +195,34 @@ class SidecarDisplayService(
     private val onRemoteSidecarStop: () -> Unit = {},
     private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) : Closeable {
+    private val lock = java.util.concurrent.locks.ReentrantLock()
     private val touchRateLimiter = TokenBucketRateLimiter(capacityPerPeer = 480L, refillPerSecond = 240L, clockMs = clockMs)
     private var encoderProcess: RunningProcessHandle? = null
 
+    @Volatile
+    var onTouchInputInjectedHandler: ((SidecarTouchInputEvent) -> Unit)? = null
+
+    @Volatile
+    var onRemoteSidecarStartHandler: ((SidecarStartCommand) -> Unit)? = null
+
+    @Volatile
+    var onRemoteSidecarStopHandler: (() -> Unit)? = null
+
     private val _state = MutableStateFlow(SidecarSessionState())
     val state: StateFlow<SidecarSessionState> = _state.asStateFlow()
+
+    fun sendTouchInput(
+        event: SidecarTouchInputEvent,
+        session: Ec0Session,
+        timestampMs: Long = clockMs(),
+    ) {
+        session.sendCmd(
+            cmdType = SidecarDisplayProtocol.CMD_SIDECAR_TOUCH,
+            cmdBody = event.toJsonObject(),
+            category = SidecarDisplayProtocol.CATEGORY_SIDECAR,
+            timestampMs = timestampMs,
+        )
+    }
 
     /**
      * Builds a strictly validated argv-only `ffmpeg` pipeline capturing the desktop or
@@ -212,44 +259,74 @@ class SidecarDisplayService(
         launchEncoder: Boolean = false,
         nowMs: Long = System.currentTimeMillis(),
     ): SidecarSessionState {
-        stopSidecar(session = null)
-        if (launchEncoder) {
-            runCatching {
-                encoderProcess = launcher.spawnProcess(buildSidecarEncoderArgv(cmd))
+        lock.lock()
+        try {
+            val current = _state.value
+            if (current.active &&
+                current.width == cmd.width &&
+                current.height == cmd.height &&
+                current.fps == cmd.fps &&
+                current.codec == cmd.codec &&
+                current.extendMode == cmd.extendMode &&
+                current.streamPort == cmd.streamPort
+            ) {
+                return current
             }
+            stopSidecarLocked(session = null, nowMs = nowMs)
+            if (launchEncoder) {
+                runCatching {
+                    encoderProcess = launcher.spawnProcess(buildSidecarEncoderArgv(cmd))
+                }
+            }
+            session?.sendCmd(
+                cmdType = SidecarDisplayProtocol.CMD_SIDECAR_START,
+                cmdBody = cmd.toJsonObject(),
+                category = SidecarDisplayProtocol.CATEGORY_SIDECAR,
+                timestampMs = nowMs,
+            )
+            val next = SidecarSessionState(
+                active = true,
+                width = cmd.width,
+                height = cmd.height,
+                fps = cmd.fps,
+                codec = cmd.codec,
+                extendMode = cmd.extendMode,
+                streamPort = cmd.streamPort,
+            )
+            _state.value = next
+            return next
+        } finally {
+            lock.unlock()
         }
-        session?.sendCmd(
-            cmdType = SidecarDisplayProtocol.CMD_SIDECAR_START,
-            cmdBody = cmd.toJsonObject(),
-            category = SidecarDisplayProtocol.CATEGORY_SIDECAR,
-            timestampMs = nowMs,
-        )
-        val next = SidecarSessionState(
-            active = true,
-            width = cmd.width,
-            height = cmd.height,
-            fps = cmd.fps,
-            codec = cmd.codec,
-            extendMode = cmd.extendMode,
-            streamPort = cmd.streamPort,
-        )
-        _state.value = next
-        return next
     }
 
     fun stopSidecar(
         session: Ec0Session? = null,
         nowMs: Long = System.currentTimeMillis(),
     ) {
+        lock.lock()
+        try {
+            stopSidecarLocked(session = session, nowMs = nowMs)
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private fun stopSidecarLocked(
+        session: Ec0Session?,
+        nowMs: Long,
+    ) {
         runCatching { encoderProcess?.stop() }
         encoderProcess = null
-        if (_state.value.active && session != null) {
-            session.sendCmd(
-                cmdType = SidecarDisplayProtocol.CMD_SIDECAR_STOP,
-                cmdBody = buildJsonObject { put("reason", "user_stop") },
-                category = SidecarDisplayProtocol.CATEGORY_SIDECAR,
-                timestampMs = nowMs,
-            )
+        if (_state.value.active && session != null && !session.isClosed) {
+            runCatching {
+                session.sendCmd(
+                    cmdType = SidecarDisplayProtocol.CMD_SIDECAR_STOP,
+                    cmdBody = buildJsonObject { put("reason", "user_stop") },
+                    category = SidecarDisplayProtocol.CATEGORY_SIDECAR,
+                    timestampMs = nowMs,
+                )
+            }
         }
         _state.value = _state.value.copy(active = false)
     }
@@ -259,21 +336,33 @@ class SidecarDisplayService(
         return when (envelope.bodyType) {
             SidecarDisplayProtocol.CMD_SIDECAR_START -> {
                 val cmd = SidecarStartCommand.fromJsonObject(body)
-                _state.value = SidecarSessionState(
-                    active = true,
-                    width = cmd.width,
-                    height = cmd.height,
-                    fps = cmd.fps,
-                    codec = cmd.codec,
-                    extendMode = cmd.extendMode,
-                    streamPort = cmd.streamPort,
-                )
+                lock.lock()
+                try {
+                    _state.value = SidecarSessionState(
+                        active = true,
+                        width = cmd.width,
+                        height = cmd.height,
+                        fps = cmd.fps,
+                        codec = cmd.codec,
+                        extendMode = cmd.extendMode,
+                        streamPort = cmd.streamPort,
+                    )
+                } finally {
+                    lock.unlock()
+                }
                 onRemoteSidecarStart(cmd)
+                onRemoteSidecarStartHandler?.invoke(cmd)
                 true
             }
             SidecarDisplayProtocol.CMD_SIDECAR_STOP -> {
-                _state.value = _state.value.copy(active = false)
+                lock.lock()
+                try {
+                    _state.value = _state.value.copy(active = false)
+                } finally {
+                    lock.unlock()
+                }
                 onRemoteSidecarStop()
+                onRemoteSidecarStopHandler?.invoke()
                 true
             }
             SidecarDisplayProtocol.CMD_SIDECAR_TOUCH -> {
@@ -281,6 +370,7 @@ class SidecarDisplayService(
                 if (!touchRateLimiter.tryAcquire(peerDeviceId)) return true
                 val ev = SidecarTouchInputEvent.fromJsonObject(body)
                 onTouchInputInjected(ev)
+                onTouchInputInjectedHandler?.invoke(ev)
                 true
             }
             else -> false

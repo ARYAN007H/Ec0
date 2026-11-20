@@ -272,10 +272,13 @@ class Ec0EngineNode(
         launcher = processLauncher,
     )
 
+    val cameraStudioEffectsController = CameraStudioEffectsController()
+
     val cameraCoordinator = ContinuityCameraCoordinator(
         launcher = processLauncher,
         camDroidTransportFactory = camDroidTransportFactory,
         onExecuteCameraCommand = onExecuteCameraCommand,
+        effectsProvider = { cameraStudioEffectsController.effects.value },
     )
 
     val universalControlService = UniversalControlService(
@@ -338,8 +341,6 @@ class Ec0EngineNode(
     val clipboardShelfManager = ClipboardShelfManager(
         clockMs = clockMs,
     )
-
-    val cameraStudioEffectsController = CameraStudioEffectsController()
 
     val diagnosticRingBuffer = DiagnosticRingBuffer(
         clockMs = clockMs,
@@ -750,10 +751,6 @@ class Ec0EngineNode(
 
     private fun attachAuthenticatedSession(session: Ec0Session) {
         val peerId = session.peerDeviceId.lowercase()
-        val previous = sessionsByPeer.put(peerId, session)
-        if (previous != null && previous !== session) {
-            runCatching { previous.close() }
-        }
         session.peerRemoteIp?.let { remoteIp ->
             lastKnownPeerIps[peerId] = remoteIp
             // The peer dialed US, so our client-side resolver never learned its endpoint —
@@ -767,6 +764,10 @@ class Ec0EngineNode(
         }
         refreshPinnedPeers()
         setConnectionState(peerId, EngineConnectionState.CONNECTED)
+        val previous = sessionsByPeer.put(peerId, session)
+        if (previous != null && previous !== session) {
+            runCatching { previous.close() }
+        }
 
         // Start background receive loop BEFORE flushing outbox
         sessionExecutor.execute {
@@ -865,8 +866,8 @@ class Ec0EngineNode(
         if (hotspotAndTelephonyService.handleControlEnvelope(envelope)) return
         if (mediaSessionBridgeService.handleControlEnvelope(envelope)) return
         if (handoffAndProximityService.handleControlEnvelope(envelope)) return
-        if (audioHandoffService.handleControlEnvelope(envelope)) return
-        if (continuityCaptureService.handleControlEnvelope(envelope)) return
+        if (audioHandoffService.handleControlEnvelope(envelope, session)) return
+        if (continuityCaptureService.handleControlEnvelope(envelope, session)) return
         if (sidecarDisplayService.handleControlEnvelope(peerDeviceId, envelope)) return
         if (smsInboxService.handleControlEnvelope(peerDeviceId, envelope, session)) return
         if (focusSyncService.handleControlEnvelope(envelope)) return

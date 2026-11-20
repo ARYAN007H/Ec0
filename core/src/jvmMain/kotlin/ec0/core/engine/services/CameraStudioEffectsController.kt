@@ -70,6 +70,9 @@ class CameraStudioEffectsController(
     private val _effects = MutableStateFlow(CameraEffectsCommand())
     val effects: StateFlow<CameraEffectsCommand> = _effects.asStateFlow()
 
+    @Volatile
+    var onEffectsReceivedHandler: ((CameraEffectsCommand) -> Unit)? = null
+
     fun updateEffects(transform: (CameraEffectsCommand) -> CameraEffectsCommand): CameraEffectsCommand {
         val updated = transform(_effects.value)
         _effects.value = updated
@@ -101,6 +104,7 @@ class CameraStudioEffectsController(
         val inner = envelope.innerBodyObject ?: return true
         val parsed = runCatching { CameraEffectsCommand.fromJsonObject(inner) }.getOrNull() ?: return true
         _effects.value = parsed
+        onEffectsReceivedHandler?.invoke(parsed)
         return true
     }
 

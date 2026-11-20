@@ -57,9 +57,13 @@ import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.client.LocalsendHttp
 import ec0.core.localsend.dto.FileDto
 import ec0.core.localsend.dto.RegisterDtoV2
+import ec0.core.engine.services.BrowserTabHandoffService
 import ec0.ui.Ec0App
+import ec0.ui.models.BrowserTabHandoffUi
 import ec0.ui.models.Capabilities
 import ec0.ui.models.CapabilityTile
+import ec0.ui.models.ClipboardShelfItemUi
+import ec0.ui.models.ClipboardToastUi
 import ec0.ui.models.ConnectedPeerSummary
 import ec0.ui.models.IncomingRequest
 import ec0.ui.models.LinkTelemetryUi
@@ -553,6 +557,100 @@ class AndroidAppState(
             }
         }
     }
+
+    // ---- Ecosystem Pro StateFlows & Controls on Android ----
+
+    override val sidecarActive: StateFlow<Boolean> =
+        serviceHost.runtime.node.sidecarDisplayService.state
+            .map { it.active }
+            .stateIn(scope, SharingStarted.Eagerly, false)
+
+    override val focusMode: StateFlow<String> =
+        serviceHost.runtime.node.focusSyncService.focusState
+            .map { it.mode }
+            .stateIn(scope, SharingStarted.Eagerly, "off")
+
+    override fun setFocusMode(mode: String) {
+        scope.launch(Dispatchers.IO) {
+            val session = activeDesktopSessionOrNull()
+            val updated = serviceHost.runtime.node.focusSyncService.setLocalFocusMode(
+                mode = mode,
+                source = "manual",
+                session = session,
+            )
+            _statusBanner.value = if (session != null) {
+                "Focus mode synced: ${updated.mode.uppercase()}"
+            } else {
+                "Focus mode set locally: ${updated.mode.uppercase()}"
+            }
+        }
+    }
+
+    override val activeBrowserTabHandoff: StateFlow<BrowserTabHandoffUi?> =
+        serviceHost.runtime.node.browserTabHandoffService.activeRemoteTab
+            .map { tab ->
+                tab?.let {
+                    BrowserTabHandoffUi(
+                        url = it.url,
+                        title = it.title,
+                        resumeUrl = BrowserTabHandoffService.buildResumeUrl(it),
+                        mediaPositionSec = it.mediaPositionSec.toLong(),
+                    )
+                }
+            }.stateIn(scope, SharingStarted.Eagerly, null)
+
+    override fun openActiveBrowserTabHandoff() {
+        val resumeUrl = activeBrowserTabHandoff.value?.resumeUrl?.trim() ?: return
+        if (!resumeUrl.startsWith("http://") && !resumeUrl.startsWith("https://")) return
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(resumeUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        }
+    }
+
+    override val clipboardShelf: StateFlow<List<ClipboardShelfItemUi>> =
+        serviceHost.runtime.node.clipboardShelfManager.entries
+            .map { entries ->
+                entries.map { e ->
+                    ClipboardShelfItemUi(
+                        id = e.id,
+                        preview = e.previewText,
+                        mime = e.mime,
+                        sourceDevice = e.sourceAlias,
+                        pinned = e.pinned,
+                        sensitive = e.isSensitive,
+                        timestampMs = e.createdAtMs,
+                    )
+                }
+            }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    override val clipboardToast: StateFlow<ClipboardToastUi?> =
+        serviceHost.runtime.node.clipboardShelfManager.toastEvent
+            .map { ev ->
+                ev?.let { ClipboardToastUi(id = it.id, message = it.message, canUndo = it.canUndo) }
+            }.stateIn(scope, SharingStarted.Eagerly, null)
+
+    override fun toggleClipboardPin(entryId: String) {
+        serviceHost.runtime.node.clipboardShelfManager.togglePin(entryId)
+    }
+
+    override fun copyClipboardShelfEntry(entryId: String) {
+        val entry = serviceHost.runtime.node.clipboardShelfManager.entries.value
+            .firstOrNull { it.id == entryId } ?: return
+        val text = entry.fullText ?: entry.previewText
+        if (text.isBlank()) return
+        Ec0CompanionService.pushClipboardFromActivity(text, isSensitive = entry.isSensitive)
+        _statusBanner.value = "Copied shelf entry & synced to paired PC"
+    }
+
+    override fun dismissClipboardToast() {
+        serviceHost.runtime.node.clipboardShelfManager.dismissToast()
+    }
+
+    override val keystoreBackendLabel: StateFlow<String> =
+        MutableStateFlow(serviceHost.runtime.activeKeySealerBackend.displayName)
 
     val showRemoteInput = MutableStateFlow(false)
     val showDeviceManagement = MutableStateFlow(false)

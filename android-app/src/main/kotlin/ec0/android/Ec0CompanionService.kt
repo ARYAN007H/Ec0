@@ -51,19 +51,27 @@ import android.provider.Settings
 import ec0.core.engine.EngineCapability
 import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.EngineConstants
+import ec0.core.engine.EngineEncoding.toBase64UrlUnpadded
+import ec0.core.engine.EngineEncoding.toHex
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.AndroidPlatformCallbacks
 import ec0.core.engine.android.PairingStepState
 import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.protocol.AndroidAppInfo
+import ec0.core.engine.protocol.AudioRouteCommand
+import ec0.core.engine.protocol.AudioRouteStatusInfo
+import ec0.core.engine.protocol.AudioRoutingProtocol
+import ec0.core.engine.protocol.BrowserTabHandoffInfo
 import ec0.core.engine.protocol.CallActionCommand
-import ec0.core.engine.protocol.FindMyRingCommand
-import ec0.core.engine.protocol.WorkstationLockCommand
-import ec0.core.engine.protocol.ProximitySecurityProtocol
 import ec0.core.engine.protocol.CamDroidControlCommand
+import ec0.core.engine.protocol.CameraEffectsCommand
 import ec0.core.engine.protocol.CameraStatusInfo
+import ec0.core.engine.protocol.CaptureRequestCommand
+import ec0.core.engine.protocol.CaptureResultInfo
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.engine.protocol.CursorHandoffCommand
+import ec0.core.engine.protocol.FindMyRingCommand
+import ec0.core.engine.protocol.FocusStateInfo
 import ec0.core.engine.protocol.HotspotControlCommand
 import ec0.core.engine.protocol.HotspotStatusInfo
 import ec0.core.engine.protocol.InputKeyEvent
@@ -73,7 +81,14 @@ import ec0.core.engine.protocol.MediaSessionInfo
 import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
+import ec0.core.engine.protocol.ProximitySecurityProtocol
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
+import ec0.core.engine.protocol.SidecarStartCommand
+import ec0.core.engine.protocol.SmsMessageRecord
+import ec0.core.engine.protocol.SmsSendCommand
+import ec0.core.engine.protocol.WorkstationLockCommand
+import ec0.core.engine.services.BrowserTabHandoffService
+import ec0.core.kdeconnect.Sha256
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.client.LocalsendUdpDiscovery
@@ -155,9 +170,14 @@ class AndroidHonestPlatformCallbacks(
      */
     val cameraStreamer: Ec0CameraStreamer? = null,
     val callStateMonitor: Ec0CallStateMonitor? = null,
+    private val onClipboardShelfRecord: (ClipboardItem) -> Unit = {},
 ) : AndroidPlatformCallbacks {
 
     private val mediaLog = Logger.getLogger("ec0.android.media")
+    private val proLog = Logger.getLogger("ec0.android.pro")
+
+    @Volatile
+    private var currentAudioRoute: AudioRouteStatusInfo = AudioRouteStatusInfo(active = false, mode = "idle")
 
     override fun onApplyRemoteClipboard(item: ClipboardItem): Boolean {
         if (clipboardSyncGate?.enabled == false) return false
@@ -176,6 +196,7 @@ class AndroidHonestPlatformCallbacks(
             // The apply fires the system clipboard listener — record the sha so
             // [AndroidClipboardWatcher] suppresses the echo instead of pushing back.
             clipboardEchoGuard?.lastAppliedFromDesktopSha256 = item.sha256Hex
+            runCatching { onClipboardShelfRecord(item) }
             true
         }.getOrDefault(false)
     }
@@ -258,6 +279,244 @@ class AndroidHonestPlatformCallbacks(
         ringController.onFindMyRing(command)
     }
 
+    override fun onAudioRouteCommand(command: AudioRouteCommand): AudioRouteStatusInfo {
+        val next = when (command.action) {
+            AudioRoutingProtocol.ACTION_START_CALL_AUDIO -> AudioRouteStatusInfo(
+                active = true,
+                mode = "call_duplex",
+                codec = command.codec,
+                sampleRateHz = command.sampleRateHz,
+                channels = command.channels,
+            )
+            AudioRoutingProtocol.ACTION_START_MEDIA_SINK -> AudioRouteStatusInfo(
+                active = true,
+                mode = "media_sink",
+                codec = command.codec,
+                sampleRateHz = command.sampleRateHz,
+                channels = command.channels,
+            )
+            AudioRoutingProtocol.ACTION_STOP_CALL_AUDIO,
+            AudioRoutingProtocol.ACTION_STOP_MEDIA_SINK -> AudioRouteStatusInfo(
+                active = false,
+                mode = "idle",
+            )
+            else -> currentAudioRoute
+        }
+        currentAudioRoute = next
+        return next
+    }
+
+    override fun onCaptureRequest(command: CaptureRequestCommand): CaptureResultInfo? {
+        if (!hasCameraPermission()) {
+            proLog.warning("capture request ${command.requestId} ignored: CAMERA permission not granted")
+            return null
+        }
+        val jpeg = cameraStreamer?.captureSingleJpegSnapshot(timeoutMs = 4_000L) ?: return null
+        if (jpeg.isEmpty() || jpeg.size > MAX_INLINE_CAPTURE_BYTES) {
+            proLog.warning("capture snapshot size out of bounds (${jpeg.size} bytes)")
+            return null
+        }
+        val shaHex = Sha256.digest(jpeg).toHex()
+        return CaptureResultInfo(
+            requestId = command.requestId,
+            mode = command.mode,
+            mime = "image/jpeg",
+            sizeBytes = jpeg.size.toLong(),
+            sha256Hex = shaHex,
+            inlineBase64Url = jpeg.toBase64UrlUnpadded(),
+        )
+    }
+
+    override fun onSidecarStart(command: SidecarStartCommand) {
+        postProActionNotification(
+            notifId = SIDECAR_NOTIF_ID,
+            title = "Sidecar display connected",
+            text = "Receiving ${command.width}x${command.height}@${command.fps}fps (${command.codec.uppercase()}) from paired PC",
+            launchIntent = Intent(appContext, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+    }
+
+    override fun onSidecarStop() {
+        runCatching {
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.cancel(SIDECAR_NOTIF_ID)
+        }
+    }
+
+    private fun hasSmsReadPermission(): Boolean = runCatching {
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            appContext,
+            android.Manifest.permission.READ_SMS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }.getOrDefault(false)
+
+    private fun hasSmsSendPermission(): Boolean = runCatching {
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            appContext,
+            android.Manifest.permission.SEND_SMS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }.getOrDefault(false)
+
+    override fun onSmsSyncRequested(): List<SmsMessageRecord> {
+        if (!hasSmsReadPermission()) return emptyList()
+        return runCatching {
+            val resolver = appContext.contentResolver ?: return emptyList()
+            val projection = arrayOf(
+                android.provider.Telephony.Sms._ID,
+                android.provider.Telephony.Sms.THREAD_ID,
+                android.provider.Telephony.Sms.ADDRESS,
+                android.provider.Telephony.Sms.BODY,
+                android.provider.Telephony.Sms.DATE,
+                android.provider.Telephony.Sms.TYPE,
+                android.provider.Telephony.Sms.READ,
+            )
+            val records = mutableListOf<SmsMessageRecord>()
+            resolver.query(
+                android.provider.Telephony.Sms.CONTENT_URI,
+                projection,
+                null,
+                null,
+                "${android.provider.Telephony.Sms.DATE} DESC",
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(android.provider.Telephony.Sms._ID)
+                val threadIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.THREAD_ID)
+                val addrIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.ADDRESS)
+                val bodyIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.BODY)
+                val dateIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.DATE)
+                val typeIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.TYPE)
+                val readIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.READ)
+                while (cursor.moveToNext() && records.size < 120) {
+                    val msgId = if (idIdx >= 0) cursor.getString(idIdx).orEmpty() else ""
+                    val threadId = if (threadIdx >= 0) cursor.getString(threadIdx).orEmpty() else ""
+                    val address = if (addrIdx >= 0) cursor.getString(addrIdx).orEmpty().trim() else ""
+                    val body = if (bodyIdx >= 0) cursor.getString(bodyIdx).orEmpty().take(2_000) else ""
+                    val dateMs = if (dateIdx >= 0) cursor.getLong(dateIdx) else 0L
+                    val type = if (typeIdx >= 0) cursor.getInt(typeIdx) else android.provider.Telephony.Sms.MESSAGE_TYPE_INBOX
+                    val read = if (readIdx >= 0) cursor.getInt(readIdx) != 0 else true
+                    if (msgId.isNotBlank() && threadId.isNotBlank() && address.isNotBlank()) {
+                        records.add(
+                            SmsMessageRecord(
+                                messageId = msgId,
+                                threadId = threadId,
+                                address = address,
+                                contactName = address,
+                                body = body,
+                                timestampMs = dateMs,
+                                incoming = type == android.provider.Telephony.Sms.MESSAGE_TYPE_INBOX,
+                                read = read,
+                            ),
+                        )
+                    }
+                }
+            }
+            records
+        }.getOrDefault(emptyList())
+    }
+
+    override fun onSmsSendRequested(command: SmsSendCommand): Boolean {
+        if (!hasSmsSendPermission()) return false
+        return runCatching {
+            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                appContext.getSystemService(android.telephony.SmsManager::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                android.telephony.SmsManager.getDefault()
+            } ?: return false
+            val parts = smsManager.divideMessage(command.body)
+            if (parts.size > 1) {
+                smsManager.sendMultipartTextMessage(command.recipientAddress, null, parts, null, null)
+            } else {
+                smsManager.sendTextMessage(command.recipientAddress, null, command.body, null, null)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    override fun onFocusStateChanged(state: FocusStateInfo) {
+        runCatching { AndroidFocusPolicyApplier.applyFocusMode(appContext, state.mode) }
+    }
+
+    override fun onBrowserTabReceived(info: BrowserTabHandoffInfo) {
+        val resumeUrl = runCatching { BrowserTabHandoffService.buildResumeUrl(info) }.getOrNull() ?: return
+        val openIntent = Intent(Intent.ACTION_VIEW, Uri.parse(resumeUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val label = info.title.ifBlank { resumeUrl }
+        val subtitle = if (info.mediaPositionSec > 0) {
+            "Tap to resume at ${info.mediaPositionSec}s on this device"
+        } else {
+            "Tap to continue browsing on this device"
+        }
+        postProActionNotification(
+            notifId = BROWSER_HANDOFF_NOTIF_ID,
+            title = "Continue from PC: $label",
+            text = subtitle,
+            launchIntent = openIntent,
+        )
+    }
+
+    override fun onCameraEffectsUpdated(command: CameraEffectsCommand) {
+        val streamer = cameraStreamer ?: return
+        // Apply Center Stage subtle zoom hint when active and reset to 1.0x when disabled
+        if (streamer.isStreaming) {
+            val zoomX100 = when {
+                command.deskView -> 100L
+                command.centerStage -> 118L
+                else -> 100L
+            }
+            runCatching { streamer.handleCommand(CamDroidControlCommand.SetZoom(zoomX100)) }
+        }
+    }
+
+    private fun postProActionNotification(
+        notifId: Int,
+        title: String,
+        text: String,
+        launchIntent: Intent,
+    ) {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    appContext,
+                    android.Manifest.permission.POST_NOTIFICATIONS,
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (!granted) return
+            }
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            val channel = NotificationChannel(
+                PRO_HANDOFF_CHANNEL_ID,
+                "Continuity Handoff",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Browser tab handoff and Sidecar display notifications from paired PC."
+            }
+            nm.createNotificationChannel(channel)
+            val pi = PendingIntent.getActivity(
+                appContext,
+                notifId,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val built = Notification.Builder(appContext, PRO_HANDOFF_CHANNEL_ID)
+                .setContentTitle(title.take(120))
+                .setContentText(text.take(240))
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(notifId, built)
+        }
+    }
+
+    companion object {
+        private const val MAX_INLINE_CAPTURE_BYTES = 4 * 1024 * 1024
+        private const val PRO_HANDOFF_CHANNEL_ID = "ec0_continuity_handoff"
+        private const val SIDECAR_NOTIF_ID = 49892
+        private const val BROWSER_HANDOFF_NOTIF_ID = 49893
+    }
+
     /**
      * Scoped-storage reality: on Android 11+ (API 30+) MediaStore gives access to
      * the phone's own media without any grant; full-directory browsing (VFS roots)
@@ -318,12 +577,19 @@ class AndroidHonestPlatformCallbacks(
             add(EngineCapability.MIRROR)
             if (hasCameraPermission()) {
                 add(EngineCapability.CAMERA)
+                add(EngineCapability.CAPTURE)
             }
             // Deep-integration capabilities (plan §P2/P4) — declared only when the
             // phone genuinely supports them:
             add(EngineCapability.REMOTE_INPUT) // sender UI ships with the app (A1)
             add(EngineCapability.MEDIA_CONTROL) // AudioManager media-key dispatch (A2)
             add(EngineCapability.FIND_MY) // ring executor ships with the app (A2)
+            add(EngineCapability.AUDIO_HANDOFF)
+            add(EngineCapability.SIDECAR)
+            add(EngineCapability.FOCUS)
+            if (hasSmsReadPermission()) {
+                add(EngineCapability.SMS)
+            }
             // VFS_READ requires storage access (scoped MediaStore on 11+ or the
             // legacy grant below 11) — the desktop file browser only lights up
             // when files are actually listable.
@@ -893,6 +1159,7 @@ class Ec0CompanionService : Service() {
                 }
                 activeCallStateMonitor = callMonitor
 
+                val hardwareKeySealer = AndroidHardwareKeySealer(configDir = ec0StoreDir)
                 val runtime = AndroidCompanionRuntime.createWithPersistentStores(
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
@@ -903,9 +1170,17 @@ class Ec0CompanionService : Service() {
                         clipboardSyncGate = clipboardSyncSwitch,
                         cameraStreamer = cameraStreamer,
                         callStateMonitor = callMonitor,
+                        onClipboardShelfRecord = { clipItem ->
+                            runtimeHolder?.node?.clipboardShelfManager?.recordItem(
+                                item = clipItem,
+                                sourceAlias = "Paired PC",
+                                isRemote = true,
+                            )
+                        },
                     ),
                     listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
+                    masterKeyProvider = hardwareKeySealer,
                 )
                 runtimeHolder = runtime
                 callMonitor.start()

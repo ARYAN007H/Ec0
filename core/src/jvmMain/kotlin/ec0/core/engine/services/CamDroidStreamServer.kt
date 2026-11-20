@@ -120,8 +120,15 @@ class CamDroidStreamServer(
     private var sessionSocket: Socket? = null
     private var frameSource: CamDroidFrameSource? = null
 
-    /** Bounded latest-wins slot: the capture thread overwrites, the writer drains. */
+    /** Bounded latest-wins slot for MJPEG: the capture thread overwrites, the writer drains. */
     private val latestFrame = AtomicReference<ByteArray?>(null)
+    /**
+     * Bounded GOP-safe queue for H.264 Annex-B: dropping a P-frame or IDR frame corrupts the
+     * entire decoder state into green/black mud. When full, drop only non-keyframe delta frames
+     * and never drop SPS/PPS/IDR access units.
+     */
+    private val h264QueueLock = Any()
+    private val h264Queue = ArrayDeque<ByteArray>()
     private val framesSent = AtomicLong(0)
     private val framesDropped = AtomicLong(0)
     private val writeLock = Any()
@@ -274,6 +281,7 @@ class CamDroidStreamServer(
             framesSent.set(0)
             framesDropped.set(0)
             latestFrame.set(null)
+            synchronized(h264QueueLock) { h264Queue.clear() }
             update { it.copy(state = CamDroidServerState.STREAMING, port = client.localPort) }
 
             val source = frameSourceFactory()
@@ -311,14 +319,43 @@ class CamDroidStreamServer(
      * queues behind a slow consumer.
      */
     private fun offerFrame(frame: ByteArray) {
-        if (frame.size > maxFrameBytes) {
+        if (frame.size > maxFrameBytes || frame.isEmpty()) {
             framesDropped.incrementAndGet()
+            return
+        }
+        if (codec.equals("h264", ignoreCase = true)) {
+            synchronized(h264QueueLock) {
+                val isKey = isAnnexBKeyOrConfig(frame)
+                if (isKey) {
+                    // Fresh IDR+SPS/PPS supersedes any stale queued GOP frames cleanly.
+                    val stale = h264Queue.size
+                    if (stale > 0) {
+                        h264Queue.clear()
+                        framesDropped.addAndGet(stale.toLong())
+                    }
+                    h264Queue.addLast(frame)
+                } else if (h264Queue.size >= MAX_H264_QUEUE_FRAMES) {
+                    // Queue saturated: drop incoming delta frame rather than evicting an earlier IDR.
+                    framesDropped.incrementAndGet()
+                } else {
+                    h264Queue.addLast(frame)
+                }
+            }
             return
         }
         val previous = latestFrame.getAndSet(frame)
         if (previous != null) {
             framesDropped.incrementAndGet()
         }
+    }
+
+    private fun pollNextFrame(): ByteArray? {
+        if (codec.equals("h264", ignoreCase = true)) {
+            return synchronized(h264QueueLock) {
+                if (h264Queue.isEmpty()) null else h264Queue.removeFirst()
+            }
+        }
+        return latestFrame.getAndSet(null)
     }
 
     private fun writerLoop(client: Socket) {
@@ -338,14 +375,14 @@ class CamDroidStreamServer(
             }
 
             val frameIntervalMs = (1000L / targetFps.coerceIn(1, 60)).coerceAtLeast(1L)
-            var nextFrameDeadline = System.currentTimeMillis() + frameIntervalMs
+            var nextFrameDeadline = System.currentTimeMillis()
             var lastHeartbeatSent = System.currentTimeMillis()
             while (!sessionEnded.get()) {
                 val now = System.currentTimeMillis()
                 if (now >= nextFrameDeadline) {
-                    nextFrameDeadline = now + frameIntervalMs
-                    val frame = latestFrame.getAndSet(null)
+                    val frame = pollNextFrame()
                     if (frame != null) {
+                        nextFrameDeadline = now + frameIntervalMs
                         synchronized(writeLock) {
                             out.write(CamDroidV1Codec.encode(CamDroidV1Packet(CamDroidMediaKind.VIDEO, frame)))
                             out.flush()
@@ -353,6 +390,9 @@ class CamDroidStreamServer(
                         framesSent.incrementAndGet()
                         // Keep the observable snapshot's counters in lockstep.
                         update { it.copy(framesSent = framesSent.get(), framesDropped = framesDropped.get()) }
+                    } else {
+                        // Poll promptly until the next captured frame arrives so first-frame latency is minimal.
+                        nextFrameDeadline = now + minOf(frameIntervalMs, 8L)
                     }
                 }
                 if (now - lastHeartbeatSent >= heartbeatIntervalMs) {
@@ -415,6 +455,11 @@ class CamDroidStreamServer(
             endSession("stopped by desktop")
             return
         }
+        if (command is CamDroidControlCommand.Start) {
+            // The TCP session is already token-authenticated and armed over the encrypted engine
+            // session; ignore a redundant tokenless Start so it never re-arms/tears down the stream.
+            return
+        }
         onControlCommand?.invoke(command)
     }
 
@@ -442,6 +487,7 @@ class CamDroidStreamServer(
         armedToken = null
         acceptThread = null
         latestFrame.set(null)
+        synchronized(h264QueueLock) { h264Queue.clear() }
         update { snap ->
             CamDroidServerSnapshot(
                 state = if (error) CamDroidServerState.ERROR else CamDroidServerState.STOPPED,
@@ -460,7 +506,31 @@ class CamDroidStreamServer(
     /** Telemetry hook: frames dropped by the bounded slot or the size guard. */
     fun droppedFrameCount(): Long = framesDropped.get()
 
-    private companion object {
+    internal companion object {
+        const val MAX_H264_QUEUE_FRAMES: Int = 8
+
+        /** Detects Annex-B SPS (7), PPS (8), or IDR keyframe (5) NALUs. */
+        internal fun isAnnexBKeyOrConfig(data: ByteArray): Boolean {
+            var i = 0
+            while (i + 3 < data.size) {
+                if (data[i].toInt() == 0 && data[i + 1].toInt() == 0) {
+                    val nalIdx = when {
+                        data[i + 2].toInt() == 1 -> i + 3
+                        i + 4 < data.size && data[i + 2].toInt() == 0 && data[i + 3].toInt() == 1 -> i + 4
+                        else -> -1
+                    }
+                    if (nalIdx in data.indices) {
+                        val nalType = data[nalIdx].toInt() and 0x1F
+                        if (nalType == 5 || nalType == 7 || nalType == 8) return true
+                        i = nalIdx + 1
+                        continue
+                    }
+                }
+                i++
+            }
+            return false
+        }
+
         fun parseHandshakeToken(json: String): String? {
             val obj = Json.decodeFromString(JsonObject.serializer(), json)
             val client = obj["client"]?.jsonPrimitive?.contentOrNull ?: return null

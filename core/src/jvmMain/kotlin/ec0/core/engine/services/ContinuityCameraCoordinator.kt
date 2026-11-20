@@ -15,6 +15,7 @@ import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CamDroidV1Codec
 import ec0.core.engine.protocol.CamDroidV1Packet
 import ec0.core.engine.protocol.CameraBackend
+import ec0.core.engine.protocol.CameraEffectsCommand
 import ec0.core.engine.protocol.CameraStatusInfo
 import ec0.core.engine.protocol.CameraStreamState
 import ec0.core.engine.transport.Ec0Session
@@ -96,11 +97,14 @@ class TcpCamDroidControlTransport : CamDroidControlTransport {
 class ContinuityCameraCoordinator(
     private val launcher: ExternalProcessLauncher = SystemProcessLauncher,
     private val camDroidTransportFactory: () -> CamDroidControlTransport = { TcpCamDroidControlTransport() },
+    private val effectsProvider: () -> CameraEffectsCommand = { CameraEffectsCommand() },
     /**
      * Builds the in-process media receiver used by the token-authenticated
      * ec0 phone streamer (`startCameraStream` with a non-null [streamToken]).
      */
-    private val camDroidReceiverFactory: () -> CamDroidStreamReceiver = { CamDroidStreamReceiver() },
+    private val camDroidReceiverFactory: () -> CamDroidStreamReceiver = {
+        CamDroidStreamReceiver(effectsProvider = effectsProvider)
+    },
     private val v4l2DeviceCheck: (String) -> Boolean = { path ->
         val file = File(path)
         file.exists() && file.canWrite()
@@ -608,6 +612,14 @@ class ContinuityCameraCoordinator(
             category = CATEGORY_CAMERA,
             timestampMs = timestampMs,
         )
+    }
+
+    /**
+     * Hot-reloads the active desktop `ffmpeg` sink filter graph when Studio Effects
+     * (Center Stage / Portrait Blur / Desk View / HW decode) change mid-stream.
+     */
+    fun reconfigureActiveSinkForEffects(): Boolean = synchronized(lock) {
+        activeReceiver?.reconfigureSinkForEffects() ?: false
     }
 
     /**

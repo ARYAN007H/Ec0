@@ -97,6 +97,10 @@ class AudioHandoffService(
     private var loadedSinkModuleId: Int? = null
     private var loadedSourceModuleId: Int? = null
 
+    /** Optional post-construction handler used by AndroidCompanionRuntime to apply remote audio commands. */
+    @Volatile
+    var onRemoteAudioCommandHandler: ((AudioRouteCommand) -> AudioRouteStatusInfo?)? = null
+
     private val _status = MutableStateFlow(AudioRouteStatusInfo(active = false, mode = "idle"))
     val status: StateFlow<AudioRouteStatusInfo> = _status.asStateFlow()
 
@@ -153,6 +157,10 @@ class AudioHandoffService(
         nowMs: Long = System.currentTimeMillis(),
     ): AudioRouteStatusInfo = lock.withLock {
         require(mode == "call_duplex" || mode == "media_sink") { "Unsupported mode: $mode" }
+        val current = _status.value
+        if (current.active && current.mode == mode && current.sampleRateHz == sampleRateHz && current.channels == channels) {
+            return current
+        }
         stopDesktopAudioRouteLocked(sendWireStop = false, session = null, nowMs = nowMs)
 
         val sinkRes = runCatching {
@@ -188,20 +196,31 @@ class AudioHandoffService(
             channels = channels,
             duplex = mode == "call_duplex",
         )
-        session?.sendCmd(
-            cmdType = AudioRoutingProtocol.CMD_AUDIO_ROUTE,
-            cmdBody = cmd.toJsonObject(),
-            category = AudioRoutingProtocol.CATEGORY_AUDIO,
-            timestampMs = nowMs,
-        )
+        var wireSent = false
+        if (session != null && !session.isClosed) {
+            wireSent = runCatching {
+                session.sendCmd(
+                    cmdType = AudioRoutingProtocol.CMD_AUDIO_ROUTE,
+                    cmdBody = cmd.toJsonObject(),
+                    category = AudioRoutingProtocol.CATEGORY_AUDIO,
+                    timestampMs = nowMs,
+                )
+                true
+            }.getOrDefault(false)
+        }
 
-        val next = AudioRouteStatusInfo(
-            active = true,
-            mode = mode,
-            codec = cmd.codec,
-            sampleRateHz = sampleRateHz,
-            channels = channels,
-        )
+        val routeStarted = loadedSinkModuleId != null || wireSent
+        val next = if (routeStarted) {
+            AudioRouteStatusInfo(
+                active = true,
+                mode = mode,
+                codec = cmd.codec,
+                sampleRateHz = sampleRateHz,
+                channels = channels,
+            )
+        } else {
+            AudioRouteStatusInfo(active = false, mode = "idle")
+        }
         _status.value = next
         next
     }
@@ -247,14 +266,25 @@ class AudioHandoffService(
         return idle
     }
 
-    fun handleControlEnvelope(envelope: Ec0Envelope): Boolean {
+    fun handleControlEnvelope(envelope: Ec0Envelope, session: Ec0Session? = null): Boolean {
         val body = envelope.innerBodyObject ?: (envelope.msgBody as? JsonObject) ?: return false
         return when (envelope.bodyType) {
             AudioRoutingProtocol.CMD_AUDIO_ROUTE -> {
                 val cmd = AudioRouteCommand.fromJsonObject(body)
-                val updated = onRemoteAudioCommand(cmd)
+                val handler = onRemoteAudioCommandHandler ?: onRemoteAudioCommand
+                val updated = runCatching { handler(cmd) }.getOrNull()
                 if (updated != null) {
                     _status.value = updated
+                    session?.let { s ->
+                        runCatching {
+                            s.sendInfo(
+                                infoType = AudioRoutingProtocol.INFO_AUDIO_STATUS,
+                                infoBody = updated.toJsonObject(),
+                                category = AudioRoutingProtocol.CATEGORY_AUDIO,
+                                timestampMs = System.currentTimeMillis(),
+                            )
+                        }
+                    }
                 }
                 true
             }

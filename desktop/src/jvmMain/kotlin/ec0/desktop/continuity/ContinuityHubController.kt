@@ -147,9 +147,7 @@ fun desktopBeaconCapabilities(mediaControlSupported: Boolean): Set<EngineCapabil
 
 class ContinuityHubController(
     private val scope: CoroutineScope,
-    val localIdentity: Ed25519KeyPair = EncryptedIdentityStore(
-        masterKeyProvider = LinuxSecretServiceMasterKeyProvider(),
-    ).loadOrCreateIdentity(),
+    val localIdentity: Ed25519KeyPair = loadDefaultDesktopIdentity(),
     val pinStore: PinStore = PersistentPinStore(allowAutoTofuOnUnknownPeer = false),
     val desktopAlias: String = ec0.ui.models.SettingsState().alias,
     val downloadDir: File = File(System.getProperty("user.home", "."), "Downloads"),
@@ -161,6 +159,20 @@ class ContinuityHubController(
     private val desktopNotificationPolicyProvider: () -> NotificationRelayPolicy = { NotificationRelayPolicy.DEFAULT },
     private val peerGrantsFile: File? = File(EncryptedIdentityStore.defaultConfigDir(), "peer_grants.json"),
 ) : Closeable {
+
+    companion object {
+        @Volatile
+        private var lastLoadedKeySealerBackend: KeySealerBackend = KeySealerBackend.FILE_0600
+
+        private fun loadDefaultDesktopIdentity(): Ed25519KeyPair {
+            val store = EncryptedIdentityStore(
+                masterKeyProvider = LinuxSecretServiceMasterKeyProvider(),
+            )
+            val kp = store.loadOrCreateIdentity()
+            lastLoadedKeySealerBackend = store.activeKeySealerBackend
+            return kp
+        }
+    }
 
     private val adaptiveInputSink = AdaptiveLinuxInputSink(fallbackBridge = inputInjectionBridge)
 
@@ -236,13 +248,13 @@ class ContinuityHubController(
             }.getOrDefault(false)
             // Always also stage briefly in clipboard so Wayland apps that restrict injection can paste.
             val otpItem = ClipboardItem.text(digits, isSensitive = true)
-            clipboardBridge.applyRemoteClipboardToSystem(otpItem)
+            clipboardBridge.applyRemoteClipboardToSystem(otpItem, allowSensitive = true)
             scheduleSensitiveClipboardScrub(otpItem.sha256Hex, ttlMs = 15_000L)
             typedViaInput
         },
     )
 
-    private val _keySealerBackend = MutableStateFlow(KeySealerBackend.FILE_0600)
+    private val _keySealerBackend = MutableStateFlow(lastLoadedKeySealerBackend)
     val keySealerBackend: StateFlow<KeySealerBackend> = _keySealerBackend.asStateFlow()
 
     private val _meetingAutoFocusEnabled = MutableStateFlow(true)
@@ -253,6 +265,14 @@ class ContinuityHubController(
 
     private val _diagnosticChecks = MutableStateFlow<List<DiagnosticCheckResult>>(emptyList())
     val diagnosticChecks: StateFlow<List<DiagnosticCheckResult>> = _diagnosticChecks.asStateFlow()
+
+    private val cameraToggleLock = java.util.concurrent.locks.ReentrantLock()
+    private val virtualMicLock = java.util.concurrent.locks.ReentrantLock()
+    private val webDavLock = java.util.concurrent.locks.ReentrantLock()
+
+    /** Optional WebDAV data source factory registered by DesktopBridge so CLI `--mount-vfs` works end-to-end. */
+    @Volatile
+    var webDavDataSourceProvider: (() -> VfsMountDataSource)? = null
 
     private var webDavMountServer: VfsLoopbackWebDavServer? = null
     private var callDuckingJob: Job? = null
@@ -673,18 +693,23 @@ class ContinuityHubController(
 
     fun toggleVirtualMic() {
         scope.launch(Dispatchers.IO) {
-            val currentlyActive = node.virtualMicBridge.virtualMicActive.value
-            val ok = if (currentlyActive) {
-                node.virtualMicBridge.disableVirtualMic()
-            } else {
-                node.virtualMicBridge.enableVirtualMic()
-            }
-            _statusBanner.value = if (!currentlyActive && ok) {
-                "Loaded virtual microphone (PipeWire/PulseAudio 48 kHz)"
-            } else if (currentlyActive) {
-                "Unloaded virtual microphone"
-            } else {
-                "Virtual mic requires pactl (PipeWire-Pulse or PulseAudio)"
+            virtualMicLock.lock()
+            try {
+                val currentlyActive = node.virtualMicBridge.virtualMicActive.value
+                val ok = if (currentlyActive) {
+                    node.virtualMicBridge.disableVirtualMic()
+                } else {
+                    node.virtualMicBridge.enableVirtualMic()
+                }
+                _statusBanner.value = if (!currentlyActive && ok) {
+                    "Loaded virtual microphone (PipeWire/PulseAudio 48 kHz)"
+                } else if (currentlyActive) {
+                    "Unloaded virtual microphone"
+                } else {
+                    "Virtual mic requires pactl (PipeWire-Pulse or PulseAudio)"
+                }
+            } finally {
+                virtualMicLock.unlock()
             }
         }
     }
@@ -723,9 +748,13 @@ class ContinuityHubController(
         if (otpCode.isBlank()) return
         scope.launch(Dispatchers.IO) {
             val item = ClipboardItem.text(otpCode.trim(), isSensitive = true)
-            clipboardBridge.applyRemoteClipboardToSystem(item)
+            val copiedLocally = clipboardBridge.applyRemoteClipboardToSystem(item, allowSensitive = true)
             broadcastClipboardItem(item)
-            _statusBanner.value = "Copied 2FA code '$otpCode' — auto-scrubbing clipboard in 30s"
+            _statusBanner.value = if (copiedLocally) {
+                "Copied 2FA code '$otpCode' — auto-scrubbing clipboard in 30s"
+            } else {
+                "2FA code '$otpCode' ready (install wl-clipboard/xclip for automatic clipboard copy)"
+            }
             scheduleSensitiveClipboardScrub(item.sha256Hex, ttlMs = 30_000L)
         }
     }
@@ -745,6 +774,10 @@ class ContinuityHubController(
     fun triggerFindMyPhone(start: Boolean = true) {
         scope.launch(Dispatchers.IO) {
             val session = activeSessionOrNull()
+            if (start && session == null) {
+                _statusBanner.value = "Connect your paired phone first to ring it"
+                return@launch
+            }
             node.handoffAndProximityService.triggerFindMyPhoneRing(
                 start = start,
                 durationSeconds = 15,
@@ -974,7 +1007,7 @@ class ContinuityHubController(
         if (text.isBlank()) return
         scope.launch(Dispatchers.IO) {
             val item = ClipboardItem.text(text, isSensitive = isSensitive)
-            clipboardBridge.applyRemoteClipboardToSystem(item)
+            clipboardBridge.applyRemoteClipboardToSystem(item, allowSensitive = isSensitive)
             broadcastClipboardItem(item)
             if (isSensitive) {
                 scheduleSensitiveClipboardScrub(item.sha256Hex, ttlMs = 30_000L)
@@ -1069,6 +1102,10 @@ class ContinuityHubController(
     fun toggleInstantHotspot(enable: Boolean) {
         scope.launch(Dispatchers.IO) {
             val session = activeSessionOrNull()
+            if (session == null) {
+                _statusBanner.value = "Connect your paired phone to toggle Instant Hotspot"
+                return@launch
+            }
             node.hotspotAndTelephonyService.requestHotspotToggle(enable = enable, session = session)
             _statusBanner.value = if (enable) {
                 "Requested Instant Hotspot from phone"
@@ -1239,63 +1276,91 @@ class ContinuityHubController(
         audio: Boolean = false,
     ) {
         scope.launch(Dispatchers.IO) {
-            val session = activeSessionOrNull()
-            val camAdvertised = node.peerPresence.value.values.any { beacon ->
-                EngineCapability.CAMERA in beacon.capabilities
-            }
-            val preflight = node.cameraCoordinator.streamPreflight(
-                sessionConnected = session != null,
-                phoneCameraAdvertised = camAdvertised,
-                v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
-            )
-            if (!preflight.allClear) {
-                _statusBanner.value = preflight.bannerText()
-                return@launch
-            }
-
-            val streamToken = ContinuityCameraCoordinator.newStreamToken()
-            val wireFps = if (fps >= 45) 60 else 30
-            val wireResolution = if (resolution.lowercase() in CamDroidConstants.SUPPORTED_RESOLUTIONS) {
-                resolution.lowercase()
-            } else {
-                "1080p"
-            }
-            val armCommand = CamDroidControlCommand.Start(
-                codec = codec,
-                resolution = wireResolution,
-                fps = wireFps,
-                audio = audio,
-                token = streamToken,
-            )
+            cameraToggleLock.lock()
             try {
-                session?.sendCmd(
-                    cmdType = ContinuityCameraCoordinator.CMD_CAMERA_CONTROL,
-                    cmdBody = armCommand.toJsonObject(),
-                    category = ContinuityCameraCoordinator.CATEGORY_CAMERA,
+                val session = activeSessionOrNull()
+                val camAdvertised = node.peerPresence.value.values.any { beacon ->
+                    EngineCapability.CAMERA in beacon.capabilities
+                }
+                val preflight = node.cameraCoordinator.streamPreflight(
+                    sessionConnected = session != null,
+                    phoneCameraAdvertised = camAdvertised,
+                    v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
                 )
-            } catch (e: Exception) {
-                _statusBanner.value = "Camera arm command failed: ${e.message}"
-                return@launch
-            }
+                if (!preflight.allClear) {
+                    _statusBanner.value = preflight.bannerText()
+                    return@launch
+                }
 
-            val effectiveHost = if (usbTunnelStatus.value != null) "127.0.0.1" else host
-            val status = node.cameraCoordinator.startCameraStream(
-                host = effectiveHost,
-                port = port,
-                backend = backend,
-                v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
-                codec = codec,
-                resolution = resolution,
-                fps = fps,
-                audio = audio,
-                frontCamera = frontCamera,
-                streamToken = streamToken,
-            )
-            _statusBanner.value = when (status.state) {
-                CameraStreamState.STREAMING ->
-                    "Continuity Camera live: ${status.resolution}@${status.fps}fps → ${status.v4l2DevicePath}"
-                else -> status.reason
-                    ?: "Continuity Camera ${status.state.wireName} → ${status.v4l2DevicePath}"
+                val wireFps = if (fps >= 45) 60 else 30
+                val wireResolution = if (resolution.lowercase() in CamDroidConstants.SUPPORTED_RESOLUTIONS) {
+                    resolution.lowercase()
+                } else {
+                    "1080p"
+                }
+                val safeCodec = if (codec.equals("h264", ignoreCase = true)) "h264" else "mjpeg"
+
+                // Idempotency guard: if already streaming with the exact same configuration,
+                // keep the active OBS v4l2loopback feed undisturbed instead of resetting it.
+                val currentStatus = node.cameraStatus.value
+                if (currentStatus.state == CameraStreamState.STREAMING &&
+                    currentStatus.resolution.equals(wireResolution, ignoreCase = true) &&
+                    currentStatus.fps == wireFps &&
+                    currentStatus.codec.equals(safeCodec, ignoreCase = true)
+                ) {
+                    _statusBanner.value =
+                        "Continuity Camera already live: ${currentStatus.resolution}@${currentStatus.fps}fps → ${currentStatus.v4l2DevicePath}"
+                    return@launch
+                }
+
+                // Resolve real peer host: USB-C ADB forward uses 127.0.0.1; otherwise prefer
+                // explicit non-loopback host, then the live authenticated session's peerRemoteIp.
+                val effectiveHost = when {
+                    usbTunnelStatus.value != null -> "127.0.0.1"
+                    host.isNotBlank() && host != "127.0.0.1" && host != "::1" -> host
+                    !session?.peerRemoteIp.isNullOrBlank() -> session!!.peerRemoteIp!!
+                    else -> host.ifBlank { "127.0.0.1" }
+                }
+
+                val streamToken = ContinuityCameraCoordinator.newStreamToken()
+                val armCommand = CamDroidControlCommand.Start(
+                    codec = safeCodec,
+                    resolution = wireResolution,
+                    fps = wireFps,
+                    audio = audio,
+                    token = streamToken,
+                )
+                try {
+                    session?.sendCmd(
+                        cmdType = ContinuityCameraCoordinator.CMD_CAMERA_CONTROL,
+                        cmdBody = armCommand.toJsonObject(),
+                        category = ContinuityCameraCoordinator.CATEGORY_CAMERA,
+                    )
+                } catch (e: Exception) {
+                    _statusBanner.value = "Camera arm command failed: ${e.message}"
+                    return@launch
+                }
+
+                val status = node.cameraCoordinator.startCameraStream(
+                    host = effectiveHost,
+                    port = port,
+                    backend = backend,
+                    v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
+                    codec = safeCodec,
+                    resolution = wireResolution,
+                    fps = wireFps,
+                    audio = audio,
+                    frontCamera = frontCamera,
+                    streamToken = streamToken,
+                )
+                _statusBanner.value = when (status.state) {
+                    CameraStreamState.STREAMING ->
+                        "Continuity Camera live (${safeCodec.uppercase()}): ${status.resolution}@${status.fps}fps → ${status.v4l2DevicePath}"
+                    else -> status.reason
+                        ?: "Continuity Camera ${status.state.wireName} → ${status.v4l2DevicePath}"
+                }
+            } finally {
+                cameraToggleLock.unlock()
             }
         }
     }
@@ -1321,9 +1386,14 @@ class ContinuityHubController(
 
     fun stopContinuityCamera() {
         scope.launch(Dispatchers.IO) {
-            val activeSession = activeSessionOrNull()
-            node.cameraCoordinator.stopCameraStream(activeSession)
-            _statusBanner.value = "Continuity Camera stopped"
+            cameraToggleLock.lock()
+            try {
+                val activeSession = activeSessionOrNull()
+                node.cameraCoordinator.stopCameraStream(activeSession)
+                _statusBanner.value = "Continuity Camera stopped"
+            } finally {
+                cameraToggleLock.unlock()
+            }
         }
     }
 
@@ -1442,6 +1512,10 @@ class ContinuityHubController(
                 node.audioHandoffService.stopDesktopAudioRoute(session)
                 _statusBanner.value = "Stopped Phone-to-PC Audio Sink"
             } else {
+                if (session == null) {
+                    _statusBanner.value = "Connect your paired phone to stream audio to this PC"
+                    return@launch
+                }
                 val st = node.audioHandoffService.startDesktopAudioRoute(
                     mode = "media_sink",
                     session = session,
@@ -1463,6 +1537,10 @@ class ContinuityHubController(
                 node.audioHandoffService.stopDesktopAudioRoute(session)
                 _statusBanner.value = "Returned call audio to phone"
             } else {
+                if (session == null) {
+                    _statusBanner.value = "Connect your paired phone to route call audio to PC"
+                    return@launch
+                }
                 val res = node.audioHandoffService.startDesktopAudioRoute(
                     mode = "call_duplex",
                     session = session,
@@ -1479,16 +1557,16 @@ class ContinuityHubController(
     fun requestPhoneCapture(mode: String, autoPaste: Boolean = false) {
         scope.launch(Dispatchers.IO) {
             val session = activeSessionOrNull()
+            if (session == null) {
+                _statusBanner.value = "Connect a paired phone to insert $mode"
+                return@launch
+            }
             val req = node.continuityCaptureService.requestCaptureFromPhone(
                 mode = mode,
                 autoPaste = autoPaste,
                 session = session,
             )
-            _statusBanner.value = if (session != null) {
-                "Requested $mode from paired phone (${req.requestId.take(6)})"
-            } else {
-                "Connect a paired phone to insert $mode"
-            }
+            _statusBanner.value = "Requested $mode from paired phone (${req.requestId.take(6)})"
         }
     }
 
@@ -1499,6 +1577,10 @@ class ContinuityHubController(
                 node.sidecarDisplayService.stopSidecar(session)
                 _statusBanner.value = "Stopped Sidecar wireless second display"
             } else {
+                if (session == null) {
+                    _statusBanner.value = "Connect your paired Android tablet/phone first to start Sidecar"
+                    return@launch
+                }
                 val state = node.sidecarDisplayService.startSidecar(
                     cmd = SidecarStartCommand(width = width, height = height, fps = fps),
                     session = session,
@@ -1514,20 +1596,30 @@ class ContinuityHubController(
 
     fun requestSmsSync() {
         scope.launch(Dispatchers.IO) {
-            node.smsInboxService.requestSync(activeSessionOrNull())
+            val session = activeSessionOrNull()
+            if (session == null) {
+                _statusBanner.value = "Connect your paired phone to sync SMS threads"
+                return@launch
+            }
+            node.smsInboxService.requestSync(session)
         }
     }
 
     fun sendSmsMessage(address: String, body: String): Boolean {
+        val session = activeSessionOrNull()
+        if (session == null) {
+            _statusBanner.value = "Connect your paired phone before sending SMS"
+            return false
+        }
         val ok = runCatching {
             node.smsInboxService.sendSms(
                 recipientAddress = address,
                 body = body,
-                session = activeSessionOrNull(),
+                session = session,
             )
             true
         }.getOrDefault(false)
-        _statusBanner.value = if (ok) "Sent SMS to $address" else "Could not send SMS (check number/connection)"
+        _statusBanner.value = if (ok) "Sent SMS to $address" else "Could not send SMS (check number/format)"
         return ok
     }
 
@@ -1543,12 +1635,17 @@ class ContinuityHubController(
 
     fun setFocusMode(mode: String) {
         scope.launch(Dispatchers.IO) {
+            val session = activeSessionOrNull()
             val st = node.focusSyncService.setLocalFocusMode(
                 mode = mode,
                 source = "manual",
-                session = activeSessionOrNull(),
+                session = session,
             )
-            _statusBanner.value = "Focus mode synced: ${st.mode.uppercase()}"
+            _statusBanner.value = if (session != null) {
+                "Focus mode synced: ${st.mode.uppercase()}"
+            } else {
+                "Focus mode set locally: ${st.mode.uppercase()}"
+            }
         }
     }
 
@@ -1563,6 +1660,11 @@ class ContinuityHubController(
 
     fun publishLocalBrowserTab(url: String, title: String = "", mediaPositionSec: Long = 0L) {
         scope.launch(Dispatchers.IO) {
+            val session = activeSessionOrNull()
+            if (session == null) {
+                _statusBanner.value = "Connect a paired phone to hand off browser tabs"
+                return@launch
+            }
             runCatching {
                 val info = BrowserTabHandoffInfo(
                     tabId = "tab-${System.currentTimeMillis()}",
@@ -1573,9 +1675,11 @@ class ContinuityHubController(
                 )
                 node.browserTabHandoffService.publishLocalActiveTab(
                     info = info,
-                    session = activeSessionOrNull(),
+                    session = session,
                 )
                 _statusBanner.value = "Handed off browser tab to paired device"
+            }.onFailure { e ->
+                _statusBanner.value = "Rejected unsafe tab URL: ${e.message}"
             }
         }
     }
@@ -1609,6 +1713,11 @@ class ContinuityHubController(
             activeSessionOrNull()?.let { s ->
                 runCatching { node.cameraStudioEffectsController.sendEffects(updated, s) }
             }
+            // Live-reload the desktop ffmpeg v4l2loopback filter graph when streaming
+            // so Center Stage / Portrait Blur / Desk View take effect immediately in OBS!
+            if (node.cameraStatus.value.state == CameraStreamState.STREAMING) {
+                node.cameraCoordinator.reconfigureActiveSinkForEffects()
+            }
             _statusBanner.value = "Updated Continuity Camera Studio Effects"
         }
     }
@@ -1625,7 +1734,7 @@ class ContinuityHubController(
     fun undoLastRemoteClipboard() {
         val restored = node.clipboardShelfManager.consumeUndoSnapshot() ?: return
         scope.launch(Dispatchers.IO) {
-            clipboardBridge.applyRemoteClipboardToSystem(restored)
+            clipboardBridge.applyRemoteClipboardToSystem(restored, allowSensitive = restored.isSensitive)
             _statusBanner.value = "Restored previous desktop clipboard"
         }
     }
@@ -1636,20 +1745,43 @@ class ContinuityHubController(
 
     fun startWebDavPhoneMount(dataSource: VfsMountDataSource) {
         scope.launch(Dispatchers.IO) {
-            runCatching { webDavMountServer?.close() }
+            startWebDavPhoneMountBlocking(dataSource)
+        }
+    }
+
+    fun startWebDavPhoneMountBlocking(dataSource: VfsMountDataSource): String? {
+        webDavLock.lock()
+        try {
+            webDavMountServer?.let { existing ->
+                val url = _webDavMountUrl.value
+                if (!url.isNullOrBlank()) return url
+                runCatching { existing.close() }
+                webDavMountServer = null
+            }
             val srv = VfsLoopbackWebDavServer(dataSource = dataSource)
             srv.start()
             webDavMountServer = srv
             _webDavMountUrl.value = srv.mountUrl
             _statusBanner.value = "Mounted Phone VFS WebDAV on loopback ${srv.mountUrl}"
+            return srv.mountUrl
+        } catch (e: Exception) {
+            _statusBanner.value = "WebDAV mount failed: ${e.message}"
+            return null
+        } finally {
+            webDavLock.unlock()
         }
     }
 
     fun stopWebDavPhoneMount() {
-        runCatching { webDavMountServer?.close() }
-        webDavMountServer = null
-        _webDavMountUrl.value = null
-        _statusBanner.value = "Unmounted Phone VFS loopback WebDAV"
+        webDavLock.lock()
+        try {
+            runCatching { webDavMountServer?.close() }
+            webDavMountServer = null
+            _webDavMountUrl.value = null
+            _statusBanner.value = "Unmounted Phone VFS loopback WebDAV"
+        } finally {
+            webDavLock.unlock()
+        }
     }
 
     fun runHealthDiagnostics() {
@@ -1728,6 +1860,19 @@ class ContinuityHubController(
             "diagnose" -> {
                 runHealthDiagnostics()
                 buildJsonObject { put("ok", true) }
+            }
+            "mount_vfs" -> {
+                val ds = webDavDataSourceProvider?.invoke()
+                if (ds == null) {
+                    buildJsonObject { put("ok", false); put("error", "vfs_bridge_not_ready") }
+                } else {
+                    val url = startWebDavPhoneMountBlocking(ds)
+                    if (url != null) {
+                        buildJsonObject { put("ok", true); put("webdav_url", url) }
+                    } else {
+                        buildJsonObject { put("ok", false); put("error", "mount_failed") }
+                    }
+                }
             }
             "unmount_vfs" -> {
                 stopWebDavPhoneMount()

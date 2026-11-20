@@ -30,6 +30,7 @@ import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -197,8 +198,12 @@ internal class HardwareH264Encoder(
 
     /**
      * Encodes one rotated NV21 frame into an Annex-B H.264 access unit (or returns
-     * `null` if the encoder buffered the frame). Automatically converts NV21 → NV12
-     * (swapping V/U chroma bytes) for `COLOR_FormatYUV420Flexible` input buffers.
+     * `null` if the encoder buffered the frame).
+     *
+     * CRITICAL: Uses `activeCodec.getInputImage(inputIdx)` and writes Y/U/V planes
+     * honoring EACH plane's exact `rowStride` and `pixelStride`. Writing raw packed NV12
+     * into `getInputBuffer(inputIdx)` under `COLOR_FormatYUV420Flexible` misaligns chroma
+     * on Qualcomm/MediaTek/Exynos encoders and produces dark greenish-black corrupted video!
      */
     fun encodeNv21(nv21: ByteArray, width: Int, height: Int): ByteArray? {
         val targetW = width and 1.inv()
@@ -212,33 +217,30 @@ internal class HardwareH264Encoder(
         val ySize = targetW * targetH
         val required = ySize + (ySize / 2)
         if (nv21.size < required) return null
-        if (nv12Scratch.size != required) {
-            nv12Scratch = ByteArray(required)
-        }
-        // Copy luma verbatim, swap V/U pairs (NV21 -> NV12)
-        System.arraycopy(nv21, 0, nv12Scratch, 0, ySize)
-        var i = ySize
-        while (i + 1 < required) {
-            nv12Scratch[i] = nv21[i + 1]
-            nv12Scratch[i + 1] = nv21[i]
-            i += 2
-        }
 
         val inputIdx = activeCodec.dequeueInputBuffer(5_000L)
         if (inputIdx >= 0) {
-            val inputBuf = activeCodec.getInputBuffer(inputIdx)
-            if (inputBuf != null) {
-                inputBuf.clear()
-                val toWrite = required.coerceAtMost(inputBuf.capacity())
-                inputBuf.put(nv12Scratch, 0, toWrite)
+            val inputImage = runCatching { activeCodec.getInputImage(inputIdx) }.getOrNull()
+            if (inputImage != null && inputImage.planes.size >= 3) {
+                try {
+                    writeNv21ToInputImage(nv21, targetW, targetH, inputImage)
+                } finally {
+                    runCatching { inputImage.close() }
+                }
+                val inputBuf = activeCodec.getInputBuffer(inputIdx)
+                val queuedSize = inputBuf?.capacity()?.coerceAtMost(required * 2) ?: required
                 val ptsUs = (frameIndex++ * 1_000_000L) / fps.coerceAtLeast(1)
-                activeCodec.queueInputBuffer(inputIdx, 0, toWrite, ptsUs, 0)
+                activeCodec.queueInputBuffer(inputIdx, 0, queuedSize, ptsUs, 0)
             } else {
-                activeCodec.queueInputBuffer(inputIdx, 0, 0, 0L, 0)
+                // Device encoder doesn't expose InputImage — release cleanly and disable H.264 so caller falls back to MJPEG.
+                runCatching { activeCodec.queueInputBuffer(inputIdx, 0, 0, 0L, 0) }
+                android.util.Log.w("ec0.camera", "MediaCodec.getInputImage() returned null — falling back to MJPEG")
+                releaseCodec()
+                return null
             }
         }
 
-        var emitted: ByteArray? = null
+        val emittedOut = ByteArrayOutputStream(32 * 1024)
         while (true) {
             val outIdx = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
             if (outIdx < 0) break
@@ -254,18 +256,71 @@ internal class HardwareH264Encoder(
                     if (isConfig) {
                         spsPpsHeader = chunk
                     } else {
-                        emitted = HardwareH264Config.assembleAnnexBAccessUnit(
+                        val assembled = HardwareH264Config.assembleAnnexBAccessUnit(
                             frameData = chunk,
                             isKeyFrame = isKey,
                             cachedSpsPps = spsPpsHeader,
                         )
+                        emittedOut.write(assembled)
                     }
                 }
             } finally {
                 activeCodec.releaseOutputBuffer(outIdx, false)
             }
         }
-        return emitted
+        return if (emittedOut.size() > 0) emittedOut.toByteArray() else null
+    }
+
+    /** Copies NV21 (Y + interleaved VU) into MediaCodec's planar/semi-planar YUV_420_888 InputImage. */
+    private fun writeNv21ToInputImage(nv21: ByteArray, width: Int, height: Int, image: android.media.Image) {
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+
+        val yBuf = yPlane.buffer
+        val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+        if (yPixelStride == 1 && yRowStride == width) {
+            yBuf.position(0)
+            yBuf.put(nv21, 0, width * height)
+        } else if (yPixelStride == 1) {
+            for (row in 0 until height) {
+                yBuf.position(row * yRowStride)
+                yBuf.put(nv21, row * width, width)
+            }
+        } else {
+            for (row in 0 until height) {
+                val dstBase = row * yRowStride
+                val srcBase = row * width
+                for (col in 0 until width) {
+                    yBuf.put(dstBase + col * yPixelStride, nv21[srcBase + col])
+                }
+            }
+        }
+
+        val ySize = width * height
+        val chromaW = width / 2
+        val chromaH = height / 2
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+        val uRowStride = uPlane.rowStride
+        val vRowStride = vPlane.rowStride
+        val uPixelStride = uPlane.pixelStride
+        val vPixelStride = vPlane.pixelStride
+
+        for (row in 0 until chromaH) {
+            val srcRow = ySize + row * chromaW * 2
+            val uRowBase = row * uRowStride
+            val vRowBase = row * vRowStride
+            for (col in 0 until chromaW) {
+                val vVal = nv21[srcRow + col * 2]
+                val uVal = nv21[srcRow + col * 2 + 1]
+                val uPos = uRowBase + col * uPixelStride
+                val vPos = vRowBase + col * vPixelStride
+                if (uPos < uBuf.limit()) uBuf.put(uPos, uVal)
+                if (vPos < vBuf.limit()) vBuf.put(vPos, vVal)
+            }
+        }
     }
 
     private fun releaseCodec() {
@@ -425,7 +480,10 @@ class Ec0CameraStreamer(
             codec = negotiatedCodec,
         )
         newServer.onControlCommand = { cmd ->
-            runCatching { handleCommand(cmd) }
+            // Ignore redundant Start on the already-authenticated TCP stream.
+            if (cmd !is CamDroidControlCommand.Start) {
+                runCatching { handleCommand(cmd) }
+            }
         }
         return when (val armResult = newServer.arm(token)) {
             is CamDroidArmResult.Armed -> {
@@ -460,6 +518,40 @@ class Ec0CameraStreamer(
         server = null
         runCatching { liveSource?.close() }
         liveSource = null
+    }
+
+    /**
+     * Captures a single JPEG frame for Feature #2 ("Insert from Phone" Photo / Document Scan).
+     * Reuses the freshest live frame if streaming, otherwise opens a short-lived CameraX grab.
+     */
+    fun captureSingleJpegSnapshot(timeoutMs: Long = 3_500L): ByteArray? {
+        if (!hasCameraPermission()) return null
+        liveSource?.latestJpegSnapshot()?.let { return it }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val result = AtomicReference<ByteArray?>(null)
+        val oneShot = CameraXFrameSource(
+            appContext = appContext,
+            width = 1280,
+            height = 720,
+            fps = 15,
+            jpegQuality = 85,
+            startBackCamera = !frontCameraRequested,
+            preferH264 = false,
+        )
+        return try {
+            oneShot.start(
+                sink = { jpeg ->
+                    if (jpeg.size >= 4 && result.compareAndSet(null, jpeg)) {
+                        latch.countDown()
+                    }
+                },
+                onError = { latch.countDown() },
+            )
+            latch.await(timeoutMs.coerceIn(500L, 8_000L), TimeUnit.MILLISECONDS)
+            result.get()
+        } finally {
+            runCatching { oneShot.close() }
+        }
     }
 
     fun shutdown() = synchronized(lock) {
@@ -515,6 +607,10 @@ class CameraXFrameSource(
     @Volatile
     private var analysisUseCase: ImageAnalysis? = null
 
+    private val lastJpegSnapshot = AtomicReference<ByteArray?>(null)
+
+    fun latestJpegSnapshot(): ByteArray? = lastJpegSnapshot.get()
+
     override fun start(sink: (ByteArray) -> Unit, onError: (String) -> Unit) {
         if (closed.get()) {
             onError("frame source already closed — stream cannot start")
@@ -530,6 +626,7 @@ class CameraXFrameSource(
         provider = cameraProvider
 
         val resolutionSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .setResolutionStrategy(
                 ResolutionStrategy(
                     Size(width, height),
@@ -574,7 +671,7 @@ class CameraXFrameSource(
 
             val rotation = proxy.imageInfo.rotationDegrees
             val encoded = runCatching {
-                val encoder = h264Encoder
+                val encoder = h264Encoder?.takeIf { it.isAvailable }
                 if (encoder != null) {
                     val nv21 = imageProxyToNv21Fast(proxy)
                     val rotated = rotateNv21Fast(nv21, proxy.width, proxy.height, rotation)
@@ -582,7 +679,7 @@ class CameraXFrameSource(
                     val outH = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
                     encoder.encodeNv21(rotated, outW, outH)
                 } else {
-                    imageProxyToRotatedJpeg(proxy, rotation)
+                    imageProxyToRotatedJpeg(proxy, rotation)?.also { lastJpegSnapshot.set(it) }
                 }
             }.getOrElse {
                 onError("frame conversion failed: ${it.message}")
@@ -625,7 +722,7 @@ class CameraXFrameSource(
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
 
-        val yBuf = yPlane.buffer
+        val yBuf = yPlane.buffer.duplicate()
         val yRowStride = yPlane.rowStride
         val yPixelStride = yPlane.pixelStride
         if (yPixelStride == 1 && yRowStride == w) {
@@ -650,8 +747,8 @@ class CameraXFrameSource(
 
         val chromaH = h / 2
         val chromaW = w / 2
-        val vBuf = vPlane.buffer
-        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer.duplicate()
+        val uBuf = uPlane.buffer.duplicate()
         val vRowStride = vPlane.rowStride
         val uRowStride = uPlane.rowStride
         val vPixelStride = vPlane.pixelStride

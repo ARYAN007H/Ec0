@@ -78,11 +78,70 @@ class VfsDesktopService(
     @Volatile
     private var downloadPath: String? = null
 
+    private val downloadAwaitLock = java.util.concurrent.locks.ReentrantLock()
+    private val pendingBrowseByPath = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<java.util.concurrent.CompletableFuture<VfsDirReply?>>>()
+    private val pendingDownloadFuture = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<ByteArray?>?>(null)
+
     /** Builds the vfs_list request body (cmdBody JSON element). */
     fun buildListBody(path: String): JsonObject = buildJsonObject { put("path", path) }
 
     /** Builds the vfs_download request body. */
     fun buildDownloadBody(path: String): JsonObject = buildJsonObject { put("path", path) }
+
+    private fun normalizeVfsKey(path: String): String {
+        val trimmed = path.trim()
+        if (trimmed.isEmpty() || trimmed == "/") return "/"
+        return "/" + trimmed.trim('/')
+    }
+
+    /**
+     * Sends a `vfs_list` request and suspends/blocks the calling worker thread
+     * until the matching `vfs_dir` reply arrives from the phone (or [timeoutMs] expires).
+     * Used by the loopback WebDAV server (`PROPFIND`) so Dolphin/Nautilus never read stale listings.
+     */
+    fun browseAndAwait(
+        sender: (cmdType: String, body: JsonObject) -> Unit,
+        path: String,
+        timeoutMs: Long = 5_000L,
+    ): VfsDirReply? {
+        val key = normalizeVfsKey(path)
+        val future = java.util.concurrent.CompletableFuture<VfsDirReply?>()
+        val list = pendingBrowseByPath.computeIfAbsent(key) { java.util.concurrent.CopyOnWriteArrayList() }
+        list.add(future)
+        return try {
+            browse(sender, key)
+            future.get(timeoutMs.coerceIn(500L, 30_000L), java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: Exception) {
+            null
+        } finally {
+            list.remove(future)
+            if (list.isEmpty()) pendingBrowseByPath.remove(key, list)
+        }
+    }
+
+    /**
+     * Sends a `vfs_download` request and blocks (serialized per service instance so
+     * concurrent WebDAV `GET` calls never interleave chunks in the single assembler)
+     * until the final EOF chunk is assembled or [timeoutMs] expires.
+     */
+    fun downloadAndAwait(
+        sender: (cmdType: String, body: JsonObject) -> Unit,
+        path: String,
+        timeoutMs: Long = 15_000L,
+    ): ByteArray? {
+        downloadAwaitLock.lock()
+        val future = java.util.concurrent.CompletableFuture<ByteArray?>()
+        pendingDownloadFuture.set(future)
+        return try {
+            download(sender, normalizeVfsKey(path))
+            future.get(timeoutMs.coerceIn(1_000L, 60_000L), java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: Exception) {
+            null
+        } finally {
+            pendingDownloadFuture.compareAndSet(future, null)
+            downloadAwaitLock.unlock()
+        }
+    }
 
     /** Sends a browse request over the injected sender; writes the pending path. */
     fun browse(sender: (cmdType: String, body: JsonObject) -> Unit, path: String) {
@@ -204,7 +263,14 @@ class VfsDesktopService(
                         mimeHint = mime,
                     )
                 } ?: emptyList()
-                _browseState.value = ec0.core.engine.protocol.VfsDirReply(path = path, entries = entries)
+                val reply = ec0.core.engine.protocol.VfsDirReply(path = path, entries = entries)
+                _browseState.value = reply
+                val key = normalizeVfsKey(path)
+                pendingBrowseByPath.remove(key)?.forEach { it.complete(reply) }
+                // Also resolve "/" waiters if phone normalized empty path to "/" or vice versa
+                if (key == "/") {
+                    pendingBrowseByPath.remove("")?.forEach { it.complete(reply) }
+                }
                 true
             }
             VfsProtocol.INFO_VFS_UPLOAD_ACK -> {
@@ -222,6 +288,7 @@ class VfsDesktopService(
                 current.feed(offset, eof, Base64.getMimeDecoder().decode(bufferB64))
                 if (current.overflowed) {
                     _error.value = "vfs download exceeded the ${maxDownloadBytes}B safety cap — aborted"
+                    pendingDownloadFuture.getAndSet(null)?.complete(null)
                     resetAssembler()
                     return true
                 }
@@ -230,6 +297,7 @@ class VfsDesktopService(
                     val target = resolveContainedTarget(downloadPath ?: "vfs_download")
                     if (target == null) {
                         _error.value = "download filename rejected by containment guard"
+                        pendingDownloadFuture.getAndSet(null)?.complete(null)
                         resetAssembler()
                         return true
                     }
@@ -242,12 +310,19 @@ class VfsDesktopService(
                     )
                     _downloadBytes.value = target.toString() to bytes
                     _lastDownloadedPath.value = target.toString()
+                    pendingDownloadFuture.getAndSet(null)?.complete(bytes)
                     resetAssembler()
                 }
                 true
             }
             VfsProtocol.INFO_VFS_ERROR -> {
                 _error.value = (body["message"] as? JsonPrimitive)?.content ?: "VFS error"
+                pendingDownloadFuture.getAndSet(null)?.complete(null)
+                // Fail any currently waiting browse futures cleanly so WebDAV doesn't hang for 5s
+                val keys = pendingBrowseByPath.keys.toList()
+                for (k in keys) {
+                    pendingBrowseByPath.remove(k)?.forEach { it.complete(null) }
+                }
                 true
             }
             else -> false

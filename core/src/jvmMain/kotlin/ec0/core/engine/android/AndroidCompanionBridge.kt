@@ -21,15 +21,25 @@ import ec0.core.engine.EngineConstants
 import ec0.core.engine.PairingQrPayload
 import ec0.core.engine.crypto.Ed25519KeyPair
 import ec0.core.engine.crypto.InMemoryPinStore
+import ec0.core.engine.crypto.KeySealerBackend
+import ec0.core.engine.crypto.MasterKeyProvider
 import ec0.core.engine.crypto.PinStore
 import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.discovery.MdnsDatagramTransport
+import ec0.core.engine.protocol.AudioRouteCommand
+import ec0.core.engine.protocol.AudioRouteStatusInfo
+import ec0.core.engine.protocol.BrowserTabHandoffInfo
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.CallStateInfo
 import ec0.core.engine.protocol.CamDroidControlCommand
+import ec0.core.engine.protocol.CameraEffectsCommand
 import ec0.core.engine.protocol.CameraStatusInfo
+import ec0.core.engine.protocol.CaptureRequestCommand
+import ec0.core.engine.protocol.CaptureResultInfo
 import ec0.core.engine.protocol.ClipboardItem
 import ec0.core.engine.protocol.CursorHandoffCommand
+import ec0.core.engine.protocol.FindMyRingCommand
+import ec0.core.engine.protocol.FocusStateInfo
 import ec0.core.engine.protocol.HotspotAndTelephonyProtocol
 import ec0.core.engine.protocol.HotspotControlCommand
 import ec0.core.engine.protocol.HotspotStatusInfo
@@ -37,11 +47,13 @@ import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
 import ec0.core.engine.protocol.MediaControlCommand
 import ec0.core.engine.protocol.MediaSessionInfo
-import ec0.core.engine.protocol.FindMyRingCommand
 import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
+import ec0.core.engine.protocol.SidecarStartCommand
+import ec0.core.engine.protocol.SmsMessageRecord
+import ec0.core.engine.protocol.SmsSendCommand
 import ec0.core.engine.services.ClipboardPushOutcome
 import ec0.core.engine.services.InputEventSink
 import java.io.Closeable
@@ -77,6 +89,22 @@ interface AndroidPlatformCallbacks {
     fun onMediaControlCommand(command: MediaControlCommand): MediaSessionInfo? = null
     /** Received CMD_FIND_MY_RING (desktop "Find my phone" siren) — ring executor. */
     fun onFindMyRingCommand(command: FindMyRingCommand) = Unit
+    /** Feature #1: Received desktop audio route command (call duplex / media sink). */
+    fun onAudioRouteCommand(command: AudioRouteCommand): AudioRouteStatusInfo? = null
+    /** Feature #2: Received desktop "Insert from Phone" capture request (photo / document scan / sketch). */
+    fun onCaptureRequest(command: CaptureRequestCommand): CaptureResultInfo? = null
+    /** Feature #4: Received desktop Sidecar wireless second-display start/stop. */
+    fun onSidecarStart(command: SidecarStartCommand) = Unit
+    fun onSidecarStop() = Unit
+    /** Feature #5: Received desktop SMS inbox sync / send request. */
+    fun onSmsSyncRequested(): List<SmsMessageRecord> = emptyList()
+    fun onSmsSendRequested(command: SmsSendCommand): Boolean = false
+    /** Feature #6: Received desktop Focus / DND state update. */
+    fun onFocusStateChanged(state: FocusStateInfo) = Unit
+    /** Feature #7: Received desktop Browser Tab / YouTube timestamp handoff. */
+    fun onBrowserTabReceived(info: BrowserTabHandoffInfo) = Unit
+    /** Feature #11: Received desktop Continuity Camera Studio Effects update. */
+    fun onCameraEffectsUpdated(command: CameraEffectsCommand) = Unit
     fun queryPhonePresence(): PresenceBeaconInfo = PresenceBeaconInfo(
         batteryPct = 100,
         isCharging = false,
@@ -122,6 +150,7 @@ class AndroidCompanionRuntime(
     val pinStore: PinStore = InMemoryPinStore(allowAutoTofuOnUnknownPeer = false),
     mdnsTransportFactory: (() -> MdnsDatagramTransport)? = null,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
+    val activeKeySealerBackend: KeySealerBackend = KeySealerBackend.FILE_0600,
 ) : Closeable {
 
     val node: Ec0EngineNode = Ec0EngineNode(
@@ -198,6 +227,41 @@ class AndroidCompanionRuntime(
         // initiator default.
         node.handoffAndProximityService.onFindMyRingRequested = { command ->
             callbacks.onFindMyRingCommand(command)
+        }
+        node.audioHandoffService.onRemoteAudioCommandHandler = { cmd ->
+            callbacks.onAudioRouteCommand(cmd)
+        }
+        node.continuityCaptureService.onRemoteCaptureRequestHandler = { cmd, session ->
+            // Capture on IO pool so CameraX / scanner never blocks the session receive loop
+            runtimeScope.launch {
+                val result = runCatching { callbacks.onCaptureRequest(cmd) }.getOrNull()
+                if (result != null && session != null && !session.isClosed) {
+                    runCatching {
+                        node.continuityCaptureService.sendCaptureResult(result, session, clockMs())
+                    }
+                }
+            }
+        }
+        node.sidecarDisplayService.onRemoteSidecarStartHandler = { cmd ->
+            callbacks.onSidecarStart(cmd)
+        }
+        node.sidecarDisplayService.onRemoteSidecarStopHandler = {
+            callbacks.onSidecarStop()
+        }
+        node.smsInboxService.onRemoteSmsSyncHandler = {
+            callbacks.onSmsSyncRequested()
+        }
+        node.smsInboxService.onRemoteSmsSendHandler = { cmd ->
+            callbacks.onSmsSendRequested(cmd)
+        }
+        node.focusSyncService.onLocalFocusAppliedHandler = { state ->
+            callbacks.onFocusStateChanged(state)
+        }
+        node.browserTabHandoffService.onRemoteTabReceivedHandler = { info ->
+            callbacks.onBrowserTabReceived(info)
+        }
+        node.cameraStudioEffectsController.onEffectsReceivedHandler = { cmd ->
+            callbacks.onCameraEffectsUpdated(cmd)
         }
         scheduleReconnectToTrustedPeers()
     }
@@ -477,10 +541,18 @@ class AndroidCompanionRuntime(
             allowAutoTofuOnUnknownPeer: Boolean = false,
             mdnsTransportFactory: (() -> MdnsDatagramTransport)? = null,
             clockMs: () -> Long = { System.currentTimeMillis() },
+            masterKeyProvider: MasterKeyProvider? = null,
         ): AndroidCompanionRuntime {
             storeDir.mkdirs()
             downloadDir.mkdirs()
-            val identityStore = ec0.core.engine.crypto.EncryptedIdentityStore(configDir = storeDir)
+            val identityStore = if (masterKeyProvider != null) {
+                ec0.core.engine.crypto.EncryptedIdentityStore(
+                    configDir = storeDir,
+                    masterKeyProvider = masterKeyProvider,
+                )
+            } else {
+                ec0.core.engine.crypto.EncryptedIdentityStore(configDir = storeDir)
+            }
             val pinStore = ec0.core.engine.crypto.PersistentPinStore(
                 storeFile = File(storeDir, "pinned_peers.json"),
                 allowAutoTofuOnUnknownPeer = allowAutoTofuOnUnknownPeer,
@@ -494,6 +566,7 @@ class AndroidCompanionRuntime(
                 pinStore = pinStore,
                 mdnsTransportFactory = mdnsTransportFactory,
                 clockMs = clockMs,
+                activeKeySealerBackend = identityStore.activeKeySealerBackend,
             )
         }
     }

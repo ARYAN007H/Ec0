@@ -13,9 +13,11 @@
          requires the `camera` FGS type, which requires this permission. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- Optional runtime permissions for Desktop Incoming Call overlay (gracefully no-op when not granted). -->
+    <!-- Optional runtime permissions for Desktop Incoming Call overlay & SMS Inbox Continuity (gracefully no-op when not granted). -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
 
     <!-- Scoped package visibility: ONLY launcher apps for Virtual Display App Streaming (never QUERY_ALL_PACKAGES). -->
     <queries>

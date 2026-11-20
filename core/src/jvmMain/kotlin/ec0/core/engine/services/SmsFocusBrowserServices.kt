@@ -57,6 +57,12 @@ class SmsInboxService(
     private val sendLimiter = TokenBucketRateLimiter(capacityPerPeer = 10L, refillPerSecond = 1L, clockMs = clockMs)
     private val messagesByThread = LinkedHashMap<String, MutableList<SmsMessageRecord>>()
 
+    @Volatile
+    var onRemoteSmsSendHandler: ((SmsSendCommand) -> Boolean)? = null
+
+    @Volatile
+    var onRemoteSmsSyncHandler: (() -> List<SmsMessageRecord>)? = null
+
     private val _threads = MutableStateFlow<List<SmsThreadUiModel>>(emptyList())
     val threads: StateFlow<List<SmsThreadUiModel>> = _threads.asStateFlow()
 
@@ -153,14 +159,16 @@ class SmsInboxService(
                 true
             }
             SmsInboxProtocol.CMD_SMS_SYNC_REQ -> {
-                val localRecords = runCatching { onRemoteSmsSyncRequested() }.getOrDefault(emptyList())
+                val syncHandler = onRemoteSmsSyncHandler ?: onRemoteSmsSyncRequested
+                val localRecords = runCatching { syncHandler() }.getOrDefault(emptyList())
                 publishThreads(localRecords, session)
                 true
             }
             SmsInboxProtocol.CMD_SMS_SEND -> {
                 if (!sendLimiter.tryAcquire(peerDeviceId)) return true
                 val cmd = SmsSendCommand.fromJsonObject(body)
-                val ok = runCatching { onRemoteSmsSendRequested(cmd) }.getOrDefault(false)
+                val sendHandler = onRemoteSmsSendHandler ?: onRemoteSmsSendRequested
+                val ok = runCatching { sendHandler(cmd) }.getOrDefault(false)
                 session?.sendInfo(
                     infoType = SmsInboxProtocol.INFO_SMS_SEND_RESULT,
                     infoBody = buildJsonObject {
@@ -238,6 +246,9 @@ class FocusSyncService(
     private val lock = ReentrantLock()
     private var preMeetingMode: String? = null
 
+    @Volatile
+    var onLocalFocusAppliedHandler: ((FocusStateInfo) -> Unit)? = null
+
     private val _focusState = MutableStateFlow(FocusStateInfo(mode = FocusSyncProtocol.MODE_OFF))
     val focusState: StateFlow<FocusStateInfo> = _focusState.asStateFlow()
 
@@ -254,6 +265,7 @@ class FocusSyncService(
         )
         _focusState.value = next
         onLocalFocusApplied(next)
+        onLocalFocusAppliedHandler?.invoke(next)
         session?.sendInfo(
             infoType = FocusSyncProtocol.INFO_FOCUS_STATE,
             infoBody = next.toJsonObject(),
@@ -300,6 +312,7 @@ class FocusSyncService(
                     _focusState.value = incoming
                 }
                 onLocalFocusApplied(incoming)
+                onLocalFocusAppliedHandler?.invoke(incoming)
                 true
             }
             else -> false
@@ -316,6 +329,9 @@ class BrowserTabHandoffService(
 ) {
     private val lock = ReentrantLock()
     private val recentTabs = ArrayDeque<BrowserTabHandoffInfo>()
+
+    @Volatile
+    var onRemoteTabReceivedHandler: ((BrowserTabHandoffInfo) -> Unit)? = null
 
     private val _activeRemoteTab = MutableStateFlow<BrowserTabHandoffInfo?>(null)
     val activeRemoteTab: StateFlow<BrowserTabHandoffInfo?> = _activeRemoteTab.asStateFlow()
@@ -346,6 +362,7 @@ class BrowserTabHandoffService(
             _activeRemoteTab.value = info
             _recentRemoteTabs.value = recentTabs.toList()
         }
+        onRemoteTabReceivedHandler?.invoke(info)
         return true
     }
 

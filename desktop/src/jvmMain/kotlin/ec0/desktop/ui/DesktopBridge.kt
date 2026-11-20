@@ -527,9 +527,24 @@ class DesktopBridge(
 
     private fun mirrorHost(): String {
         val h = hub ?: return "127.0.0.1"
-        val pinned = h.pinnedPeers.value.map { it.deviceId }
-        val peer = h.node.mdnsDiscovery.peers.value.firstOrNull { it.deviceId in pinned }
-        return peer?.addresses?.firstOrNull() ?: "127.0.0.1"
+        if (h.usbTunnelStatus.value != null) return "127.0.0.1"
+        val pinnedIds = h.pinnedPeers.value.map { it.deviceId }
+        // 1. Live authenticated session peerRemoteIp (works even when mDNS multicast is filtered)
+        for (id in pinnedIds) {
+            val ip = h.node.activeSessionFor(id)?.peerRemoteIp
+            if (!ip.isNullOrBlank()) return ip
+        }
+        // 2. mDNS discovered peer address
+        val mdnsIp = h.node.mdnsDiscovery.peers.value
+            .firstOrNull { it.deviceId in pinnedIds }
+            ?.addresses?.firstOrNull { it.isNotBlank() }
+        if (mdnsIp != null) return mdnsIp
+        // 3. Endpoint resolver last-known IP
+        for (id in pinnedIds) {
+            val cached = h.node.endpointResolver.lastKnownFor(id)?.host
+            if (!cached.isNullOrBlank()) return cached
+        }
+        return "127.0.0.1"
     }
 
     override fun startScreenMirror() {
@@ -663,9 +678,16 @@ class DesktopBridge(
 
     private fun mirrorHostFor(deviceId: String): String {
         val h = hub ?: return "127.0.0.1"
+        if (h.usbTunnelStatus.value != null) return "127.0.0.1"
+        val liveIp = h.node.activeSessionFor(deviceId)?.peerRemoteIp
+        if (!liveIp.isNullOrBlank()) return liveIp
         val exact = h.node.mdnsDiscovery.peers.value
-            .firstOrNull { it.deviceId == deviceId }?.addresses?.firstOrNull()
-        return exact ?: mirrorHost()
+            .firstOrNull { it.deviceId.equals(deviceId, ignoreCase = true) }
+            ?.addresses?.firstOrNull { it.isNotBlank() }
+        if (exact != null) return exact
+        val cached = h.node.endpointResolver.lastKnownFor(deviceId)?.host
+        if (!cached.isNullOrBlank()) return cached
+        return mirrorHost()
     }
 
     override fun startMirrorFor(deviceId: String) {
@@ -703,6 +725,7 @@ class DesktopBridge(
             hubNode.controlEnvelopeInterceptor = { _, envelope ->
                 vfsDesktopService.handleControlEnvelope(envelope)
             }
+            hub?.webDavDataSourceProvider = { buildAwaitableWebDavDataSource() }
         }
     }
 
@@ -976,28 +999,59 @@ class DesktopBridge(
     override val webDavMountUrl: StateFlow<String?> =
         hub?.webDavMountUrl ?: MutableStateFlow(null)
 
+    private fun buildAwaitableWebDavDataSource(): ec0.core.engine.services.VfsMountDataSource =
+        object : ec0.core.engine.services.VfsMountDataSource {
+            private fun activeVfsSession(): ec0.core.engine.transport.Ec0Session? {
+                val h = hub ?: return null
+                val deviceId = h.peerPresence.value.keys.firstOrNull { nodeId ->
+                    h.node.activeSessionFor(nodeId) != null
+                } ?: h.pinnedPeers.value.firstOrNull { p ->
+                    h.node.activeSessionFor(p.deviceId) != null
+                }?.deviceId ?: return null
+                return h.node.activeSessionFor(deviceId)
+            }
+
+            override fun listDirectory(relativePath: String): List<ec0.core.engine.protocol.VfsEntryDto>? {
+                val session = activeVfsSession() ?: return null
+                val norm = if (relativePath.isBlank()) "/" else "/${relativePath.trimStart('/')}"
+                val reply = vfsDesktopService.browseAndAwait(
+                    sender = { cmdType, body ->
+                        session.sendCmd(
+                            cmdType = cmdType,
+                            cmdBody = body,
+                            category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS,
+                        )
+                    },
+                    path = norm,
+                    timeoutMs = 5_000L,
+                )
+                return reply?.entries
+            }
+
+            override fun readFileBytes(relativePath: String): ByteArray? {
+                val session = activeVfsSession() ?: return null
+                val norm = if (relativePath.startsWith("/")) relativePath else "/$relativePath"
+                val bytes = vfsDesktopService.downloadAndAwait(
+                    sender = { cmdType, body ->
+                        session.sendCmd(
+                            cmdType = cmdType,
+                            cmdBody = body,
+                            category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS,
+                        )
+                    },
+                    path = norm,
+                    timeoutMs = 15_000L,
+                ) ?: return null
+                return if (bytes.size.toLong() <= 8L * 1024L * 1024L) bytes else null
+            }
+        }
+
     override fun toggleWebDavPhoneMount() {
         val h = hub ?: return
         if (h.webDavMountUrl.value != null) {
             h.stopWebDavPhoneMount()
         } else {
-            val ds = object : ec0.core.engine.services.VfsMountDataSource {
-                override fun listDirectory(relativePath: String): List<ec0.core.engine.protocol.VfsEntryDto>? {
-                    val norm = if (relativePath.isBlank()) "/" else "/$relativePath"
-                    vfsBrowse(norm)
-                    val st = vfsDesktopService.browseState.value ?: return emptyList()
-                    return st.entries
-                }
-
-                override fun readFileBytes(relativePath: String): ByteArray? {
-                    val norm = if (relativePath.startsWith("/")) relativePath else "/$relativePath"
-                    vfsDownload(norm)
-                    val savedPath = vfsDesktopService.lastDownloadedPath.value ?: return null
-                    val f = File(savedPath)
-                    return if (f.isFile && f.length() <= 8L * 1024L * 1024L) runCatching { f.readBytes() }.getOrNull() else null
-                }
-            }
-            h.startWebDavPhoneMount(ds)
+            h.startWebDavPhoneMount(buildAwaitableWebDavDataSource())
         }
     }
 

@@ -204,9 +204,17 @@ class LinuxClipboardBridge(
      * Writes an incoming remote [ClipboardItem] into the Linux system clipboard
      * (`wl-copy` on Wayland, `xclip` on X11) and records its SHA-256 digest to
      * suppress loopback echo on subsequent polls.
+     *
+     * Sensitive items (passwords / OTPs) are refused by default (`allowSensitive = false`)
+     * for unsolicited remote sync, and only written when explicitly requested by a local
+     * user action (e.g. clicking "Copy 2FA Code" or triggering one-shot OTP auto-type)
+     * with automatic 15–30s scrub.
      */
-    fun applyRemoteClipboardToSystem(item: ClipboardItem): Boolean = synchronized(lock) {
-        if (item.isSensitive) return false
+    fun applyRemoteClipboardToSystem(
+        item: ClipboardItem,
+        allowSensitive: Boolean = false,
+    ): Boolean = synchronized(lock) {
+        if (item.isSensitive && !allowSensitive) return false
         val display = displayServerProvider()
         val command = buildWriteCommand(display, item.mime) ?: return false
         return try {

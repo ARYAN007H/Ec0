@@ -151,7 +151,7 @@ data class SettingsState(
     /** Continuity Camera default capture profile. */
     val cameraResolution: String = "1080p",
     val cameraFps: Int = 30,
-    val cameraCodec: String = "h264",
+    val cameraCodec: String = "mjpeg",
     /** Desktop→phone notification relay policy. */
     val notifRelayEnabled: Boolean = false,
     val notifRelayDisabledApps: Set<String> = emptySet(),
