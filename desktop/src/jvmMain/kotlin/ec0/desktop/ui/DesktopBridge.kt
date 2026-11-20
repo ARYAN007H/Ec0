@@ -8,6 +8,7 @@ package ec0.desktop.ui
 
 import ec0.core.engine.EngineCapability
 import ec0.core.engine.EngineConnectionState
+import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.CamDroidControlCommand
 import ec0.core.engine.protocol.CameraStreamState
 import ec0.core.engine.protocol.FileTransferState
@@ -15,10 +16,13 @@ import ec0.core.engine.protocol.MediaPlaybackState
 import ec0.core.engine.protocol.OtpCodeExtractor
 import ec0.desktop.continuity.ContinuityHubController
 import ec0.desktop.state.AppState
+import ec0.ui.models.ActiveCallUi
+import ec0.ui.models.AndroidAppUi
 import ec0.ui.models.CameraControlsState
 import ec0.ui.models.Capabilities
 import ec0.ui.models.CapabilityTile
 import ec0.ui.models.ConnectedPeerSummary
+import ec0.ui.models.LinkTelemetryUi
 import ec0.ui.models.MediaSessionUi
 import ec0.ui.models.NotificationItem
 import ec0.ui.models.PairedPeerInfo
@@ -26,6 +30,7 @@ import ec0.ui.models.PairingQr
 import ec0.ui.models.PeerLinkState
 import ec0.ui.models.PeerManagementBridge
 import ec0.ui.models.SettingsState
+import ec0.ui.models.SetupCheckItem
 import ec0.ui.models.SmartConnectPairingQr
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
@@ -105,6 +110,7 @@ class DesktopBridge(
                         speedText = speedSample?.formattedSpeed,
                         etaText = speedSample?.formattedEta,
                         encrypted = true,
+                        localPath = snap.savedLocalPath,
                     )
                 }
                 lanItems + engineItems
@@ -298,9 +304,190 @@ class DesktopBridge(
                     canReply = it.canReply,
                     otpCode = OtpCodeExtractor.extractOtpCode(it.title, it.body),
                     timestampMs = it.timestampMs,
+                    appIconB64 = it.appIconB64,
+                    actions = it.actions,
                 )
             }
         }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    override val phoneApps: StateFlow<List<AndroidAppUi>> =
+        hub?.peerApps?.map { byPeer ->
+            byPeer.values.firstOrNull().orEmpty().map {
+                AndroidAppUi(packageName = it.packageName, label = it.label)
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    override fun launchPhoneApp(packageName: String) {
+        hub?.launchPhoneApp(packageName)
+    }
+
+    override val activeCalls: StateFlow<List<ActiveCallUi>> =
+        hub?.activeCalls?.map { list ->
+            list.map {
+                ActiveCallUi(
+                    callId = it.callId,
+                    callerName = it.callerName,
+                    phoneNumber = it.callerNumber,
+                    state = it.state.wireName,
+                )
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    override fun sendCallAction(callId: String, action: String, smsText: String?) {
+        val cmd = runCatching {
+            CallActionCommand(
+                callId = callId,
+                action = action,
+                smsReplyText = smsText?.takeIf { it.isNotBlank() },
+            )
+        }.getOrNull() ?: return
+        hub?.sendTelephonyCallAction(cmd)
+    }
+
+    override fun triggerNotificationAction(notifId: String, actionIndex: Int, label: String) {
+        hub?.sendNotificationAction(notifId = notifId, actionIndex = actionIndex, actionLabel = label)
+    }
+
+    override fun openCompletedTransfer(localPath: String, revealInFolder: Boolean) {
+        bridgeScope.launch(Dispatchers.IO) {
+            hub?.openLocalDownloadedFile(localPath, revealInFolder = revealInFolder)
+        }
+    }
+
+    override val linkTelemetry: StateFlow<LinkTelemetryUi> =
+        if (hub == null) {
+            MutableStateFlow(LinkTelemetryUi())
+        } else {
+            combine(
+                hub.usbTunnelStatus,
+                hub.node.connectionStates,
+                hub.linkRttSamplesMs,
+            ) { tunnel, states, rtts ->
+                val connected = states.values.any { it == EngineConnectionState.CONNECTED }
+                val label = when {
+                    tunnel != null -> "USB-C Direct"
+                    connected -> "Wi-Fi Encrypted"
+                    else -> "Offline"
+                }
+                LinkTelemetryUi(
+                    transportLabel = label,
+                    rttSamplesMs = rtts.map { it.toInt() },
+                    autoFailoverActive = tunnel != null && connected,
+                )
+            }.stateIn(bridgeScope, SharingStarted.Eagerly, LinkTelemetryUi())
+        }
+
+    override val setupChecks: StateFlow<List<SetupCheckItem>> =
+        if (hub == null) {
+            MutableStateFlow(emptyList())
+        } else {
+            combine(hub.linuxCapabilities, hub.pinnedPeers, appState.settings) { caps, pinned, s ->
+                listOf(
+                    SetupCheckItem(
+                        id = "paired",
+                        title = "Paired Android device",
+                        subtitle = if (pinned.isNotEmpty()) "${pinned.size} verified Ed25519 device(s)" else "Scan QR code from ec0 on Android",
+                        ready = pinned.isNotEmpty(),
+                    ),
+                    SetupCheckItem(
+                        id = "v4l2",
+                        title = "Virtual webcam driver (v4l2loopback)",
+                        subtitle = if (caps.v4l2DeviceReady) "/dev/video10 writable for Continuity Camera" else "Load v4l2loopback kernel module for 1080p webcam",
+                        ready = caps.v4l2DeviceReady,
+                        actionLabel = if (caps.v4l2DeviceReady) null else "Load driver",
+                    ),
+                    SetupCheckItem(
+                        id = "scrcpy",
+                        title = "Screen Mirror & App Streaming engine",
+                        subtitle = if (caps.hasScrcpy) "scrcpy ready for wireless & USB mirroring" else "Install scrcpy >= 2.2 from your distro packages",
+                        ready = caps.hasScrcpy,
+                    ),
+                    SetupCheckItem(
+                        id = "autostart",
+                        title = "Background login autostart",
+                        subtitle = if (s.autostartOnLogin) "Starts silently into system tray at login" else "Enable for zero-click continuity after reboot",
+                        ready = s.autostartOnLogin,
+                        actionLabel = if (s.autostartOnLogin) null else "Enable",
+                    ),
+                    SetupCheckItem(
+                        id = "menus",
+                        title = "File manager right-click integration",
+                        subtitle = "Adds \"Send via ec0\" to Dolphin & Nautilus",
+                        ready = File(System.getProperty("user.home", "."), ".local/share/kio/servicemenus/ec0-send.desktop").isFile ||
+                            File(System.getProperty("user.home", "."), ".local/share/nautilus/scripts/Send via ec0").isFile,
+                        actionLabel = "Install",
+                    ),
+                )
+            }.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList())
+        }
+
+    override fun runSetupCheckAction(checkId: String) {
+        when (checkId) {
+            "v4l2" -> hub?.setupV4l2LoopbackWithPkexec()
+            "autostart" -> setAutostartOnLogin(true)
+            "menus" -> installDesktopIntegration()
+        }
+    }
+
+    override fun setAutostartOnLogin(enabled: Boolean) {
+        val ok = hub?.setAutostartOnLogin(enabled) ?: false
+        if (ok) {
+            appState.updateSettings { it.copy(autostartOnLogin = enabled) }
+        }
+    }
+
+    override fun setUniversalControlEdge(edge: String) {
+        val normalized = edge.trim().lowercase().takeIf { it in setOf("off", "left", "right", "top", "bottom") } ?: "off"
+        hub?.configureUniversalControlEdge(normalized)
+        appState.updateSettings { it.copy(universalControlEdge = normalized) }
+    }
+
+    override fun setWalkAwayAutoLock(enabled: Boolean) {
+        hub?.setWalkAwayAutoLock(enabled)
+        appState.updateSettings { it.copy(walkAwayAutoLock = enabled) }
+    }
+
+    override val proximitySummary: StateFlow<String> =
+        hub?.proximityStatus?.map { st ->
+            when {
+                !st.enabled -> "Off"
+                st.smoothedRssiDbm != null -> "${st.zone.name.lowercase()} · ${st.smoothedRssiDbm} dBm"
+                else -> "scanning BLE…"
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, "Off") ?: MutableStateFlow("Off")
+
+    override val hotspotSsid: StateFlow<String?> =
+        hub?.hotspotStatus?.map { st ->
+            st.ssid?.takeIf { st.enabled && it.isNotBlank() }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, null) ?: MutableStateFlow(null)
+
+    override fun joinPhoneHotspot() {
+        val h = hub ?: return
+        if (h.hotspotStatus.value.enabled && !h.hotspotStatus.value.ssid.isNullOrBlank()) {
+            h.joinPhoneHotspotViaNmcli()
+        } else {
+            h.toggleInstantHotspot(true)
+        }
+    }
+
+    private val _isDragOverWindow = MutableStateFlow(false)
+    override val isDragOverWindow: StateFlow<Boolean> = _isDragOverWindow.asStateFlow()
+
+    fun setDragOverWindow(active: Boolean) {
+        _isDragOverWindow.value = active
+    }
+
+    fun handleDroppedFiles(files: List<File>) {
+        val safeFiles = files
+            .filter { it.exists() && !it.isHidden }
+            .take(MAX_DROPPED_FILES)
+        if (safeFiles.isEmpty()) return
+        hub?.sendFilesToConnectedPeers(safeFiles)
+    }
+
+    companion object {
+        const val MAX_DROPPED_FILES: Int = 64
+    }
 
     override val mediaSession: StateFlow<MediaSessionUi?> =
         if (hub == null) {
@@ -360,6 +547,7 @@ class DesktopBridge(
             host = mirrorHost(),
             resolution = s.cameraResolution,
             fps = s.cameraFps,
+            codec = s.cameraCodec,
             frontCamera = _cameraFront.value,
         )
     }
@@ -491,6 +679,7 @@ class DesktopBridge(
             host = mirrorHostFor(deviceId),
             resolution = s.cameraResolution,
             fps = s.cameraFps,
+            codec = s.cameraCodec,
             frontCamera = _cameraFront.value,
         )
     }
@@ -515,17 +704,25 @@ class DesktopBridge(
         vfsDesktopService.browseState,
         vfsDesktopService.error,
         vfsDesktopService.lastDownloadedPath,
-    ) { reply, err, savedPath ->
-        if (reply == null && err == null && savedPath == null) {
+        vfsDesktopService.lastUploadedPath,
+    ) { reply, err, savedPath, uploadedPath ->
+        if (reply == null && err == null && savedPath == null && uploadedPath == null) {
             null
         } else {
             VfsBrowseState(
                 path = reply?.path,
                 entries = reply?.entries?.map { dto ->
-                    VfsEntry(name = dto.name, isDir = dto.isDir, size = dto.size)
+                    VfsEntry(
+                        name = dto.name,
+                        isDir = dto.isDir,
+                        size = dto.size,
+                        thumbB64 = dto.thumbB64,
+                        mimeHint = dto.mimeHint,
+                    )
                 }.orEmpty(),
                 error = err,
                 lastDownloadedPath = savedPath,
+                lastUploadedPath = uploadedPath,
             )
         }
     }.stateIn(bridgeScope, SharingStarted.Eagerly, null)
@@ -548,6 +745,35 @@ class DesktopBridge(
             },
             path = path,
         )
+    }
+
+    override fun vfsUpload(remoteDirPath: String, fileRef: Any) {
+        val files = extractFiles(fileRef).filter { it.isFile }
+        if (files.isEmpty()) return
+        val h = hub ?: return
+        val deviceId = h.peerPresence.value.keys.firstOrNull { nodeId ->
+            h.node.activeSessionFor(nodeId) != null
+        } ?: h.pinnedPeers.value.firstOrNull { p ->
+            h.node.activeSessionFor(p.deviceId) != null
+        }?.deviceId ?: return
+        val session = h.node.activeSessionFor(deviceId) ?: return
+        bridgeScope.launch(Dispatchers.IO) {
+            for (file in files) {
+                vfsDesktopService.upload(
+                    sender = { cmdType, body ->
+                        session.sendCmd(
+                            cmdType = cmdType,
+                            cmdBody = body,
+                            category = ec0.core.engine.protocol.VfsProtocol.CATEGORY_VFS,
+                        )
+                    },
+                    remoteDirPath = remoteDirPath,
+                    localFile = file,
+                )
+            }
+            // Refresh listing after upload
+            vfsBrowse(remoteDirPath)
+        }
     }
 
     override fun vfsBrowse(path: String) {

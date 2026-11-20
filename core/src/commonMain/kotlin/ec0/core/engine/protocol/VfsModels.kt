@@ -19,9 +19,14 @@ object VfsProtocol {
     const val CMD_VFS_LIST: String = "vfs_list"
     const val INFO_VFS_DIR: String = "vfs_dir"
     const val CMD_VFS_DOWNLOAD: String = "vfs_download"
+    const val CMD_VFS_UPLOAD: String = "vfs_upload"
+    const val INFO_VFS_UPLOAD_ACK: String = "vfs_upload_ack"
     const val INFO_VFS_CHUNK: String = "vfs_chunk"
     const val INFO_VFS_ERROR: String = "vfs_error"
     const val INFO_VFS_ROOTS: String = "vfs_roots"
+
+    /** Bounded per-entry thumbnail text size (~12 KiB decoded JPEG/WebP). */
+    const val MAX_THUMB_B64_CHARS: Int = 16_384
 }
 
 @Serializable
@@ -32,6 +37,8 @@ data class VfsEntryDto(
     val name: String,
     val isDir: Boolean,
     val size: Long = 0,
+    val thumbB64: String? = null,
+    val mimeHint: String? = null,
 )
 
 @Serializable

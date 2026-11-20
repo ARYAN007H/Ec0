@@ -68,6 +68,14 @@ class Ec0Session internal constructor(
     private val closed = AtomicBoolean(false)
     private var pingExecutor: ScheduledExecutorService? = null
 
+    @Volatile
+    private var lastPingSentNs: Long = 0L
+
+    /** Most recent measured RFC 6455 PING/PONG round-trip latency in milliseconds. */
+    @Volatile
+    var lastMeasuredRttMs: Long = 2L
+        private set
+
     val isClosed: Boolean get() = closed.get()
 
     /**
@@ -82,6 +90,7 @@ class Ec0Session internal constructor(
         executor.scheduleAtFixedRate(
             {
                 if (!closed.get()) {
+                    lastPingSentNs = System.nanoTime()
                     runCatching { sendRawWsFrame(Ec0WsOpcode.PING, ByteArray(0)) }
                 }
             },
@@ -176,6 +185,13 @@ class Ec0Session internal constructor(
                 onClose = { payload ->
                     runCatching { sendRawWsFrame(Ec0WsOpcode.CLOSE, payload) }
                     closed.set(true)
+                },
+                onPong = {
+                    val sent = lastPingSentNs
+                    if (sent > 0L) {
+                        val elapsedMs = ((System.nanoTime() - sent) / 1_000_000L).coerceIn(1L, 9_999L)
+                        lastMeasuredRttMs = elapsedMs
+                    }
                 },
             ) ?: return null
 

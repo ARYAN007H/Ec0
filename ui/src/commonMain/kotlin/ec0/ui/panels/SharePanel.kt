@@ -106,7 +106,7 @@ fun SharePanel(bridge: UiBridge, pickFile: (onPicked: (Any?) -> Unit) -> Unit) {
         }
 
         // Phone storage browser (desktop has active VFS responder on phone)
-        VfsPanel(bridge)
+        VfsPanel(bridge, pickFile = pickFile)
 
         SectionHeader(
             "Nearby on Wi-Fi",

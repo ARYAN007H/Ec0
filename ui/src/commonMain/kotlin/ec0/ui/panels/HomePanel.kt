@@ -75,6 +75,10 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SensorDoor
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -113,6 +117,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import ec0.core.localsend.DeviceType
+import ec0.ui.models.ActiveCallUi
+import ec0.ui.models.AndroidAppUi
 import ec0.ui.models.CameraControlsState
 import ec0.ui.models.ConnectedPeerSummary
 import ec0.ui.models.MediaSessionUi
@@ -159,6 +165,8 @@ fun HomePanel(
         val remoteHandoffUrl by bridge.remoteHandoffUrl.collectAsState()
         val statusBanner by bridge.statusBanner.collectAsState()
         val tiles by bridge.tiles.collectAsState()
+        val phoneApps by bridge.phoneApps.collectAsState()
+        val activeCalls by bridge.activeCalls.collectAsState()
 
         // Adaptive bento: 3-up on wide windows, 2-up on medium, 1-up on phones.
         val tileColumns = if (compact) 1 else if (maxWidth >= 960.dp) 3 else 2
@@ -176,6 +184,15 @@ fun HomePanel(
                 .padding(horizontal = if (compact) 16.dp else 24.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            activeCalls.firstOrNull()?.let { call ->
+                IncomingCallBanner(
+                    call = call,
+                    onAnswer = { bridge.sendCallAction(call.callId, "answer_speaker") },
+                    onDecline = { bridge.sendCallAction(call.callId, "reject") },
+                    onQuickSms = { bridge.sendCallAction(call.callId, "reject_sms", "Can't talk right now, calling you back shortly.") },
+                )
+            }
+
             incoming?.let { request ->
                 IncomingRequestCard(
                     request = request,
@@ -300,7 +317,7 @@ fun HomePanel(
             // Capability Bento Grid — intrinsic height so controls never clip.
             val activeTiles = tiles.filter { it.deviceId == activeId }
             val tileFactories: Map<String, @Composable (Modifier) -> Unit> = mapOf(
-                "mirror" to { m -> MirrorTile(bridge, mirrorRunning, settings, activeId, m) },
+                "mirror" to { m -> MirrorTile(bridge, mirrorRunning, settings, activeId, phoneApps, m) },
                 "cam" to { m -> CameraTile(bridge, cameraState, cameraControls, v4l2Preflight, settings, activeId, m) },
                 "file" to { m -> FilesTile(transfers, devices, activeId, bridge, pickFile, m) },
                 "clip" to { m -> ClipboardTile(bridge, clipSummary, autoSync, compact, m) },
@@ -612,11 +629,102 @@ private fun HandoffBanner(url: String, onOpen: () -> Unit) {
 }
 
 @Composable
+private fun IncomingCallBanner(
+    call: ActiveCallUi,
+    onAnswer: () -> Unit,
+    onDecline: () -> Unit,
+    onQuickSms: () -> Unit,
+) {
+    Card(
+        shape = Ec0Shapes.hero,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(ec0Colors().success.copy(alpha = 0.2f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Call,
+                        contentDescription = null,
+                        tint = ec0Colors().success,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (call.state.equals("RINGING", ignoreCase = true)) "Incoming call on phone" else "Active call on phone",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                    )
+                    Text(
+                        call.callerName.ifBlank { call.phoneNumber.ifBlank { "Unknown caller" } },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (call.phoneNumber.isNotBlank() && call.callerName.isNotBlank()) {
+                        Text(
+                            call.phoneNumber,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                        )
+                    }
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                if (call.state.equals("RINGING", ignoreCase = true)) {
+                    Button(onClick = onAnswer, shape = Ec0Shapes.pill) {
+                        Icon(Icons.Filled.Call, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Answer")
+                    }
+                }
+                FilledTonalButton(
+                    onClick = onDecline,
+                    shape = Ec0Shapes.pill,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                ) {
+                    Icon(Icons.Filled.CallEnd, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Decline")
+                }
+                FilledTonalButton(onClick = onQuickSms, shape = Ec0Shapes.pill) {
+                    Icon(Icons.Filled.Sms, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Quick SMS")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MirrorTile(
     bridge: UiBridge,
     running: Boolean,
     settings: SettingsState,
     activeDeviceId: String?,
+    phoneApps: List<AndroidAppUi>,
     modifier: Modifier = Modifier,
 ) {
     DashboardTile(
@@ -625,7 +733,7 @@ private fun MirrorTile(
             "Live · ${settings.mirrorMaxFps} fps · ${settings.mirrorBitrateMbps} Mbps" +
                 if (settings.mirrorAudio) " · audio on" else " · muted"
         } else {
-            "Low-latency wireless & USB phone display with full touch control"
+            "Low-latency wireless & USB phone display or individual app windows"
         },
         icon = Icons.Filled.DesktopWindows,
         iconTint = MaterialTheme.colorScheme.tertiary,
@@ -671,6 +779,25 @@ private fun MirrorTile(
                 ) { bridge.updateSettings { it.copy(mirrorBitrateMbps = mbps) } }
             }
         }
+        if (phoneApps.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                Icon(
+                    Icons.Filled.Apps,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp),
+                )
+                phoneApps.take(12).forEach { app ->
+                    TileButton(app.label, subtle = true) {
+                        bridge.launchPhoneApp(app.packageName)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -713,7 +840,7 @@ private fun CameraTile(
             TileButton("Check v4l2", subtle = true) { bridge.setupV4l2Loopback() }
         }
 
-        // Capture profile selector (720p / 1080p and 30 / 60 fps)
+        // Capture profile selector (720p / 1080p, 30 / 60 fps, H.264 / MJPEG)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -730,6 +857,12 @@ private fun CameraTile(
                     "${fps}fps",
                     subtle = settings.cameraFps != fps,
                 ) { bridge.updateSettings { it.copy(cameraFps = fps) } }
+            }
+            listOf("h264" to "H.264", "mjpeg" to "MJPEG").forEach { (codecKey, label) ->
+                TileButton(
+                    label,
+                    subtle = !settings.cameraCodec.equals(codecKey, ignoreCase = true),
+                ) { bridge.updateSettings { it.copy(cameraCodec = codecKey) } }
             }
         }
 
@@ -1035,6 +1168,11 @@ private fun NotificationsTile(
             ) {
                 head.otpCode?.takeIf { it.isNotBlank() }?.let { otp ->
                     TileButton("Copy $otp") { bridge.copyOtpCode(otp) }
+                }
+                head.actions.take(3).forEachIndexed { idx, actionLabel ->
+                    TileButton(actionLabel, subtle = true) {
+                        bridge.triggerNotificationAction(head.id, idx, actionLabel)
+                    }
                 }
                 TileButton("Dismiss", subtle = true) { bridge.dismissNotification(head.id) }
             }

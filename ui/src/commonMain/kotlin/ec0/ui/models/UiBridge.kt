@@ -120,6 +120,8 @@ data class NotificationItem(
     val canReply: Boolean,
     val otpCode: String? = null,
     val timestampMs: Long = 0L,
+    val appIconB64: String? = null,
+    val actions: List<String> = emptyList(),
 )
 
 /**
@@ -246,6 +248,42 @@ interface UiBridge {
 
     fun vfsBrowse(path: String) {}
     fun vfsDownload(path: String) {}
+    fun vfsUpload(remoteDirPath: String, fileRef: Any) {}
+
+    /** Launchable Android apps advertised by the connected phone for Virtual Display streaming. */
+    val phoneApps: StateFlow<List<AndroidAppUi>> get() = MutableStateFlow(emptyList())
+    fun launchPhoneApp(packageName: String) {}
+
+    /** Active/ringing calls relayed from the paired phone. */
+    val activeCalls: StateFlow<List<ActiveCallUi>> get() = MutableStateFlow(emptyList())
+    fun sendCallAction(callId: String, action: String, smsText: String? = null) {}
+
+    /** Triggers a cached non-reply action button (e.g. Mark as Read / Archive) on the phone. */
+    fun triggerNotificationAction(notifId: String, actionIndex: Int, label: String) {}
+
+    /** Safely opens or reveals a completed downloaded transfer inside the app's download folder. */
+    fun openCompletedTransfer(localPath: String, revealInFolder: Boolean = false) {}
+
+    /** Real-time link RTT telemetry for the Continuity sparkline card. */
+    val linkTelemetry: StateFlow<LinkTelemetryUi> get() = MutableStateFlow(LinkTelemetryUi())
+
+    /** Guided system setup & health checklist items with 1-click fixes. */
+    val setupChecks: StateFlow<List<SetupCheckItem>> get() = MutableStateFlow(emptyList())
+    fun runSetupCheckAction(checkId: String) {}
+
+    /** Desktop autostart, Universal Control screen-edge barrier, BLE proximity, and Instant Hotspot. */
+    fun setAutostartOnLogin(enabled: Boolean) {}
+    fun setUniversalControlEdge(edge: String) {}
+    fun setWalkAwayAutoLock(enabled: Boolean) {}
+    val proximitySummary: StateFlow<String> get() = MutableStateFlow("Off")
+    val hotspotSsid: StateFlow<String?> get() = MutableStateFlow(null)
+    fun joinPhoneHotspot() {}
+
+    /** True while files are being dragged over the desktop window (AirDrop overlay). */
+    val isDragOverWindow: StateFlow<Boolean> get() = MutableStateFlow(false)
+
+    /** Platform capability flag: true on Android 12+ where Material You wallpaper colors are supported. */
+    val supportsDynamicColor: Boolean get() = false
 
     /** Incoming transfer awaiting accept/decline decision. */
     val incomingRequest: StateFlow<IncomingRequest?> get() = MutableStateFlow<IncomingRequest?>(null)

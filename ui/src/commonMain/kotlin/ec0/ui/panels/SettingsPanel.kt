@@ -22,8 +22,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -72,6 +74,7 @@ fun SettingsPanel(bridge: UiBridge) {
     }
     val settings by bridge.settings.collectAsState()
     val pairingQr by bridge.smartConnectPairingQr.collectAsState()
+    val setupChecks by bridge.setupChecks.collectAsState()
     var aliasDraft by remember(settings.alias) { mutableStateOf(settings.alias) }
 
     Column(
@@ -82,6 +85,46 @@ fun SettingsPanel(bridge: UiBridge) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         SectionHeader("Settings")
+
+        // Guided System Setup & Health Checklist (live 1-click remediation)
+        if (setupChecks.isNotEmpty()) {
+            val readyCount = setupChecks.count { it.ready }
+            SettingsCard("System setup & health ($readyCount/${setupChecks.size} ready)") {
+                setupChecks.forEachIndexed { idx, check ->
+                    if (idx > 0) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            if (check.ready) Icons.Filled.CheckCircle else Icons.Filled.WarningAmber,
+                            contentDescription = null,
+                            tint = if (check.ready) ec0Colors().success else ec0Colors().warning,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(check.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                check.subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (!check.ready && check.actionLabel != null) {
+                            FilledTonalButton(
+                                onClick = { bridge.runSetupCheckAction(check.id) },
+                                shape = Ec0Shapes.pill,
+                            ) {
+                                Text(check.actionLabel)
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Paired devices management — available on BOTH desktop and phone.
         if (peerManagementLocal != null) {
@@ -206,7 +249,7 @@ fun SettingsPanel(bridge: UiBridge) {
             }
         }
 
-        // Desktop-only: Linux File Manager context menus (Dolphin / Nautilus)
+        // Desktop-only: Linux File Manager context menus + Login Autostart
         if (bridge.hasDesktopIntegration) {
             SettingsCard("Desktop integration") {
                 Row(
@@ -233,6 +276,21 @@ fun SettingsPanel(bridge: UiBridge) {
                     ) {
                         Text("Install")
                     }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Start in background on login", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Writes ~/.config/autostart/ec0.desktop so ec0 launches silently into the system tray",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.autostartOnLogin,
+                        onCheckedChange = { enabled -> bridge.setAutostartOnLogin(enabled) },
+                    )
                 }
             }
         }
@@ -363,6 +421,23 @@ fun SettingsPanel(bridge: UiBridge) {
                     }
                 }
             }
+            if (bridge.supportsDynamicColor) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Dynamic wallpaper colors", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Adapt ec0's palette automatically to your Material You wallpaper",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.dynamicColor,
+                        onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(dynamicColor = checked) } },
+                    )
+                }
+            }
             if (bridge.hasDesktopIntegration) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -406,6 +481,37 @@ fun SettingsPanel(bridge: UiBridge) {
                     shape = Ec0Shapes.chip,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            if (!bridge.hasDesktopIntegration) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Allow desktop file uploads", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Permits paired Linux desktop to upload files into granted storage folders",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.allowVfsUploads,
+                        onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(allowVfsUploads = checked) } },
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto-relay copied images & screenshots", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Pushes newly copied screenshots (up to 8 MB) straight to your desktop clipboard",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.autoRelayScreenshots,
+                        onCheckedChange = { checked -> bridge.updateSettings { s -> s.copy(autoRelayScreenshots = checked) } },
+                    )
+                }
             }
         }
 

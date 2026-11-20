@@ -18,14 +18,19 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -49,11 +54,13 @@ import androidx.compose.ui.unit.dp
 import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Shapes
 import ec0.ui.theme.ec0Colors
+import ec0.ui.widgets.LinkTelemetrySparkline
 import ec0.ui.widgets.SectionHeader
 
 /**
- * Continuity features — Remote Input, Universal Clipboard, Bidirectional Notification Relay,
- * USB-C Direct Tunnel, and Instant URL Handoff. Zero placeholder stubs.
+ * Continuity features — Universal Control, Remote Input, Universal Clipboard,
+ * Bidirectional Notification Relay, BLE Proximity Auto-Lock, Instant Hotspot,
+ * USB-C Direct Tunnel, Live Link Telemetry Sparkline, and URL Handoff.
  */
 @Composable
 fun SyncPanel(bridge: UiBridge) {
@@ -64,6 +71,9 @@ fun SyncPanel(bridge: UiBridge) {
     val notificationRelayEnabled = remember { bridge.notificationRelayEnabled }.collectAsState()
     val usbTunnelActive by bridge.usbTunnelActive.collectAsState()
     val remoteHandoffUrl by bridge.remoteHandoffUrl.collectAsState()
+    val linkTelemetry by bridge.linkTelemetry.collectAsState()
+    val proximitySummary by bridge.proximitySummary.collectAsState()
+    val hotspotSsid by bridge.hotspotSsid.collectAsState()
 
     val remoteInputLocal = bridge.remoteInput
     val remoteInputAvailable: Boolean = if (remoteInputLocal != null) {
@@ -210,6 +220,136 @@ fun SyncPanel(bridge: UiBridge) {
                     "Plug in your phone over USB-C for zero-Wi-Fi gigabit continuity"
                 },
             )
+        }
+
+        // Desktop-only: Universal Control screen-edge cursor barrier
+        if (bridge.hasDesktopIntegration) {
+            Card(
+                shape = Ec0Shapes.card,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), Ec0Shapes.tile),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Filled.Mouse, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text("Universal Control", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Slide your mouse past a monitor edge to seamlessly control your paired phone",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    ) {
+                        listOf("off" to "Off", "left" to "Left Edge", "right" to "Right Edge", "top" to "Top Edge", "bottom" to "Bottom Edge").forEach { (key, label) ->
+                            val selected = settings.universalControlEdge.equals(key, ignoreCase = true)
+                            FilledTonalButton(
+                                onClick = { bridge.setUniversalControlEdge(key) },
+                                shape = Ec0Shapes.pill,
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                            ) {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // BLE Proximity Walk-Away Auto-Lock
+            FeatureCard(
+                icon = Icons.Filled.BluetoothSearching,
+                accent = MaterialTheme.colorScheme.primary,
+                title = "Walk-Away Auto-Lock",
+                live = settings.walkAwayAutoLock,
+                checked = settings.walkAwayAutoLock,
+                onToggle = { bridge.setWalkAwayAutoLock(it) },
+                detail = if (settings.walkAwayAutoLock) {
+                    "BLE Proximity active ($proximitySummary) — locks desktop 15s after you step away"
+                } else {
+                    "Automatically locks this Linux workstation when your phone moves out of range"
+                },
+            )
+
+            // Instant Phone Hotspot 1-click connect
+            Card(
+                shape = Ec0Shapes.card,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f), Ec0Shapes.tile),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.WifiTethering, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("Instant Hotspot", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            hotspotSsid?.let { "Phone hotspot ready: $it" }
+                                ?: "Join your paired phone's Wi-Fi hotspot in one click via NetworkManager",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = bridge::joinPhoneHotspot,
+                        shape = Ec0Shapes.pill,
+                    ) {
+                        Text(if (hotspotSsid != null) "Join" else "Request")
+                    }
+                }
+            }
+        }
+
+        // Real-Time Link Telemetry Sparkline Card
+        Card(
+            shape = Ec0Shapes.card,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Filled.Speed, contentDescription = null, tint = ec0Colors().success, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Link Telemetry", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        val latestRtt = linkTelemetry.rttSamplesMs.lastOrNull()
+                        Text(
+                            buildString {
+                                append(linkTelemetry.transportLabel)
+                                if (latestRtt != null) append(" · ${latestRtt} ms RTT")
+                                if (linkTelemetry.autoFailoverActive) append(" · auto-failover")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                LinkTelemetrySparkline(
+                    samplesMs = linkTelemetry.rttSamplesMs,
+                    accent = if (linkTelemetry.rttSamplesMs.isNotEmpty()) ec0Colors().success else MaterialTheme.colorScheme.outline,
+                )
+            }
         }
 
         // URL Handoff Card — send a link directly to the paired device's browser

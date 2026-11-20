@@ -20,6 +20,9 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.os.Handler
 import android.os.Looper
 import android.util.Size
@@ -87,6 +90,195 @@ fun parseCameraProfile(
     return CameraCaptureProfile(width = w, height = h, fps = fps, label = label)
 }
 
+/** Pure-Kotlin H.264 hardware encoder config & bitrate planner (unit-testable without android.jar). */
+data class HardwareH264Config(
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+    val bitrateBps: Int,
+    val iFrameIntervalSec: Int = 1,
+) {
+    companion object {
+        fun forProfile(width: Int, height: Int, fps: Int): HardwareH264Config {
+            // H.264 requires even dimensions; clamp to safe macroblock-aligned bounds.
+            val w = (width.coerceIn(320, 3840) and 1.inv()).coerceAtLeast(320)
+            val h = (height.coerceIn(240, 2160) and 1.inv()).coerceAtLeast(240)
+            val clampedFps = fps.coerceIn(15, 60)
+            val pixels = w.toLong() * h.toLong()
+            val baseBitrate = when {
+                pixels >= 3840L * 2160L -> 14_000_000
+                pixels >= 2560L * 1440L -> 9_000_000
+                pixels >= 1920L * 1080L -> 5_500_000
+                else -> 3_000_000
+            }
+            val fpsScaled = if (clampedFps >= 50) (baseBitrate * 4) / 3 else baseBitrate
+            return HardwareH264Config(
+                width = w,
+                height = h,
+                fps = clampedFps,
+                bitrateBps = fpsScaled.coerceIn(1_000_000, 20_000_000),
+            )
+        }
+
+        fun selectEffectiveCodec(requestedCodec: String, hardwareEncoderAvailable: Boolean): String {
+            val norm = requestedCodec.trim().lowercase()
+            return if (norm == "h264" && hardwareEncoderAvailable) "h264" else "mjpeg"
+        }
+
+        /**
+         * Prepends cached Annex-B SPS/PPS [configData] ahead of IDR keyframes so a
+         * freshly-connected desktop `ffmpeg` pipeline decodes frame 1 immediately.
+         */
+        fun assembleAnnexBAccessUnit(
+            frameData: ByteArray,
+            isKeyFrame: Boolean,
+            cachedSpsPps: ByteArray?,
+        ): ByteArray {
+            if (!isKeyFrame || cachedSpsPps == null || cachedSpsPps.isEmpty()) return frameData
+            val combined = ByteArray(cachedSpsPps.size + frameData.size)
+            cachedSpsPps.copyInto(combined, destinationOffset = 0)
+            frameData.copyInto(combined, destinationOffset = cachedSpsPps.size)
+            return combined
+        }
+    }
+}
+
+/**
+ * Low-latency `MediaCodec` (`video/avc`) hardware encoder emitting Annex-B NALUs.
+ * Reconfigures transparently if sensor rotation swaps portrait/landscape dimensions.
+ */
+internal class HardwareH264Encoder(
+    initialWidth: Int,
+    initialHeight: Int,
+    private val fps: Int,
+) : java.io.Closeable {
+    private var codec: MediaCodec? = null
+    private var configuredWidth: Int = 0
+    private var configuredHeight: Int = 0
+    private var spsPpsHeader: ByteArray? = null
+    private var frameIndex: Long = 0L
+    private var nv12Scratch = ByteArray(0)
+    private val bufferInfo = MediaCodec.BufferInfo()
+
+    val isAvailable: Boolean get() = codec != null
+
+    init {
+        configure(initialWidth, initialHeight)
+    }
+
+    private fun configure(width: Int, height: Int): Boolean {
+        releaseCodec()
+        val cfg = HardwareH264Config.forProfile(width, height, fps)
+        return runCatching {
+            val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, cfg.width, cfg.height).apply {
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+                )
+                setInteger(MediaFormat.KEY_BIT_RATE, cfg.bitrateBps)
+                setInteger(MediaFormat.KEY_FRAME_RATE, cfg.fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, cfg.iFrameIntervalSec)
+            }
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            encoder.start()
+            codec = encoder
+            configuredWidth = cfg.width
+            configuredHeight = cfg.height
+            spsPpsHeader = null
+            frameIndex = 0L
+            true
+        }.getOrElse {
+            android.util.Log.w("ec0.camera", "Hardware H.264 encoder unavailable (${cfg.width}x${cfg.height}): ${it.message}")
+            releaseCodec()
+            false
+        }
+    }
+
+    /**
+     * Encodes one rotated NV21 frame into an Annex-B H.264 access unit (or returns
+     * `null` if the encoder buffered the frame). Automatically converts NV21 → NV12
+     * (swapping V/U chroma bytes) for `COLOR_FormatYUV420Flexible` input buffers.
+     */
+    fun encodeNv21(nv21: ByteArray, width: Int, height: Int): ByteArray? {
+        val targetW = width and 1.inv()
+        val targetH = height and 1.inv()
+        if (targetW < 320 || targetH < 240) return null
+        if (codec == null || configuredWidth != targetW || configuredHeight != targetH) {
+            if (!configure(targetW, targetH)) return null
+        }
+        val activeCodec = codec ?: return null
+
+        val ySize = targetW * targetH
+        val required = ySize + (ySize / 2)
+        if (nv21.size < required) return null
+        if (nv12Scratch.size != required) {
+            nv12Scratch = ByteArray(required)
+        }
+        // Copy luma verbatim, swap V/U pairs (NV21 -> NV12)
+        System.arraycopy(nv21, 0, nv12Scratch, 0, ySize)
+        var i = ySize
+        while (i + 1 < required) {
+            nv12Scratch[i] = nv21[i + 1]
+            nv12Scratch[i + 1] = nv21[i]
+            i += 2
+        }
+
+        val inputIdx = activeCodec.dequeueInputBuffer(5_000L)
+        if (inputIdx >= 0) {
+            val inputBuf = activeCodec.getInputBuffer(inputIdx)
+            if (inputBuf != null) {
+                inputBuf.clear()
+                val toWrite = required.coerceAtMost(inputBuf.capacity())
+                inputBuf.put(nv12Scratch, 0, toWrite)
+                val ptsUs = (frameIndex++ * 1_000_000L) / fps.coerceAtLeast(1)
+                activeCodec.queueInputBuffer(inputIdx, 0, toWrite, ptsUs, 0)
+            } else {
+                activeCodec.queueInputBuffer(inputIdx, 0, 0, 0L, 0)
+            }
+        }
+
+        var emitted: ByteArray? = null
+        while (true) {
+            val outIdx = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
+            if (outIdx < 0) break
+            try {
+                val outBuf = activeCodec.getOutputBuffer(outIdx)
+                if (outBuf != null && bufferInfo.size > 0) {
+                    outBuf.position(bufferInfo.offset)
+                    outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                    val chunk = ByteArray(bufferInfo.size)
+                    outBuf.get(chunk)
+                    val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                    val isKey = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    if (isConfig) {
+                        spsPpsHeader = chunk
+                    } else {
+                        emitted = HardwareH264Config.assembleAnnexBAccessUnit(
+                            frameData = chunk,
+                            isKeyFrame = isKey,
+                            cachedSpsPps = spsPpsHeader,
+                        )
+                    }
+                }
+            } finally {
+                activeCodec.releaseOutputBuffer(outIdx, false)
+            }
+        }
+        return emitted
+    }
+
+    private fun releaseCodec() {
+        runCatching { codec?.stop() }
+        runCatching { codec?.release() }
+        codec = null
+    }
+
+    override fun close() {
+        releaseCodec()
+    }
+}
+
 /**
  * Owns the phone-side camera stream lifecycle. One [CamDroidStreamServer] at a
  * time; the ec0 companion callbacks delegate every `cam.control.cmd` here.
@@ -119,6 +311,9 @@ class Ec0CameraStreamer(
     private var frontCameraRequested: Boolean = false
 
     @Volatile
+    private var activeCodec: String = "mjpeg"
+
+    @Volatile
     private var liveSource: CameraXFrameSource? = null
 
     /** Re-promote hook: Ec0CompanionService upgrades its FGS type on arming. */
@@ -139,7 +334,7 @@ class Ec0CameraStreamer(
                     state = CameraStreamState.STOPPED,
                     backend = CameraBackend.CAMDROID_NATIVE,
                     port = streamPort,
-                    codec = "mjpeg",
+                    codec = activeCodec,
                     resolution = "${activeProfile.width}x${activeProfile.height}",
                     fps = activeProfile.fps,
                     audioEnabled = false,
@@ -173,7 +368,7 @@ class Ec0CameraStreamer(
         backend = CameraBackend.CAMDROID_NATIVE,
         port = streamPort,
         v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
-        codec = "mjpeg",
+        codec = activeCodec,
         resolution = "${activeProfile.width}x${activeProfile.height}",
         fps = activeProfile.fps,
         audioEnabled = false,
@@ -201,8 +396,7 @@ class Ec0CameraStreamer(
             maxFpsCeiling = maxFps,
         )
         activeProfile = profile
-        android.util.Log.i("ec0.camera", "arming stream server (${profile.width}x${profile.height}@${profile.fps})")
-
+        val requestedH264 = command.codec.equals("h264", ignoreCase = true)
         val source = CameraXFrameSource(
             appContext = appContext,
             width = profile.width,
@@ -210,14 +404,25 @@ class Ec0CameraStreamer(
             fps = profile.fps,
             jpegQuality = jpegQuality,
             startBackCamera = !frontCameraRequested,
+            preferH264 = requestedH264,
         )
+        val negotiatedCodec = HardwareH264Config.selectEffectiveCodec(
+            requestedCodec = command.codec,
+            hardwareEncoderAvailable = source.isHardwareH264Ready,
+        )
+        activeCodec = negotiatedCodec
+        android.util.Log.i(
+            "ec0.camera",
+            "arming stream server (${profile.width}x${profile.height}@${profile.fps}, codec=$negotiatedCodec)",
+        )
+
         val newServer = CamDroidStreamServer(
             frameSourceFactory = { source },
             port = streamPort,
             width = profile.width,
             height = profile.height,
             targetFps = profile.fps,
-            codec = "mjpeg",
+            codec = negotiatedCodec,
         )
         newServer.onControlCommand = { cmd ->
             runCatching { handleCommand(cmd) }
@@ -226,13 +431,13 @@ class Ec0CameraStreamer(
             is CamDroidArmResult.Armed -> {
                 server = newServer
                 liveSource = source
-                android.util.Log.i("ec0.camera", "armed on :${armResult.port} — awaiting token handshake")
+                android.util.Log.i("ec0.camera", "armed on :${armResult.port} ($negotiatedCodec) — awaiting token handshake")
                 CameraStatusInfo(
                     state = CameraStreamState.STARTING,
                     backend = CameraBackend.CAMDROID_NATIVE,
                     port = armResult.port,
                     v4l2DevicePath = CamDroidConstants.DEFAULT_V4L2_DEVICE,
-                    codec = "mjpeg",
+                    codec = negotiatedCodec,
                     resolution = "${profile.width}x${profile.height}",
                     fps = profile.fps,
                     audioEnabled = false,
@@ -274,6 +479,7 @@ class CameraXFrameSource(
     private val fps: Int,
     private val jpegQuality: Int = 80,
     private val startBackCamera: Boolean = true,
+    private val preferH264: Boolean = false,
 ) : CamDroidFrameSource {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -284,6 +490,17 @@ class CameraXFrameSource(
     private val cameraRef = AtomicReference<androidx.camera.core.Camera?>(null)
     private val lastFrameMs = AtomicLong(0L)
     private val minIntervalMs = (1000L / fps.coerceIn(1, 60)).coerceAtLeast(1L)
+
+    // Optional hardware MediaCodec H.264 encoder when desktop requested `h264`.
+    private val h264Encoder: HardwareH264Encoder? = if (preferH264) {
+        runCatching { HardwareH264Encoder(width, height, fps) }
+            .getOrNull()
+            ?.takeIf { it.isAvailable }
+    } else {
+        null
+    }
+
+    val isHardwareH264Ready: Boolean get() = h264Encoder?.isAvailable == true
 
     // Reusable scratch buffers accessed exclusively on analyzerExecutor.
     private var nv21Scratch = ByteArray(0)
@@ -356,14 +573,23 @@ class CameraXFrameSource(
             if (!lastFrameMs.compareAndSet(last, now)) return
 
             val rotation = proxy.imageInfo.rotationDegrees
-            val jpeg = runCatching {
-                imageProxyToRotatedJpeg(proxy, rotation)
+            val encoded = runCatching {
+                val encoder = h264Encoder
+                if (encoder != null) {
+                    val nv21 = imageProxyToNv21Fast(proxy)
+                    val rotated = rotateNv21Fast(nv21, proxy.width, proxy.height, rotation)
+                    val outW = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
+                    val outH = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
+                    encoder.encodeNv21(rotated, outW, outH)
+                } else {
+                    imageProxyToRotatedJpeg(proxy, rotation)
+                }
             }.getOrElse {
                 onError("frame conversion failed: ${it.message}")
                 return
             }
-            if (jpeg != null && !closed.get()) {
-                sink(jpeg)
+            if (encoded != null && !closed.get()) {
+                sink(encoded)
             }
         } finally {
             proxy.close()
@@ -571,6 +797,7 @@ class CameraXFrameSource(
         }
         analyzerExecutor.shutdown()
         runCatching { analyzerExecutor.awaitTermination(1, TimeUnit.SECONDS) }
+        runCatching { h264Encoder?.close() }
     }
 
     private class ServiceLifecycleOwner : LifecycleOwner {

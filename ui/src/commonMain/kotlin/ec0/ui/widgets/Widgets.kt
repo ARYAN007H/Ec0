@@ -26,8 +26,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.TabletMac
 import androidx.compose.material3.Icon
@@ -35,6 +37,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -42,7 +45,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -153,7 +159,13 @@ fun Ec0Progress(value: Float, accent: Color, modifier: Modifier = Modifier) {
 
 /** Expressive transfer row used in the dashboard strip and Transfers panel. */
 @Composable
-fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
+fun TransferRow(
+    item: TransferItem,
+    compact: Boolean,
+    onCancel: (() -> Unit)?,
+    onOpenFile: ((String) -> Unit)? = null,
+    onRevealFolder: ((String) -> Unit)? = null,
+) {
     val accent = when (item.state) {
         TransferState.FAILED -> MaterialTheme.colorScheme.error
         TransferState.CANCELLED -> MaterialTheme.colorScheme.outline
@@ -262,7 +274,72 @@ fun TransferRow(item: TransferItem, compact: Boolean, onCancel: (() -> Unit)?) {
                 Spacer(Modifier.height(10.dp))
                 Ec0Progress((item.progressPct / 100f) * shimmer, accent)
             }
+            val saved = item.localPath
+            if (!compact &&
+                item.state == TransferState.DONE &&
+                item.direction == TransferDirection.INCOMING &&
+                !saved.isNullOrBlank() &&
+                (onOpenFile != null || onRevealFolder != null)
+            ) {
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (onOpenFile != null) {
+                        TextButton(onClick = { onOpenFile(saved) }) {
+                            Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Open")
+                        }
+                    }
+                    if (onRevealFolder != null) {
+                        TextButton(onClick = { onRevealFolder(saved) }) {
+                            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Show in folder")
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/** Smooth Canvas sparkline plotting real-time link RTT samples (ms). */
+@Composable
+fun LinkTelemetrySparkline(
+    samplesMs: List<Int>,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.fillMaxWidth().height(48.dp)) {
+        if (samplesMs.size < 2) {
+            drawLine(
+                color = accent.copy(alpha = 0.3f),
+                start = Offset(0f, size.height / 2f),
+                end = Offset(size.width, size.height / 2f),
+                strokeWidth = 3f,
+                cap = StrokeCap.Round,
+            )
+            return@Canvas
+        }
+        val maxVal = (samplesMs.maxOrNull() ?: 20).coerceAtLeast(10).toFloat()
+        val minVal = (samplesMs.minOrNull() ?: 0).coerceAtMost(maxVal.toInt() - 1).toFloat()
+        val span = (maxVal - minVal).coerceAtLeast(1f)
+        val stepX = size.width / (samplesMs.size - 1).coerceAtLeast(1)
+        val padY = 6f
+        val usableH = (size.height - padY * 2f).coerceAtLeast(4f)
+
+        val path = Path()
+        samplesMs.forEachIndexed { idx, rtt ->
+            val x = idx * stepX
+            val norm = ((rtt - minVal) / span).coerceIn(0f, 1f)
+            val y = size.height - padY - norm * usableH
+            if (idx == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(
+            path = path,
+            color = accent,
+            style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+        )
     }
 }
 

@@ -152,6 +152,12 @@ class ScrcpyMirrorCoordinator(
             add("--max-size")
             add(cmd.maxSize.toString())
         }
+        if (cmd.newDisplay != null) {
+            add("--new-display=${cmd.newDisplay}")
+        }
+        if (cmd.startApp != null) {
+            add("--start-app=${cmd.startApp}")
+        }
     }
 
     /**

@@ -33,12 +33,17 @@ import ec0.core.engine.crypto.PinnedPeer
 import ec0.core.engine.discovery.MulticastMdnsTransport
 import ec0.core.engine.linux.AdaptiveLinuxInputSink
 import ec0.core.engine.linux.InstalledDesktopFiles
+import ec0.core.engine.linux.LinuxAutostartManager
+import ec0.core.engine.linux.LinuxBleProximityScanner
 import ec0.core.engine.linux.LinuxClipboardBridge
 import ec0.core.engine.linux.LinuxDesktopIntegrationGenerator
 import ec0.core.engine.linux.LinuxEnvironmentProbe
 import ec0.core.engine.linux.LinuxInputInjectionBridge
 import ec0.core.engine.linux.LinuxNotificationBridge
+import ec0.core.engine.linux.LinuxScreenEdgeWatcher
 import ec0.core.engine.linux.LinuxSystemCapabilities
+import ec0.core.engine.linux.ProximityStatusSnapshot
+import ec0.core.engine.protocol.AndroidAppInfo
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.CallStateInfo
 import ec0.core.engine.protocol.CamDroidConstants
@@ -60,6 +65,7 @@ import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
+import ec0.core.engine.protocol.VfsPathGuard
 import ec0.core.engine.services.ContinuityCameraCoordinator
 import ec0.core.engine.services.DesktopNotificationMonitor
 import ec0.core.engine.services.LocalDaemonIpcServer
@@ -161,6 +167,42 @@ class ContinuityHubController(
     )
 
     val throughputTracker = TransferThroughputTracker()
+    val autostartManager = LinuxAutostartManager()
+
+    val screenEdgeWatcher = LinuxScreenEdgeWatcher(
+        universalControlService = node.universalControlService,
+        activePeerProvider = {
+            val peerId = targetPeerDeviceIds().firstOrNull { node.activeSessionFor(it) != null }
+                ?: return@LinuxScreenEdgeWatcher null
+            peerId to node.activeSessionFor(peerId)
+        },
+        onRemotePointerDelta = { dx, dy ->
+            sendRemotePointerEvent(
+                action = InputProtocol.POINTER_ACTION_MOVE,
+                dx = dx,
+                dy = dy,
+                buttonsMask = 0,
+            )
+        },
+        onHandoffChanged = { cmd ->
+            _statusBanner.value = if (cmd.action == CursorHandoffCommand.ACTION_ENTER) {
+                "Universal Control active on paired phone (${cmd.edge.wireName} edge)"
+            } else {
+                "Cursor returned to local desktop"
+            }
+        },
+    )
+
+    val bleProximityScanner = LinuxBleProximityScanner(
+        onWalkAwayLock = {
+            _statusBanner.value = "Phone moved out of range — locking workstation"
+            lockLocalWorkstation()
+        },
+        onApproachWake = {
+            _statusBanner.value = "Paired phone nearby — proximity link ready"
+        },
+        targetDeviceNameProvider = { pinnedPeers.value.firstOrNull()?.alias },
+    )
 
     private var daemonIpcServer: LocalDaemonIpcServer? = null
     private var desktopNotificationMonitor: DesktopNotificationMonitor? = null
@@ -213,6 +255,8 @@ class ContinuityHubController(
     val transfers: StateFlow<Map<String, TransferProgressSnapshot>> get() = node.transfers
     val notifications: StateFlow<List<NotificationPostInfo>> get() = node.notifications
     val peerPresence: StateFlow<Map<String, PresenceBeaconInfo>> get() = node.peerPresence
+    val peerApps: StateFlow<Map<String, List<AndroidAppInfo>>> get() = node.peerApps
+    val proximityStatus: StateFlow<ProximityStatusSnapshot> get() = bleProximityScanner.status
     val cameraStatus: StateFlow<CameraStatusInfo> get() = node.cameraStatus
     val hotspotStatus: StateFlow<HotspotStatusInfo> get() = node.hotspotStatus
     val activeCalls: StateFlow<List<CallStateInfo>> get() = node.activeCalls
@@ -305,6 +349,11 @@ class ContinuityHubController(
         presenceBeaconJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 broadcastPresenceBeacons()
+                val activePeerId = targetPeerDeviceIds().firstOrNull()
+                val measuredRtt = activePeerId?.let { node.activeSessionFor(it)?.lastMeasuredRttMs }
+                if (measuredRtt != null) {
+                    _linkRttSamplesMs.value = (_linkRttSamplesMs.value + measuredRtt.coerceIn(1L, 999L)).takeLast(16)
+                }
                 delay(15_000L)
             }
         }
@@ -694,11 +743,13 @@ class ContinuityHubController(
             } else {
                 targetPeerDeviceIds()
             }
+            val rttMs = _linkRttSamplesMs.value.lastOrNull() ?: 10L
+            val softAp = hotspotStatus.value.enabled
             for (peerId in targets) {
                 if (node.activeSessionFor(peerId) != null) {
                     for (f in validFiles) {
                         runCatching {
-                            node.sendFileOrDirectory(peerId, f)
+                            node.sendFileOrDirectory(peerId, f, rttMs = rttMs, isSoftApLink = softAp)
                             sentCount++
                         }
                     }
@@ -710,6 +761,40 @@ class ContinuityHubController(
                 "Connect a paired device first to send ${validFiles.size} file(s)"
             }
         }
+    }
+
+    /**
+     * Safely opens a completed incoming transfer (or reveals its containing folder)
+     * via argv-only `xdg-open`, strictly verifying canonical containment inside
+     * [downloadDir] to prevent arbitrary file/URL execution from untrusted paths.
+     */
+    fun openLocalDownloadedFile(
+        rawPath: String,
+        revealInFolder: Boolean = false,
+        launcher: ec0.core.engine.services.ExternalProcessLauncher = SystemProcessLauncher,
+    ): Boolean {
+        if (rawPath.isBlank() || rawPath.any { it.code < 32 || it == '\u0000' }) return false
+        val rootCanonical = runCatching { downloadDir.canonicalFile }.getOrNull() ?: return false
+        val target = File(rawPath)
+        if (!target.exists()) return false
+        val targetCanonical = runCatching { target.canonicalFile }.getOrNull() ?: return false
+        if (!VfsPathGuard.isInsideRoot(rootCanonical.path, targetCanonical.path)) {
+            _statusBanner.value = "Blocked opening path outside Downloads folder"
+            return false
+        }
+        val toOpen = if (revealInFolder && targetCanonical.isFile) {
+            val parent = targetCanonical.parentFile ?: rootCanonical
+            if (VfsPathGuard.isInsideRoot(rootCanonical.path, parent.canonicalPath)) parent else rootCanonical
+        } else {
+            targetCanonical
+        }
+        val ok = runCatching {
+            launcher.runBlockingCommand(listOf("xdg-open", toOpen.path), timeoutMs = 4_000L).exitCode == 0
+        }.getOrDefault(false)
+        if (!ok) {
+            _statusBanner.value = "Saved at ${toOpen.path}"
+        }
+        return ok
     }
 
     fun sendFilePath(rawPath: String) {
@@ -798,7 +883,38 @@ class ContinuityHubController(
 
     fun setUniversalControlEdge(edge: ScreenEdge) {
         node.universalControlService.setConfiguredEdge(edge)
-        _statusBanner.value = "Screen edge set to ${edge.wireName.uppercase()}"
+        screenEdgeWatcher.configureEdge(edge)
+        _statusBanner.value = "Universal Control screen edge set to ${edge.wireName.uppercase()}"
+    }
+
+    fun configureUniversalControlEdge(edgeWire: String) {
+        val normalized = edgeWire.trim().lowercase()
+        if (normalized == "off" || normalized.isEmpty()) {
+            screenEdgeWatcher.configureEdge(null)
+            _statusBanner.value = "Universal Control screen-edge barrier disabled"
+        } else {
+            val edge = runCatching { ScreenEdge.fromWireName(normalized) }.getOrNull() ?: return
+            setUniversalControlEdge(edge)
+        }
+    }
+
+    fun setWalkAwayAutoLock(enabled: Boolean) {
+        bleProximityScanner.setEnabled(enabled)
+        _statusBanner.value = if (enabled) {
+            "Walk-Away Auto-Lock enabled (BLE proximity monitoring)"
+        } else {
+            "Walk-Away Auto-Lock disabled"
+        }
+    }
+
+    fun setAutostartOnLogin(enabled: Boolean): Boolean {
+        val ok = runCatching { autostartManager.setAutostartEnabled(enabled) }.getOrDefault(false)
+        _statusBanner.value = when {
+            enabled && ok -> "Enabled silent background launch at login"
+            !enabled && ok -> "Disabled background launch at login"
+            else -> "Could not update login autostart entry"
+        }
+        return ok
     }
 
     fun triggerEdgeCursorHandoff(positionPermille: Int = 500) {
@@ -910,6 +1026,32 @@ class ContinuityHubController(
         }
     }
 
+    fun sendNotificationAction(notifId: String, actionIndex: Int, actionLabel: String = "") {
+        scope.launch(Dispatchers.IO) {
+            var delivered = false
+            for (peerId in targetPeerDeviceIds()) {
+                if (node.sendNotificationAction(peerId, notifId, actionIndex, actionLabel)) {
+                    delivered = true
+                }
+            }
+            if (delivered) {
+                _statusBanner.value = "Triggered notification action '${actionLabel.ifBlank { "#$actionIndex" }}'"
+            }
+        }
+    }
+
+    fun launchPhoneApp(packageName: String) {
+        val cleanPkg = packageName.trim()
+        if (!ScrcpyMirrorStartCommand.isValidPackageName(cleanPkg)) {
+            _statusBanner.value = "Invalid Android package name"
+            return
+        }
+        startScreenMirror(
+            startApp = cleanPkg,
+            newDisplay = "1080x1920/420",
+        )
+    }
+
     fun startScreenMirror(
         host: String = "",
         adbPort: Int = 5555,
@@ -917,11 +1059,13 @@ class ContinuityHubController(
         bitrateKbps: Int = 8_000,
         audioEnabled: Boolean = true,
         turnScreenOff: Boolean = false,
+        startApp: String? = null,
+        newDisplay: String? = null,
     ) {
         val mirrorLog = java.util.logging.Logger.getLogger("ec0.hub.mirror")
         scope.launch(Dispatchers.IO) {
             try {
-                mirrorLog.info("Mirror: requested (host hint='$host', fps=$maxFps, audio=$audioEnabled, screenOff=$turnScreenOff)")
+                mirrorLog.info("Mirror: requested (host hint='$host', fps=$maxFps, audio=$audioEnabled, screenOff=$turnScreenOff, app=$startApp)")
                 val adbDevices = node.scrcpyCoordinator.adbDevicesList()
                 val peer = node.pinnedPeers.value
                     .firstOrNull { node.activeSessionFor(it.deviceId) != null }
@@ -938,20 +1082,23 @@ class ContinuityHubController(
                             )
                         }
                     }
+                val title = if (startApp != null) "ec0 App · $startApp" else "ec0 Mirror (${peer.alias})"
                 val cmd = ScrcpyMirrorStartCommand(
                     host = host.ifBlank { peerIp ?: "127.0.0.1" },
                     adbPort = adbPort,
                     maxFps = maxFps,
                     bitrateKbps = bitrateKbps,
-                    windowTitle = "ec0 Mirror (${peer.alias})",
+                    windowTitle = title,
                     audioEnabled = audioEnabled,
                     turnScreenOff = turnScreenOff,
+                    startApp = startApp,
+                    newDisplay = newDisplay,
                 )
                 node.scrcpyCoordinator.launchMirrorSession(cmd, directSerial = serial)
-                _statusBanner.value = if (serial != null) {
-                    "Mirroring ${peer.alias} (${maxFps} fps${if (audioEnabled) ", audio" else ", muted"})"
-                } else {
-                    "Mirroring phone screen (${cmd.serial})"
+                _statusBanner.value = when {
+                    startApp != null -> "Streaming Android app $startApp in virtual display"
+                    serial != null -> "Mirroring ${peer.alias} (${maxFps} fps${if (audioEnabled) ", audio" else ", muted"})"
+                    else -> "Mirroring phone screen (${cmd.serial})"
                 }
             } catch (e: Exception) {
                 mirrorLog.warning("Mirror failed: ${e.javaClass.simpleName}: ${e.message}")
@@ -1134,6 +1281,8 @@ class ContinuityHubController(
         scrubJob?.cancel()
         runCatching { desktopNotificationMonitor?.stop() }
         runCatching { dbusMonitorProcessRef.getAndSet(null)?.destroyForcibly() }
+        runCatching { screenEdgeWatcher.close() }
+        runCatching { bleProximityScanner.close() }
         runCatching { adaptiveInputSink.close() }
         runCatching { daemonIpcServer?.close() }
         node.close()

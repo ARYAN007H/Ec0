@@ -27,11 +27,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
 import ec0.core.engine.EngineCapability
 import ec0.core.engine.EngineConnectionState
 import ec0.core.engine.EngineConstants
@@ -57,6 +62,7 @@ import ec0.ui.models.Capabilities
 import ec0.ui.models.CapabilityTile
 import ec0.ui.models.ConnectedPeerSummary
 import ec0.ui.models.IncomingRequest
+import ec0.ui.models.LinkTelemetryUi
 import ec0.ui.models.MediaSessionUi
 import ec0.ui.models.NotificationItem
 import ec0.ui.models.PairedPeerInfo
@@ -66,6 +72,7 @@ import ec0.ui.models.PhoneCameraBridge
 import ec0.ui.models.PhoneCameraGrant
 import ec0.ui.models.RemoteInputBridge
 import ec0.ui.models.SettingsState
+import ec0.ui.models.SetupCheckItem
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
 import ec0.ui.models.TransferState
@@ -240,6 +247,7 @@ class AndroidAppState(
     override val canLockPc: Boolean get() = true
     override val hasUsbTunnelControl: Boolean get() = false
     override val hasDesktopIntegration: Boolean get() = false
+    override val supportsDynamicColor: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
     private val _notificationRelayGranted = MutableStateFlow(false)
 
@@ -357,9 +365,98 @@ class AndroidAppState(
                     canReply = it.canReply,
                     otpCode = OtpCodeExtractor.extractOtpCode(it.title, it.body),
                     timestampMs = it.timestampMs,
+                    appIconB64 = it.appIconB64,
+                    actions = it.actions,
                 )
             }
         }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    private val _linkTelemetry = MutableStateFlow(LinkTelemetryUi())
+    override val linkTelemetry: StateFlow<LinkTelemetryUi> = _linkTelemetry.asStateFlow()
+
+    private val _setupChecks = MutableStateFlow<List<SetupCheckItem>>(emptyList())
+    override val setupChecks: StateFlow<List<SetupCheckItem>> = _setupChecks.asStateFlow()
+
+    private fun hasStorageAccess(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return runCatching { android.os.Environment.isExternalStorageManager() }.getOrDefault(false)
+        }
+        return runCatching {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+            ) == PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+    }
+
+    private fun buildAndroidSetupChecks(): List<SetupCheckItem> {
+        val cameraOk = hasCameraPermission()
+        val notifOk = isNotificationListenerAccessGranted()
+        val batteryOk = isBatteryOptimizationIgnored()
+        val storageOk = hasStorageAccess()
+        val accessibilityOk = Ec0UniversalControlAccessibilityService.isAccessibilityServiceEnabled(context)
+        return listOf(
+            SetupCheckItem(
+                id = "camera",
+                title = "Continuity Camera",
+                subtitle = if (cameraOk) "Camera permission granted (1080p/4K ready)" else "Grant camera permission to stream as PC webcam",
+                ready = cameraOk,
+                actionLabel = if (cameraOk) null else "Grant",
+            ),
+            SetupCheckItem(
+                id = "notifications",
+                title = "Notification Relay",
+                subtitle = if (notifOk) "Live notification sync & inline reply enabled" else "Enable Notification Access to mirror phone alerts to PC",
+                ready = notifOk,
+                actionLabel = if (notifOk) null else "Enable",
+            ),
+            SetupCheckItem(
+                id = "battery",
+                title = "Background Resilience",
+                subtitle = if (batteryOk) "Exempt from battery optimization / Doze kills" else "Allow unrestricted background running for instant wake",
+                ready = batteryOk,
+                actionLabel = if (batteryOk) null else "Exempt",
+            ),
+            SetupCheckItem(
+                id = "storage",
+                title = "Phone Files (VFS)",
+                subtitle = if (storageOk) "Photos & Downloads accessible from paired PC" else "Grant All Files Access so your PC can browse phone folders",
+                ready = storageOk,
+                actionLabel = if (storageOk) null else "Allow",
+            ),
+            SetupCheckItem(
+                id = "accessibility",
+                title = "Universal Control Cursor",
+                subtitle = if (accessibilityOk) "Gesture receiver active for PC mouse handoff" else "Optional: enable gesture-only service to slide PC mouse onto phone",
+                ready = accessibilityOk,
+                actionLabel = if (accessibilityOk) null else "Configure",
+            ),
+        )
+    }
+
+    override fun runSetupCheckAction(checkId: String) {
+        when (checkId) {
+            "camera" -> phoneCamera.requestGrant()
+            "notifications" -> requestNotificationListenerAccess()
+            "battery" -> requestBatteryOptimizationExemption()
+            "storage" -> openAllFilesAccessSettings()
+            "accessibility" -> Ec0UniversalControlAccessibilityService.openAccessibilitySettings(context)
+        }
+    }
+
+    private fun openAllFilesAccessSettings() {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val intent = Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } else {
+                openAppPermissionSettings()
+            }
+        }.onFailure { openAppPermissionSettings() }
+    }
 
     override val remoteHandoffUrl: StateFlow<String?> =
         serviceHost.runtime.node.remoteHandoffActivity.map { it?.url }
@@ -687,6 +784,7 @@ class AndroidAppState(
                 },
                 error = snap.failureReason,
                 encrypted = true,
+                localPath = snap.savedLocalPath,
             )
         }
         outgoing + incoming + engineItems
@@ -703,13 +801,33 @@ class AndroidAppState(
             Ec0CompanionService.updateCachedSettings(loaded)
         }
         refreshNotificationRelayState()
+        _setupChecks.value = buildAndroidSetupChecks()
         scope.launch(Dispatchers.IO) {
+            val rttHistory = ArrayDeque<Int>(24)
             while (true) {
                 delay(2_000)
                 refreshNotificationRelayState()
                 val granted = hasCameraPermission()
                 if (granted != cameraGrantInputs.value.granted) {
                     cameraGrantInputs.value = cameraGrantInputs.value.copy(granted = granted)
+                }
+                _setupChecks.value = buildAndroidSetupChecks()
+                val session = activeDesktopSessionOrNull()
+                if (session != null) {
+                    val sampleMs = session.lastMeasuredRttMs.toInt().coerceIn(1, 999)
+                    if (rttHistory.size >= 24) rttHistory.removeFirst()
+                    rttHistory.addLast(sampleMs)
+                    _linkTelemetry.value = LinkTelemetryUi(
+                        transportLabel = "Wi-Fi TLS",
+                        rttSamplesMs = rttHistory.toList(),
+                        autoFailoverActive = false,
+                    )
+                } else {
+                    _linkTelemetry.value = LinkTelemetryUi(
+                        transportLabel = "Offline",
+                        rttSamplesMs = rttHistory.toList(),
+                        autoFailoverActive = false,
+                    )
                 }
             }
         }
@@ -1081,9 +1199,21 @@ class MainActivity : ComponentActivity() {
             val mediaSession by state.mediaSession.collectAsState()
 
             val showPhoneOnboarding = trustedPeerCount == 0 && !onboardingCompleted
+            val effectiveDark = settings.darkTheme ?: systemDark
+            val dynamicScheme = remember(effectiveDark, settings.dynamicColor) {
+                if (settings.dynamicColor) {
+                    buildAndroidDynamicColorScheme(this@MainActivity, effectiveDark)
+                } else {
+                    null
+                }
+            }
 
             if (showRemoteInput) {
-                Ec0Theme(dark = settings.darkTheme ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
+                Ec0Theme(
+                    dark = effectiveDark,
+                    seed = Ec0Seed.fromId(settings.themeSeed),
+                    dynamicColorScheme = dynamicScheme,
+                ) {
                     RemoteInputScreen(
                         node = state.companionRuntime.node,
                         connectedPeerId = state.connectedDesktopDeviceId.collectAsState().value,
@@ -1096,7 +1226,11 @@ class MainActivity : ComponentActivity() {
                 return@setContent
             }
             if (showDeviceManagement) {
-                Ec0Theme(dark = settings.darkTheme ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
+                Ec0Theme(
+                    dark = effectiveDark,
+                    seed = Ec0Seed.fromId(settings.themeSeed),
+                    dynamicColorScheme = dynamicScheme,
+                ) {
                     PairedDevicesScreen(
                         peers = state.peerManagement.peers.collectAsState().value,
                         onUnpair = { state.peerManagement.unpair(it) },
@@ -1111,8 +1245,9 @@ class MainActivity : ComponentActivity() {
 
             if (showPhoneOnboarding) {
                 Ec0Theme(
-                    dark = settings.darkTheme ?: systemDark,
+                    dark = effectiveDark,
                     seed = Ec0Seed.fromId(settings.themeSeed),
+                    dynamicColorScheme = dynamicScheme,
                 ) {
                     AndroidOnboardingScreen(
                         state = state,
@@ -1127,6 +1262,7 @@ class MainActivity : ComponentActivity() {
                         pickFileLauncher.launch(arrayOf("*/*"))
                     },
                     compact = true,
+                    dynamicColorScheme = dynamicScheme,
                 )
             }
         }
@@ -1172,10 +1308,25 @@ class MainActivity : ComponentActivity() {
             (getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip
         }.getOrNull() ?: return
         if (clip.itemCount == 0) return
+        val description = clip.description
         val sensitive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            clip.description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
+            description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
+        val item = clip.getItemAt(0)
+        val uri = item.uri
+        if (uri != null && appState?.settings?.value?.autoRelayScreenshots != false) {
+            val mime = (0 until description.mimeTypeCount)
+                .map { description.getMimeType(it) }
+                .firstNotNullOfOrNull { ClipboardImagePolicy.normalizeSupportedImageMime(it) }
+                ?: runCatching { contentResolver.getType(uri) }
+                    .getOrNull()
+                    ?.let { ClipboardImagePolicy.normalizeSupportedImageMime(it) }
+            if (mime != null) {
+                Ec0CompanionService.pushClipboardImageFromActivity(uri, mime, sensitive)
+                return
+            }
+        }
         val text = runCatching {
-            clip.getItemAt(0).coerceToText(this)?.toString()
+            item.coerceToText(this)?.toString()
         }.getOrNull().orEmpty()
         if (text.isNotBlank()) {
             Ec0CompanionService.pushClipboardFromActivity(text, sensitive)
@@ -1193,4 +1344,73 @@ class MainActivity : ComponentActivity() {
         appState = null
         super.onDestroy()
     }
+}
+
+/**
+ * Builds an authentic Android 12+ (API 31+) Material You dynamic [ColorScheme]
+ * directly from Android's `android.R.color.system_accent*` / `system_neutral*`
+ * wallpaper tonal palettes (zero extra AndroidX BOM dependency conflicts).
+ */
+private fun buildAndroidDynamicColorScheme(context: Context, dark: Boolean): ColorScheme? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    return runCatching {
+        fun c(resId: Int) = Color(context.getColor(resId))
+        if (dark) {
+            darkColorScheme(
+                primary = c(android.R.color.system_accent1_200),
+                onPrimary = c(android.R.color.system_accent1_800),
+                primaryContainer = c(android.R.color.system_accent1_700),
+                onPrimaryContainer = c(android.R.color.system_accent1_100),
+                secondary = c(android.R.color.system_accent2_200),
+                onSecondary = c(android.R.color.system_accent2_800),
+                secondaryContainer = c(android.R.color.system_accent2_700),
+                onSecondaryContainer = c(android.R.color.system_accent2_100),
+                tertiary = c(android.R.color.system_accent3_200),
+                onTertiary = c(android.R.color.system_accent3_800),
+                tertiaryContainer = c(android.R.color.system_accent3_700),
+                onTertiaryContainer = c(android.R.color.system_accent3_100),
+                background = c(android.R.color.system_neutral1_900),
+                onBackground = c(android.R.color.system_neutral1_100),
+                surface = c(android.R.color.system_neutral1_900),
+                onSurface = c(android.R.color.system_neutral1_100),
+                surfaceVariant = c(android.R.color.system_neutral2_700),
+                onSurfaceVariant = c(android.R.color.system_neutral2_200),
+                surfaceContainerLowest = c(android.R.color.system_neutral1_1000),
+                surfaceContainerLow = c(android.R.color.system_neutral1_900),
+                surfaceContainer = c(android.R.color.system_neutral1_800),
+                surfaceContainerHigh = c(android.R.color.system_neutral1_800),
+                surfaceContainerHighest = c(android.R.color.system_neutral1_700),
+                outline = c(android.R.color.system_neutral2_400),
+                outlineVariant = c(android.R.color.system_neutral2_700),
+            )
+        } else {
+            lightColorScheme(
+                primary = c(android.R.color.system_accent1_600),
+                onPrimary = c(android.R.color.system_accent1_0),
+                primaryContainer = c(android.R.color.system_accent1_100),
+                onPrimaryContainer = c(android.R.color.system_accent1_900),
+                secondary = c(android.R.color.system_accent2_600),
+                onSecondary = c(android.R.color.system_accent2_0),
+                secondaryContainer = c(android.R.color.system_accent2_100),
+                onSecondaryContainer = c(android.R.color.system_accent2_900),
+                tertiary = c(android.R.color.system_accent3_600),
+                onTertiary = c(android.R.color.system_accent3_0),
+                tertiaryContainer = c(android.R.color.system_accent3_100),
+                onTertiaryContainer = c(android.R.color.system_accent3_900),
+                background = c(android.R.color.system_neutral1_10),
+                onBackground = c(android.R.color.system_neutral1_900),
+                surface = c(android.R.color.system_neutral1_10),
+                onSurface = c(android.R.color.system_neutral1_900),
+                surfaceVariant = c(android.R.color.system_neutral2_100),
+                onSurfaceVariant = c(android.R.color.system_neutral2_700),
+                surfaceContainerLowest = c(android.R.color.system_neutral1_0),
+                surfaceContainerLow = c(android.R.color.system_neutral1_50),
+                surfaceContainer = c(android.R.color.system_neutral1_100),
+                surfaceContainerHigh = c(android.R.color.system_neutral1_100),
+                surfaceContainerHighest = c(android.R.color.system_neutral1_200),
+                outline = c(android.R.color.system_neutral2_500),
+                outlineVariant = c(android.R.color.system_neutral2_200),
+            )
+        }
+    }.getOrNull()
 }

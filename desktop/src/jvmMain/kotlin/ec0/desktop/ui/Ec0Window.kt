@@ -6,6 +6,7 @@
  */
 package ec0.desktop.ui
 
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -20,6 +21,13 @@ import ec0.desktop.continuity.ContinuitySystemTray
 import ec0.desktop.continuity.ContinuityTrayController
 import ec0.desktop.state.AppState
 import ec0.ui.Ec0App
+import java.awt.datatransfer.DataFlavor
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDragEvent
+import java.awt.dnd.DropTargetDropEvent
+import java.awt.dnd.DropTargetEvent
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +65,15 @@ fun runApp() {
     }
     appState.startScan()
     runCatching { hub.start(startMdns = false) }
+    // Restore persisted continuity policies on startup
+    val initialSettings = appState.settings.value
+    if (initialSettings.universalControlEdge != "off") {
+        hub.configureUniversalControlEdge(initialSettings.universalControlEdge)
+    }
+    if (initialSettings.walkAwayAutoLock) {
+        hub.setWalkAwayAutoLock(true)
+    }
+
     val trayController = ContinuityTrayController(hub)
     val quitRef = java.util.concurrent.atomic.AtomicReference<() -> Unit>({})
     val systemTray = ContinuitySystemTray(
@@ -79,6 +96,17 @@ fun runApp() {
         val windowState = rememberWindowState(width = 1120.dp, height = 760.dp)
         val bridge = remember { DesktopBridge(appState, hub, smartConnectPort, scope) }
         val windowVisible by trayController.windowVisible.collectAsState()
+        val connectedPeers by bridge.connectedPeers.collectAsState()
+
+        val peerSummary = connectedPeers.firstOrNull { it.connected }
+        val trayTip = if (peerSummary != null) {
+            val bat = peerSummary.batteryPct?.let { " · $it%" }.orEmpty()
+            "ec0 — ${peerSummary.alias} (${peerSummary.transport}$bat)"
+        } else {
+            "ec0 — unified ecosystem"
+        }
+        systemTray.updateTooltip(trayTip)
+
         Window(
             onCloseRequest = {
                 if (!trayController.onWindowCloseRequested()) {
@@ -90,6 +118,49 @@ fun runApp() {
             title = "ec0 — unified ecosystem",
             state = windowState,
         ) {
+            DisposableEffect(window) {
+                val target = DropTarget(
+                    window.contentPane,
+                    DnDConstants.ACTION_COPY,
+                    object : DropTargetAdapter() {
+                        override fun dragEnter(dtde: DropTargetDragEvent) {
+                            if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                                bridge.setDragOverWindow(true)
+                            } else {
+                                dtde.rejectDrag()
+                            }
+                        }
+
+                        override fun dragExit(dte: DropTargetEvent) {
+                            bridge.setDragOverWindow(false)
+                        }
+
+                        override fun drop(dtde: DropTargetDropEvent) {
+                            bridge.setDragOverWindow(false)
+                            if (!dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                dtde.rejectDrop()
+                                return
+                            }
+                            dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                            val dropped = runCatching {
+                                @Suppress("UNCHECKED_CAST")
+                                dtde.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<File>
+                            }.getOrNull().orEmpty()
+                            if (dropped.isNotEmpty()) {
+                                bridge.handleDroppedFiles(dropped)
+                            }
+                            dtde.dropComplete(dropped.isNotEmpty())
+                        }
+                    },
+                    true,
+                )
+                window.contentPane.dropTarget = target
+                onDispose {
+                    window.contentPane.dropTarget = null
+                    bridge.setDragOverWindow(false)
+                }
+            }
             Ec0App(
                 bridge = bridge,
                 pickFile = { onPicked -> pickFile(onPicked) },

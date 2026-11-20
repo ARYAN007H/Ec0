@@ -77,7 +77,13 @@ fun TransfersPanel(bridge: UiBridge) {
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(transfers.asReversed(), key = { it.id }) { item ->
-                    TransferRow(item, compact = false, onCancel = { bridge.cancelTransfer(item.id) })
+                    TransferRow(
+                        item = item,
+                        compact = false,
+                        onCancel = { bridge.cancelTransfer(item.id) },
+                        onOpenFile = { path -> bridge.openCompletedTransfer(path, revealInFolder = false) },
+                        onRevealFolder = { path -> bridge.openCompletedTransfer(path, revealInFolder = true) },
+                    )
                 }
             }
         }

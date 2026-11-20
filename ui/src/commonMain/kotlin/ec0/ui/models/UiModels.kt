@@ -48,6 +48,37 @@ data class TransferItem(
     val speedText: String? = null,
     val etaText: String? = null,
     val encrypted: Boolean = false,
+    val localPath: String? = null,
+)
+
+/** Launchable Android app advertised for Virtual Display App Streaming. */
+data class AndroidAppUi(
+    val packageName: String,
+    val label: String,
+)
+
+/** Active or incoming phone call relayed for the desktop Incoming Call overlay. */
+data class ActiveCallUi(
+    val callId: String,
+    val callerName: String,
+    val phoneNumber: String,
+    val state: String,
+)
+
+/** One checklist item in the guided System Setup & Health panel. */
+data class SetupCheckItem(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val ready: Boolean,
+    val actionLabel: String? = null,
+)
+
+/** Real-time link RTT telemetry for the Continuity sparkline card. */
+data class LinkTelemetryUi(
+    val transportLabel: String = "Offline",
+    val rttSamplesMs: List<Int> = emptyList(),
+    val autoFailoverActive: Boolean = false,
 )
 
 /** Live summary of a paired peer for the M3 Expressive Hero Card. */
@@ -120,6 +151,7 @@ data class SettingsState(
     /** Continuity Camera default capture profile. */
     val cameraResolution: String = "1080p",
     val cameraFps: Int = 30,
+    val cameraCodec: String = "h264",
     /** Desktop→phone notification relay policy. */
     val notifRelayEnabled: Boolean = false,
     val notifRelayDisabledApps: Set<String> = emptySet(),
@@ -127,6 +159,18 @@ data class SettingsState(
     val notifQuietStartMin: Int = 22 * 60,
     val notifQuietEndMin: Int = 8 * 60,
     val notifTitleOnly: Boolean = false,
+    /** Desktop login autostart (`~/.config/autostart/ec0.desktop`). */
+    val autostartOnLogin: Boolean = false,
+    /** BLE proximity walk-away auto-lock. */
+    val walkAwayAutoLock: Boolean = false,
+    /** Universal Control edge barrier ("off", "left", "right", "top", "bottom"). */
+    val universalControlEdge: String = "off",
+    /** Android 12+ Material You dynamic wallpaper color palette. */
+    val dynamicColor: Boolean = true,
+    /** Phone opt-in gate for desktop-to-phone VFS file uploads. */
+    val allowVfsUploads: Boolean = false,
+    /** Automatically relay newly copied Android screenshots/images to paired PC. */
+    val autoRelayScreenshots: Boolean = true,
 )
 
 /** B6: one phone-side file entry rendered by the VFS browser. */
@@ -134,6 +178,8 @@ data class VfsEntry(
     val name: String,
     val isDir: Boolean,
     val size: Long,
+    val thumbB64: String? = null,
+    val mimeHint: String? = null,
 )
 
 /** B6: VFS browser UI state — parsed listing or an honest error. */
@@ -142,6 +188,7 @@ data class VfsBrowseState(
     val entries: List<VfsEntry> = emptyList(),
     val error: String? = null,
     val lastDownloadedPath: String? = null,
+    val lastUploadedPath: String? = null,
 )
 
 /** Seam between the UI and the discovery transports. */

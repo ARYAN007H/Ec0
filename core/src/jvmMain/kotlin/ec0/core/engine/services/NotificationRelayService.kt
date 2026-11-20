@@ -9,6 +9,7 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.Ec0Envelope
+import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationDismissCommand
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationProtocol
@@ -25,6 +26,7 @@ class NotificationRelayService(
     private val maxActiveNotifications: Int = 128,
     private val onInlineReplyReceived: (NotificationReplyCommand) -> Unit = {},
     private val onRemoteDismissReceived: (String) -> Unit = {},
+    private val onActionButtonReceived: (NotificationActionCommand) -> Unit = {},
 ) {
     private val lock = ReentrantLock()
     private val byId = LinkedHashMap<String, NotificationPostInfo>()
@@ -93,8 +95,28 @@ class NotificationRelayService(
         sendCmd(reply.toJsonObject())
     }
 
+    fun sendActionButton(
+        action: NotificationActionCommand,
+        session: Ec0Session,
+        timestampMs: Long = System.currentTimeMillis(),
+    ) = sendActionButton(action) { body ->
+        session.sendCmd(
+            cmdType = NotificationProtocol.CMD_NOTIF_ACTION,
+            cmdBody = body,
+            category = NotificationProtocol.CATEGORY_NOTIF,
+            timestampMs = timestampMs,
+        )
+    }
+
+    fun sendActionButton(
+        action: NotificationActionCommand,
+        sendCmd: (JsonObject) -> Unit,
+    ) {
+        sendCmd(action.toJsonObject())
+    }
+
     /**
-     * Handles an incoming verified `notif_post`, `notif_dismiss`, or `notif_reply` [Ec0Envelope].
+     * Handles an incoming verified `notif_post`, `notif_dismiss`, `notif_reply`, or `notif_action` [Ec0Envelope].
      * Returns `true` if handled by this service.
      */
     fun handleControlEnvelope(envelope: Ec0Envelope): Boolean {
@@ -116,6 +138,11 @@ class NotificationRelayService(
             NotificationProtocol.CMD_NOTIF_REPLY -> {
                 val reply = NotificationReplyCommand.fromJsonObject(body)
                 onInlineReplyReceived(reply)
+                true
+            }
+            NotificationProtocol.CMD_NOTIF_ACTION -> {
+                val action = NotificationActionCommand.fromJsonObject(body)
+                onActionButtonReceived(action)
                 true
             }
             else -> false

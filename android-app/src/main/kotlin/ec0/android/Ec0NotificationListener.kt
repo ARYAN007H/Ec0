@@ -21,6 +21,10 @@ import android.app.RemoteInput
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
@@ -28,10 +32,13 @@ import android.service.notification.StatusBarNotification
 import ec0.core.engine.Ec0EnvelopeCodec
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.crypto.EnvelopeSigner
+import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationDismissCommand
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationProtocol
 import ec0.core.engine.protocol.NotificationReplyCommand
+import java.io.ByteArrayOutputStream
+import java.util.Base64
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -44,6 +51,17 @@ data class RegisteredReplyAction(
     val remoteInputs: Array<RemoteInput> = emptyArray(),
     val actionIntent: PendingIntent? = null,
     val customReplyExecutor: ((replyText: String) -> Boolean)? = null,
+)
+
+/**
+ * Snapshot of a non-reply action button (e.g. "Mark as read", "Archive") captured from
+ * a posted notification. Wire commands can ONLY trigger these cached [PendingIntent]s
+ * by index — never arbitrary intents from the network.
+ */
+data class RegisteredActionButton(
+    val label: String,
+    val actionIntent: PendingIntent? = null,
+    val customExecutor: (() -> Boolean)? = null,
 )
 
 /**
@@ -65,6 +83,8 @@ data class ExtractedStatusBarNotification(
     val isGroupSummary: Boolean = false,
     val replyActions: List<RegisteredReplyAction> = emptyList(),
     val actionLabels: List<String> = emptyList(),
+    val actionButtons: List<RegisteredActionButton> = emptyList(),
+    val appIconB64: String? = null,
 )
 
 /**
@@ -212,13 +232,19 @@ object NotificationRelayMapper {
         val bodyText = extracted.rawBigText?.trim()?.takeIf { it.isNotEmpty() }
             ?: extracted.rawText?.trim().orEmpty()
 
-        val replyActionTitles = extracted.replyActions
-            .map { it.actionTitle.trim().ifEmpty { "Reply" } }
-        val allActions = (replyActionTitles + extracted.actionLabels.map { it.trim() })
+        val actionButtonLabels = extracted.actionButtons
+            .map { it.label.trim().take(48) }
             .filter { it.isNotEmpty() }
-            .distinct()
+            .take(4)
+        val fallbackLabels = (
+            extracted.replyActions.map { it.actionTitle.trim().ifEmpty { "Reply" } } +
+                extracted.actionLabels.map { it.trim() }
+            ).filter { it.isNotEmpty() }.distinct()
+        val allActions = if (actionButtonLabels.isNotEmpty()) actionButtonLabels else fallbackLabels
 
         val timestamp = if (extracted.postTimeMs > 0L) extracted.postTimeMs else System.currentTimeMillis()
+        val boundedIcon = extracted.appIconB64
+            ?.takeIf { it.isNotBlank() && it.length <= NotificationProtocol.MAX_APP_ICON_B64_CHARS }
 
         return NotificationPostInfo(
             notifId = notifId,
@@ -229,6 +255,7 @@ object NotificationRelayMapper {
             timestampMs = timestamp,
             canReply = extracted.replyActions.isNotEmpty(),
             actions = allActions,
+            appIconB64 = boundedIcon,
         )
     }
 
@@ -240,6 +267,7 @@ object NotificationRelayMapper {
         sbn: StatusBarNotification,
         appLabelResolver: (String) -> String? = { null },
         extrasReader: (Bundle?, String) -> CharSequence? = ::defaultExtrasReader,
+        appIconResolver: (String) -> String? = { null },
     ): ExtractedStatusBarNotification? {
         val pkg = runCatching { sbn.packageName }.getOrNull()?.trim().orEmpty()
         if (pkg.isEmpty()) return null
@@ -258,6 +286,7 @@ object NotificationRelayMapper {
 
         val replyActions = mutableListOf<RegisteredReplyAction>()
         val actionLabels = mutableListOf<String>()
+        val actionButtons = mutableListOf<RegisteredActionButton>()
 
         val actionsArray = runCatching { notification?.actions }.getOrNull()
         if (actionsArray != null) {
@@ -280,6 +309,16 @@ object NotificationRelayMapper {
                             actionIntent = runCatching { action.actionIntent }.getOrNull(),
                         ),
                     )
+                } else if (label.isNotEmpty() && actionButtons.size < 4) {
+                    val pi = runCatching { action.actionIntent }.getOrNull()
+                    if (pi != null) {
+                        actionButtons.add(
+                            RegisteredActionButton(
+                                label = label.take(48),
+                                actionIntent = pi,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -302,6 +341,8 @@ object NotificationRelayMapper {
             isGroupSummary = isGroupSummary,
             replyActions = replyActions,
             actionLabels = actionLabels,
+            actionButtons = actionButtons,
+            appIconB64 = runCatching { appIconResolver(pkg) }.getOrNull(),
         )
     }
 
@@ -480,6 +521,7 @@ class Ec0NotificationListener : NotificationListenerService() {
         val extracted = NotificationRelayMapper.extractFromStatusBarNotification(
             sbn = sbn,
             appLabelResolver = ::resolveAppLabel,
+            appIconResolver = ::resolveAppIconB64,
         ) ?: return
 
         handleExtractedNotificationPosted(extracted)
@@ -514,12 +556,65 @@ class Ec0NotificationListener : NotificationListenerService() {
         }.getOrNull()
     }
 
+    private fun resolveAppIconB64(packageName: String): String? {
+        return runCatching {
+            val cached = registryLock.withLock { appIconCache[packageName] }
+            if (cached != null) return cached
+            val pm = applicationContext?.packageManager ?: return null
+            val drawable: Drawable = pm.getApplicationIcon(packageName)
+            val bitmap = Bitmap.createBitmap(36, 36, Bitmap.Config.ARGB_8888)
+            try {
+                if (drawable is BitmapDrawable && drawable.bitmap != null) {
+                    val scaled = Bitmap.createScaledBitmap(drawable.bitmap, 36, 36, true)
+                    val out = ByteArrayOutputStream(4096)
+                    scaled.compress(Bitmap.CompressFormat.PNG, 85, out)
+                    if (scaled !== drawable.bitmap) scaled.recycle()
+                    val bytes = out.toByteArray()
+                    if (bytes.size > MAX_ICON_RAW_BYTES) return null
+                    val encoded = Base64.getEncoder().encodeToString(bytes)
+                    if (encoded.length > NotificationProtocol.MAX_APP_ICON_B64_CHARS) return null
+                    cacheAppIcon(packageName, encoded)
+                    encoded
+                } else {
+                    val canvas = Canvas(bitmap)
+                    drawable.setBounds(0, 0, 36, 36)
+                    drawable.draw(canvas)
+                    val out = ByteArrayOutputStream(4096)
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 85, out)
+                    val bytes = out.toByteArray()
+                    if (bytes.size > MAX_ICON_RAW_BYTES) return null
+                    val encoded = Base64.getEncoder().encodeToString(bytes)
+                    if (encoded.length > NotificationProtocol.MAX_APP_ICON_B64_CHARS) return null
+                    cacheAppIcon(packageName, encoded)
+                    encoded
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        }.getOrNull()
+    }
+
     companion object {
         private const val MAX_CACHED_REPLY_ACTIONS = 128
+        private const val MAX_CACHED_APP_ICONS = 64
+        private const val MAX_ICON_RAW_BYTES = 8 * 1024
 
         private val registryLock = ReentrantLock()
         // Note: Standard LinkedHashMap with manual eviction (never subclass LinkedHashMap due to K2 backend bug)
         private val replyActionsByNotifId = LinkedHashMap<String, List<RegisteredReplyAction>>()
+        private val actionButtonsByNotifId = LinkedHashMap<String, List<RegisteredActionButton>>()
+        private val appIconCache = LinkedHashMap<String, String>()
+
+        private fun cacheAppIcon(packageName: String, encoded: String) {
+            registryLock.withLock {
+                appIconCache.remove(packageName)
+                while (appIconCache.size >= MAX_CACHED_APP_ICONS) {
+                    val oldest = appIconCache.keys.firstOrNull() ?: break
+                    appIconCache.remove(oldest)
+                }
+                appIconCache[packageName] = encoded
+            }
+        }
 
         /**
          * NotificationListenerService callbacks run on the MAIN thread, and the relay
@@ -574,6 +669,11 @@ class Ec0NotificationListener : NotificationListenerService() {
             } else {
                 unregisterReplyActions(postInfo.notifId)
             }
+            if (extracted.actionButtons.isNotEmpty()) {
+                registerActionButtons(postInfo.notifId, extracted.actionButtons)
+            } else {
+                unregisterActionButtons(postInfo.notifId)
+            }
 
             if (runtime != null) {
                 dispatchRelay {
@@ -613,6 +713,7 @@ class Ec0NotificationListener : NotificationListenerService() {
             runtime: AndroidCompanionRuntime? = attachedRuntime,
         ) {
             unregisterReplyActions(notifId)
+            unregisterActionButtons(notifId)
             if (runtime != null) {
                 val dismissEnvelope = EnvelopeSigner.signEnvelope(
                     identity = runtime.phoneIdentity,
@@ -644,16 +745,66 @@ class Ec0NotificationListener : NotificationListenerService() {
             }
         }
 
+        fun registerActionButtons(
+            notifId: String,
+            buttons: List<RegisteredActionButton>,
+        ) {
+            if (notifId.isBlank() || buttons.isEmpty()) return
+            registryLock.withLock {
+                actionButtonsByNotifId.remove(notifId)
+                while (actionButtonsByNotifId.size >= MAX_CACHED_REPLY_ACTIONS) {
+                    val oldestKey = actionButtonsByNotifId.keys.firstOrNull() ?: break
+                    actionButtonsByNotifId.remove(oldestKey)
+                }
+                actionButtonsByNotifId[notifId] = buttons.take(8)
+            }
+        }
+
         fun unregisterReplyActions(notifId: String) {
             registryLock.withLock {
                 replyActionsByNotifId.remove(notifId)
             }
         }
 
+        fun unregisterActionButtons(notifId: String) {
+            registryLock.withLock {
+                actionButtonsByNotifId.remove(notifId)
+            }
+        }
+
         fun clearReplyActionsForTest() {
             registryLock.withLock {
                 replyActionsByNotifId.clear()
+                actionButtonsByNotifId.clear()
             }
+        }
+
+        /**
+         * Triggers a cached non-reply notification action button ONLY from the local
+         * bounded cache (never constructs or fires arbitrary intents from wire data).
+         */
+        fun executeCachedAction(
+            command: NotificationActionCommand,
+            context: Context? = null,
+        ): Boolean {
+            if (command.notifId.isBlank() || command.actionIndex !in 0 until 8) return false
+            val buttons = registryLock.withLock {
+                actionButtonsByNotifId[command.notifId]
+            } ?: return false
+            val target = buttons.getOrNull(command.actionIndex) ?: return false
+            target.customExecutor?.let { exec ->
+                return runCatching { exec() }.getOrDefault(false)
+            }
+            val pi = target.actionIntent ?: return false
+            val ctx = context ?: runCatching { activeListenerInstance?.applicationContext }.getOrNull()
+            return runCatching {
+                if (ctx != null) {
+                    pi.send(ctx, 0, null)
+                } else {
+                    pi.send()
+                }
+                true
+            }.getOrDefault(false)
         }
 
         /**
@@ -714,6 +865,7 @@ class Ec0NotificationListener : NotificationListenerService() {
          */
         fun dismissSystemNotification(notifId: String): Boolean {
             unregisterReplyActions(notifId)
+            unregisterActionButtons(notifId)
             val listener = activeListenerInstance ?: return false
             return runCatching {
                 listener.cancelNotification(notifId)

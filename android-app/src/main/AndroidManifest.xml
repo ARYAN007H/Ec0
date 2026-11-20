@@ -13,6 +13,17 @@
          requires the `camera` FGS type, which requires this permission. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Optional runtime permissions for Desktop Incoming Call overlay (gracefully no-op when not granted). -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+
+    <!-- Scoped package visibility: ONLY launcher apps for Virtual Display App Streaming (never QUERY_ALL_PACKAGES). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.CATEGORY_LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:label="ec0"
@@ -83,6 +94,20 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+        </service>
+
+        <!-- Universal Control virtual pointer gesture receiver (gesture-only, never inspects screen content). -->
+        <service
+            android:name=".Ec0UniversalControlAccessibilityService"
+            android:label="ec0 Universal Control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/ec0_accessibility_config" />
         </service>
     </application>
 </manifest>

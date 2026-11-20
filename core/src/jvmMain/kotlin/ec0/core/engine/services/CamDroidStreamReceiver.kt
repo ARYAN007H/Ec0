@@ -195,11 +195,16 @@ class CamDroidStreamReceiver(
         port: Int = CamDroidConstants.DEFAULT_TCP_PORT,
         streamToken: String,
         requestedFps: Int = 30,
+        requestedCodec: String = "mjpeg",
     ): CamDroidReceiverSnapshot = synchronized(lock) {
         stopActiveLocked()
 
         if (streamToken.isBlank()) {
             return failLocked("Refusing to start camera stream: empty token")
+        }
+        val normalizedCodec = when (requestedCodec.lowercase()) {
+            "h264", "mjpeg" -> requestedCodec.lowercase()
+            else -> "mjpeg"
         }
         update { CamDroidReceiverSnapshot(state = CamDroidReceiverState.CONNECTING) }
         val sock = try {
@@ -232,7 +237,7 @@ class CamDroidStreamReceiver(
                     CamDroidV1Codec.encode(
                         CamDroidV1Codec.controlCommandPacket(
                             CamDroidControlCommand.Start(
-                                codec = "mjpeg",
+                                codec = normalizedCodec,
                                 resolution = "1080p",
                                 fps = requestedFps.coerceIn(30, 60),
                                 audio = false,
@@ -299,18 +304,34 @@ class CamDroidStreamReceiver(
         return _snapshot.value
     }
 
-    /** The exact ffmpeg pipeline: MJPEG demux -> YUYV raw frames -> v4l2loopback. */
-    fun buildFfmpegArgv(config: CamDroidStreamConfig): List<String> = listOf(
-        ffmpegBinary,
-        "-hide_banner",
-        "-loglevel", "error",
-        "-f", "mjpeg",
-        "-framerate", config.fps.toString(),
-        "-i", "pipe:0",
-        "-pix_fmt", "yuyv422",
-        "-f", "v4l2",
-        v4l2DevicePath,
-    )
+    /**
+     * Builds the strict allowlisted ffmpeg pipeline for either hardware H.264
+     * Annex-B (`-f h264`) or MJPEG (`-f mjpeg`) piped into `v4l2loopback`.
+     */
+    fun buildFfmpegArgv(config: CamDroidStreamConfig): List<String> {
+        val safeInputFormat = when (config.codec.lowercase()) {
+            "h264" -> "h264"
+            else -> "mjpeg"
+        }
+        val safeFps = config.fps.coerceIn(1, 120)
+        return buildList {
+            add(ffmpegBinary)
+            add("-hide_banner")
+            add("-loglevel"); add("error")
+            if (safeInputFormat == "h264") {
+                add("-fflags"); add("nobuffer")
+                add("-flags"); add("low_delay")
+                add("-f"); add("h264")
+            } else {
+                add("-f"); add("mjpeg")
+                add("-framerate"); add(safeFps.toString())
+            }
+            add("-i"); add("pipe:0")
+            add("-pix_fmt"); add("yuyv422")
+            add("-f"); add("v4l2")
+            add(v4l2DevicePath)
+        }
+    }
 
     private fun readerLoop(sock: Socket) {
         try {

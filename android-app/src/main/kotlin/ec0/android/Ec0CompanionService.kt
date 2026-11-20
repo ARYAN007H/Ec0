@@ -30,6 +30,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -40,6 +42,7 @@ import android.os.Binder
 import android.view.KeyEvent
 import android.os.Build
 import android.os.Environment
+import java.io.ByteArrayOutputStream
 import java.util.logging.Logger
 import android.os.IBinder
 import android.os.PersistableBundle
@@ -52,6 +55,7 @@ import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.android.AndroidPlatformCallbacks
 import ec0.core.engine.android.PairingStepState
 import ec0.core.engine.crypto.PinnedPeer
+import ec0.core.engine.protocol.AndroidAppInfo
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.FindMyRingCommand
 import ec0.core.engine.protocol.WorkstationLockCommand
@@ -66,8 +70,10 @@ import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
 import ec0.core.engine.protocol.MediaControlCommand
 import ec0.core.engine.protocol.MediaSessionInfo
+import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
+import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
 import ec0.core.localsend.DeviceType
 import ec0.core.localsend.ProtocolType
 import ec0.core.localsend.client.LocalsendUdpDiscovery
@@ -148,6 +154,7 @@ class AndroidHonestPlatformCallbacks(
      * (`null`) when absent.
      */
     val cameraStreamer: Ec0CameraStreamer? = null,
+    val callStateMonitor: Ec0CallStateMonitor? = null,
 ) : AndroidPlatformCallbacks {
 
     private val mediaLog = Logger.getLogger("ec0.android.media")
@@ -176,14 +183,19 @@ class AndroidHonestPlatformCallbacks(
     override fun onExecuteInlineReply(reply: NotificationReplyCommand): Boolean =
         Ec0NotificationListener.sendInlineReply(reply, appContext)
 
+    override fun onNotificationActionButton(command: NotificationActionCommand): Boolean =
+        Ec0NotificationListener.executeCachedAction(command, appContext)
+
     override fun onDismissSystemNotification(notifId: String): Boolean =
         Ec0NotificationListener.dismissSystemNotification(notifId)
 
-    // Desktop→phone injection stays a no-op until an AccessibilityService/IME lands
-    // (the phone is the remote-input SENDER, not the receiver — see RemoteInputScreen).
     override fun onInjectKeyEvent(event: InputKeyEvent): Boolean = false
-    override fun onInjectPointerEvent(event: InputPointerEvent): Boolean = false
-    override fun onCursorHandoff(command: CursorHandoffCommand): Boolean = false
+
+    override fun onInjectPointerEvent(event: InputPointerEvent): Boolean =
+        Ec0UniversalControlAccessibilityService.onRemotePointerEvent(event)
+
+    override fun onCursorHandoff(command: CursorHandoffCommand): Boolean =
+        Ec0UniversalControlAccessibilityService.onCursorHandoff(command)
 
     /**
      * Continuity Camera: delegates to [Ec0CameraStreamer] when the service owns
@@ -195,10 +207,8 @@ class AndroidHonestPlatformCallbacks(
 
     override fun onHotspotControlCommand(command: HotspotControlCommand): HotspotStatusInfo? = null
 
-    /**
-     * v1: decline-only is fine (the A5x call UX is bad from a service; intentional).
-     */
-    override fun onCallActionCommand(command: CallActionCommand): Boolean = false
+    override fun onCallActionCommand(command: CallActionCommand): Boolean =
+        callStateMonitor?.handleCallAction(command) ?: false
 
     /**
      * Feature A2: real media executor. Play/pause/next/previous dispatch
@@ -765,6 +775,10 @@ class Ec0CompanionService : Service() {
         @Volatile
         private var activeCameraStreamer: Ec0CameraStreamer? = null
 
+        /** Incoming call monitor — torn down with the service host. */
+        @Volatile
+        private var activeCallStateMonitor: Ec0CallStateMonitor? = null
+
         /** Shared with [FindMyRingActivity]'s stop button — set when the runtime
          *  callbacks (and their ring controller) are constructed. */
         @Volatile
@@ -869,6 +883,12 @@ class Ec0CompanionService : Service() {
                 cameraStreamer.onArming = promoteHook
                 activeCameraStreamer = cameraStreamer
 
+                var runtimeHolder: AndroidCompanionRuntime? = null
+                val callMonitor = Ec0CallStateMonitor(appContext) { callInfo ->
+                    runtimeHolder?.publishPhoneCallState(callInfo)
+                }
+                activeCallStateMonitor = callMonitor
+
                 val runtime = AndroidCompanionRuntime.createWithPersistentStores(
                     storeDir = ec0StoreDir,
                     phoneModelName = _latestSettings.value.alias.ifBlank { Build.MODEL.ifBlank { "Android" } },
@@ -878,15 +898,20 @@ class Ec0CompanionService : Service() {
                         findMyRingController,
                         clipboardSyncGate = clipboardSyncSwitch,
                         cameraStreamer = cameraStreamer,
+                        callStateMonitor = callMonitor,
                     ),
                     listenPort = EngineConstants.PRIMARY_PORT,
                     downloadDir = downloadDir,
                 )
+                runtimeHolder = runtime
+                callMonitor.start()
 
-                // Wire hardened phone-side VFS responder for desktop Files browser.
+                // Wire hardened phone-side VFS responder (with bounded photo thumbnails & opt-in uploads).
                 val vfsPhoneService = ec0.core.engine.services.VfsPhoneService(
                     rootsProvider = { buildAndroidVfsRoots(appContext) },
                     accessGranted = { hasExternalStorageAccess(appContext) },
+                    allowUploads = { _latestSettings.value.allowVfsUploads },
+                    thumbnailProvider = { file -> buildSafeVfsThumbnail(file) },
                 )
                 runtime.node.controlEnvelopeInterceptor = { peerDeviceId, envelope ->
                     val session = runtime.node.activeSessionFor(peerDeviceId)
@@ -904,6 +929,25 @@ class Ec0CompanionService : Service() {
                         )
                     } else {
                         false
+                    }
+                }
+
+                // Advertise launchable Android apps for Desktop Virtual Display App Streaming whenever a desktop connects.
+                val appsAdvertisedPeers = HashSet<String>()
+                serviceScope.launch(Dispatchers.IO) {
+                    runtime.node.connectionStates.collect { states ->
+                        val connectedIds = states.filterValues { it == EngineConnectionState.CONNECTED }.keys
+                        appsAdvertisedPeers.retainAll(connectedIds)
+                        for (peerId in connectedIds) {
+                            if (appsAdvertisedPeers.add(peerId)) {
+                                runCatching {
+                                    val apps = queryLaunchableAndroidApps(appContext)
+                                    if (apps.isNotEmpty()) {
+                                        runtime.node.sendAppList(peerId, apps)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -938,6 +982,7 @@ class Ec0CompanionService : Service() {
                     isAppFocused = { isAppFocusedForClipboard },
                     pushScope = serviceScope,
                     syncSwitch = clipboardSyncSwitch,
+                    autoRelayImages = { _latestSettings.value.autoRelayScreenshots },
                 )
 
                 val decideCallback: suspend (PrepareUploadRequestDtoV2, String) -> ReceiverAcceptance =
@@ -1095,7 +1140,92 @@ class Ec0CompanionService : Service() {
             activeClipboardWatcher?.pushText(text, isSensitive)
         }
 
+        fun pushClipboardImageFromActivity(uri: Uri, mimeHint: String? = null, isSensitive: Boolean = false) {
+            activeClipboardWatcher?.pushImageUri(uri, mimeHint, isSensitive)
+        }
+
         private const val DESKTOP_RELAY_CHANNEL_ID = "ec0_desktop_relays"
+        private const val MAX_VFS_THUMB_SOURCE_BYTES = 32L * 1024L * 1024L
+        private const val MAX_VFS_THUMB_DIMENSION = 8192
+        private const val TARGET_VFS_THUMB_PX = 96
+        private const val MAX_VFS_THUMB_OUT_BYTES = 10 * 1024
+
+        /**
+         * Pixel-bomb-safe thumbnail generator for Photo-First VFS:
+         * checks extension + 32 MiB file cap, decodes bounds first (rejecting > 8192x8192),
+         * subsamples down to ~96px in RGB_565, and outputs <= 10 KiB JPEG.
+         */
+        internal fun buildSafeVfsThumbnail(file: File): ByteArray? {
+            if (!file.isFile || !file.canRead()) return null
+            val ext = file.extension.lowercase()
+            if (ext !in setOf("jpg", "jpeg", "png", "webp")) return null
+            val len = file.length()
+            if (len <= 0L || len > MAX_VFS_THUMB_SOURCE_BYTES) return null
+            return runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                val w = bounds.outWidth
+                val h = bounds.outHeight
+                if (w <= 0 || h <= 0 || w > MAX_VFS_THUMB_DIMENSION || h > MAX_VFS_THUMB_DIMENSION) {
+                    return null
+                }
+                var sample = 1
+                while ((w / sample) > TARGET_VFS_THUMB_PX * 2 && (h / sample) > TARGET_VFS_THUMB_PX * 2) {
+                    sample *= 2
+                }
+                val decodeOpts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bmp = BitmapFactory.decodeFile(file.absolutePath, decodeOpts) ?: return null
+                try {
+                    val scale = TARGET_VFS_THUMB_PX.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
+                    val outW = (bmp.width * scale).toInt().coerceIn(1, TARGET_VFS_THUMB_PX)
+                    val outH = (bmp.height * scale).toInt().coerceIn(1, TARGET_VFS_THUMB_PX)
+                    val scaled = if (bmp.width > TARGET_VFS_THUMB_PX || bmp.height > TARGET_VFS_THUMB_PX) {
+                        Bitmap.createScaledBitmap(bmp, outW, outH, true)
+                    } else {
+                        bmp
+                    }
+                    try {
+                        val out = ByteArrayOutputStream(4096)
+                        scaled.compress(Bitmap.CompressFormat.JPEG, 70, out)
+                        val bytes = out.toByteArray()
+                        if (bytes.isNotEmpty() && bytes.size <= MAX_VFS_THUMB_OUT_BYTES) bytes else null
+                    } finally {
+                        if (scaled !== bmp) scaled.recycle()
+                    }
+                } finally {
+                    bmp.recycle()
+                }
+            }.getOrNull()
+        }
+
+        /**
+         * Queries launchable Android apps (scoped via `<queries>` in AndroidManifest.xml)
+         * and returns up to 80 strictly validated [AndroidAppInfo] entries sorted by label.
+         */
+        internal fun queryLaunchableAndroidApps(context: Context): List<AndroidAppInfo> {
+            return runCatching {
+                val pm = context.packageManager ?: return emptyList()
+                val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                val resolved = pm.queryIntentActivities(intent, 0)
+                val ownPkg = context.packageName
+                val seen = HashSet<String>()
+                resolved.mapNotNull { info ->
+                    val pkg = info.activityInfo?.packageName?.trim().orEmpty()
+                    if (pkg.isEmpty() || pkg == ownPkg || !seen.add(pkg)) return@mapNotNull null
+                    if (!ScrcpyMirrorStartCommand.isValidPackageName(pkg)) return@mapNotNull null
+                    val label = runCatching { info.loadLabel(pm)?.toString()?.trim() }
+                        .getOrNull()
+                        ?.filter { it >= ' ' && it != '\u007f' }
+                        ?.take(64)
+                        .orEmpty()
+                        .ifBlank { pkg.substringAfterLast('.') }
+                    AndroidAppInfo(packageName = pkg, label = label)
+                }.sortedBy { it.label.lowercase() }.take(80)
+            }.getOrDefault(emptyList())
+        }
 
         private fun hasExternalStorageAccess(context: Context): Boolean {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -1179,6 +1309,8 @@ class Ec0CompanionService : Service() {
 
         internal fun shutdownActiveHost() {
             synchronized(hostLock) {
+                activeCallStateMonitor?.stop()
+                activeCallStateMonitor = null
                 activeClipboardWatcher?.stop()
                 activeClipboardWatcher = null
                 activeCameraStreamer?.shutdown()

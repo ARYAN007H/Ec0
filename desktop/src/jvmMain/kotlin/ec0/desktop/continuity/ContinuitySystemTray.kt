@@ -65,7 +65,8 @@ class ContinuitySystemTray(
                 runCatching {
                     SystemTray.getSystemTray().add(icon)
                     trayIcon = icon
-                    logger.info("System tray icon attached")
+                    val sni = ec0.core.engine.linux.LinuxAutostartManager().isStatusNotifierWatcherAvailable()
+                    logger.info("System tray icon attached (Wayland StatusNotifierWatcher=$sni)")
                 }.onFailure { logger.warning("Tray attach failed: ${it.message}") }
             }
             trayIcon = icon // set optimistically so remove() works even before the EDT runs
@@ -73,6 +74,15 @@ class ContinuitySystemTray(
         } catch (e: Exception) {
             logger.warning("Tray attach failed: ${e.message}")
             return false
+        }
+    }
+
+    /** Dynamically refreshes the tray tooltip (e.g. live peer name & battery %). */
+    fun updateTooltip(text: String) {
+        val icon = trayIcon ?: return
+        val safe = text.take(128)
+        EventQueue.invokeLater {
+            runCatching { icon.toolTip = safe }
         }
     }
 

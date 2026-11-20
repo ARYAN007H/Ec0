@@ -74,6 +74,9 @@ class AndroidSettingsStore(
             }
             prefs[KEY_TRUSTED_FINGERPRINTS] = state.trustedFingerprints
             prefs[KEY_THEME_SEED] = state.themeSeed
+            prefs[KEY_DYNAMIC_COLOR] = state.dynamicColor
+            prefs[KEY_ALLOW_VFS_UPLOADS] = state.allowVfsUploads
+            prefs[KEY_AUTO_RELAY_SCREENSHOTS] = state.autoRelayScreenshots
             if (state.ownFingerprint.isNotBlank()) {
                 prefs[KEY_OWN_FINGERPRINT] = state.ownFingerprint
             }
@@ -107,6 +110,9 @@ class AndroidSettingsStore(
             }
             prefs[KEY_TRUSTED_FINGERPRINTS] = updated.trustedFingerprints
             prefs[KEY_THEME_SEED] = updated.themeSeed
+            prefs[KEY_DYNAMIC_COLOR] = updated.dynamicColor
+            prefs[KEY_ALLOW_VFS_UPLOADS] = updated.allowVfsUploads
+            prefs[KEY_AUTO_RELAY_SCREENSHOTS] = updated.autoRelayScreenshots
             result = updated
         }
         return result
@@ -199,6 +205,9 @@ class AndroidSettingsStore(
             ?: defaultState.trustedFingerprints
         val themeSeed = prefs[KEY_THEME_SEED]?.takeIf { it.isNotBlank() } ?: defaultState.themeSeed
         val ownFingerprint = prefs[KEY_OWN_FINGERPRINT]?.takeIf { it.isNotBlank() } ?: defaultState.ownFingerprint
+        val dynamicColor = prefs[KEY_DYNAMIC_COLOR] ?: defaultState.dynamicColor
+        val allowVfsUploads = prefs[KEY_ALLOW_VFS_UPLOADS] ?: defaultState.allowVfsUploads
+        val autoRelayScreenshots = prefs[KEY_AUTO_RELAY_SCREENSHOTS] ?: defaultState.autoRelayScreenshots
 
         return defaultState.copy(
             alias = alias,
@@ -214,6 +223,9 @@ class AndroidSettingsStore(
             themeSeed = themeSeed,
             ownFingerprint = ownFingerprint,
             trustedFingerprints = trustedFingerprints,
+            dynamicColor = dynamicColor,
+            allowVfsUploads = allowVfsUploads,
+            autoRelayScreenshots = autoRelayScreenshots,
         )
     }
 
@@ -234,6 +246,9 @@ class AndroidSettingsStore(
         internal val KEY_DEVICE_CAPS = stringPreferencesKey("device_capability_grants")
         internal val KEY_CLIPBOARD_SYNC_ENABLED = booleanPreferencesKey("clipboard_sync_enabled")
         internal val KEY_CAMERA_DENIED_ONCE = booleanPreferencesKey("camera_denied_once")
+        internal val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        internal val KEY_ALLOW_VFS_UPLOADS = booleanPreferencesKey("allow_vfs_uploads")
+        internal val KEY_AUTO_RELAY_SCREENSHOTS = booleanPreferencesKey("auto_relay_screenshots")
 
         private const val THEME_SYSTEM = "system"
         private const val THEME_DARK = "dark"

@@ -51,6 +51,7 @@ data class TransferProgressSnapshot(
     val completedFiles: Int,
     val failureReason: String? = null,
     val displayName: String = "",
+    val savedLocalPath: String? = null,
 )
 
 class FileTransferService(
@@ -233,6 +234,32 @@ class FileTransferService(
      */
     fun sendOffer(offer: FileOfferCommand, transport: OutboundTransport) {
         transport.sendCmd(FileTransferProtocol.CMD_FILE_OFFER, offer.toJsonObject())
+    }
+
+    /**
+     * Re-offers any non-terminal, non-cancelled outgoing transfers over a newly
+     * reconnected [transport] so the receiver replies with `resume_from_chunk`
+     * from its `.ec0part.meta` resume manifest.
+     */
+    fun reofferInterruptedOutgoingTransfers(transport: OutboundTransport): Int {
+        val pendingOffers = stateLock.withLock {
+            outgoingTransfers.entries.mapNotNull { (id, ctx) ->
+                val snap = _transfers.value[id]
+                if (snap != null && !snap.state.isTerminal && !ctx.cancelled.get()) {
+                    ctx.offer
+                } else {
+                    null
+                }
+            }
+        }
+        var sent = 0
+        for (offer in pendingOffers) {
+            runCatching {
+                sendOffer(offer, transport)
+                sent++
+            }
+        }
+        return sent
     }
 
     /**
@@ -616,11 +643,21 @@ class FileTransferService(
             if (cur != null && !cur.state.isTerminal) {
                 val doneCount = ctx.filesById.values.count { it.completed }
                 val allDone = doneCount == ctx.filesById.size
+                val savedPath = if (allDone) {
+                    if (ctx.filesById.size == 1) {
+                        fileState.finalFile.canonicalPath
+                    } else {
+                        downloadDir.canonicalPath
+                    }
+                } else {
+                    cur.savedLocalPath
+                }
                 updateSnapshotLocked(
                     cur.copy(
                         state = if (allDone) FileTransferState.COMPLETED else FileTransferState.TRANSFERRING,
                         transferredBytes = (cur.transferredBytes + frame.payload.size.toLong()).coerceAtMost(cur.totalBytes),
                         completedFiles = doneCount,
+                        savedLocalPath = savedPath,
                     ),
                 )
             }

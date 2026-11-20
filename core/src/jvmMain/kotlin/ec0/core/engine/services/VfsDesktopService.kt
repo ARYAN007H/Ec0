@@ -46,6 +46,7 @@ class VfsDesktopService(
         private val HANDLED_REPLY_TYPES = setOf(
             VfsProtocol.INFO_VFS_DIR,
             VfsProtocol.INFO_VFS_CHUNK,
+            VfsProtocol.INFO_VFS_UPLOAD_ACK,
             VfsProtocol.INFO_VFS_ERROR,
         )
     }
@@ -64,6 +65,9 @@ class VfsDesktopService(
 
     private val _lastDownloadedPath = MutableStateFlow<String?>(null)
     val lastDownloadedPath: StateFlow<String?> = _lastDownloadedPath.asStateFlow()
+
+    private val _lastUploadedPath = MutableStateFlow<String?>(null)
+    val lastUploadedPath: StateFlow<String?> = _lastUploadedPath.asStateFlow()
 
     /** Dropped reply counter (rate-limit) — honest telemetry for the UI. */
     val droppedReplyCount: Long
@@ -92,6 +96,71 @@ class VfsDesktopService(
         resetAssembler()
         downloadPath = path
         sender(VfsProtocol.CMD_VFS_DOWNLOAD, buildDownloadBody(path))
+    }
+
+    /**
+     * Streams a local desktop file into a granted phone directory using 48 KiB
+     * chunked `vfs_upload` commands. Enforces the 64 MiB VFS upload cap locally
+     * as well as on the phone responder.
+     */
+    fun upload(
+        sender: (cmdType: String, body: JsonObject) -> Unit,
+        remoteDirPath: String,
+        localFile: java.io.File,
+        chunkSizeBytes: Int = VfsPhoneService.DEFAULT_CHUNK_BYTES,
+    ): Boolean {
+        _error.value = null
+        if (!localFile.exists() || !localFile.isFile) {
+            _error.value = "Selected file does not exist"
+            return false
+        }
+        val fileLen = localFile.length()
+        if (fileLen > VfsPhoneService.DEFAULT_MAX_UPLOAD_BYTES) {
+            _error.value = "File exceeds ${VfsPhoneService.DEFAULT_MAX_UPLOAD_BYTES / (1024 * 1024)} MB VFS upload cap"
+            return false
+        }
+        val safeName = VfsPathGuard.safeDownloadFileName(localFile.name) ?: run {
+            _error.value = "Unsafe filename for VFS upload"
+            return false
+        }
+        val cleanDir = remoteDirPath.trimEnd('/').ifEmpty { "/Downloads" }
+        val remoteTarget = "$cleanDir/$safeName"
+        val encoder = Base64.getEncoder()
+        val buf = ByteArray(chunkSizeBytes.coerceIn(1024, 64 * 1024))
+        localFile.inputStream().use { input ->
+            var offset = 0L
+            if (fileLen == 0L) {
+                sender(
+                    VfsProtocol.CMD_VFS_UPLOAD,
+                    buildJsonObject {
+                        put("path", remoteTarget)
+                        put("offset", 0L)
+                        put("eof", true)
+                        put("buffer_b64", "")
+                    },
+                )
+                return true
+            }
+            while (true) {
+                val read = input.read(buf)
+                if (read <= 0) break
+                val nextOffset = offset + read
+                val eof = nextOffset >= fileLen
+                val slice = if (read == buf.size) buf else buf.copyOf(read)
+                sender(
+                    VfsProtocol.CMD_VFS_UPLOAD,
+                    buildJsonObject {
+                        put("path", remoteTarget)
+                        put("offset", offset)
+                        put("eof", eof)
+                        put("buffer_b64", encoder.encodeToString(slice))
+                    },
+                )
+                offset = nextOffset
+                if (eof) break
+            }
+        }
+        return true
     }
 
     private fun resetAssembler() {
@@ -123,14 +192,26 @@ class VfsDesktopService(
                 val path = (body["path"] as? JsonPrimitive)?.content ?: return true
                 val entries = (body["entries"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { entry ->
                     val obj = entry as? JsonObject ?: return@mapNotNull null
+                    val thumb = (obj["thumb_b64"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        ?.takeIf { it.isNotBlank() && it.length <= VfsProtocol.MAX_THUMB_B64_CHARS }
+                    val mime = (obj["mime_hint"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.take(64)
                     ec0.core.engine.protocol.VfsEntryDto(
                         name = (obj["name"] as? JsonPrimitive)?.content ?: return@mapNotNull null,
                         isDir = (obj["is_dir"] as? JsonPrimitive)?.content == "true" ||
                             (obj["is_dir"] as? JsonPrimitive)?.content == "1",
                         size = (obj["size"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0,
+                        thumbB64 = thumb,
+                        mimeHint = mime,
                     )
                 } ?: emptyList()
                 _browseState.value = ec0.core.engine.protocol.VfsDirReply(path = path, entries = entries)
+                true
+            }
+            VfsProtocol.INFO_VFS_UPLOAD_ACK -> {
+                val uploaded = (body["path"] as? JsonPrimitive)?.content
+                if (!uploaded.isNullOrBlank()) {
+                    _lastUploadedPath.value = uploaded
+                }
                 true
             }
             VfsProtocol.INFO_VFS_CHUNK -> {

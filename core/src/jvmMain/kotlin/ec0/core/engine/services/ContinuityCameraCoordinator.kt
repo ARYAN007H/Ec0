@@ -309,6 +309,7 @@ class ContinuityCameraCoordinator(
                     port = port,
                     streamToken = streamToken,
                     v4l2DevicePath = v4l2DevicePath,
+                    codec = codec,
                     fps = fps,
                     frontCamera = frontCamera,
                 )
@@ -347,11 +348,18 @@ class ContinuityCameraCoordinator(
         port: Int,
         streamToken: String,
         v4l2DevicePath: String,
+        codec: String,
         fps: Int,
         frontCamera: Boolean,
     ): CameraStatusInfo {
         val receiver = camDroidReceiverFactory()
-        val snapshot = receiver.start(host = host, port = port, streamToken = streamToken, requestedFps = fps)
+        val snapshot = receiver.start(
+            host = host,
+            port = port,
+            streamToken = streamToken,
+            requestedFps = fps,
+            requestedCodec = codec,
+        )
         if (snapshot.state != CamDroidReceiverState.STREAMING) {
             runCatching { receiver.close() }
             return updateStatusLocked(

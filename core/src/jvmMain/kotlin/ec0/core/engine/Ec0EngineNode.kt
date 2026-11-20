@@ -24,6 +24,7 @@ import ec0.core.engine.discovery.Ec0MdnsDiscovery
 import ec0.core.engine.discovery.EndpointResolver
 import ec0.core.engine.discovery.MdnsDatagramTransport
 import ec0.core.engine.discovery.MulticastMdnsTransport
+import ec0.core.engine.protocol.AndroidAppInfo
 import ec0.core.engine.protocol.CallActionCommand
 import ec0.core.engine.protocol.CallStateInfo
 import ec0.core.engine.protocol.CamDroidControlCommand
@@ -39,6 +40,7 @@ import ec0.core.engine.protocol.InputKeyEvent
 import ec0.core.engine.protocol.InputPointerEvent
 import ec0.core.engine.protocol.MediaControlCommand
 import ec0.core.engine.protocol.MediaSessionInfo
+import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationProtocol
 import ec0.core.engine.protocol.NotificationReplyCommand
@@ -170,6 +172,7 @@ class Ec0EngineNode(
     private val onRemoteClipboardApplied: (ClipboardItem) -> Unit = {},
     private val onInlineNotificationReply: (NotificationReplyCommand) -> Unit = {},
     private val onRemoteNotificationDismiss: (String) -> Unit = {},
+    private val onNotificationActionButton: (NotificationActionCommand) -> Unit = {},
     private val inputEventSink: InputEventSink = object : InputEventSink {
         override fun onKeyEvent(event: InputKeyEvent) = Unit
         override fun onPointerEvent(event: InputPointerEvent) = Unit
@@ -250,6 +253,7 @@ class Ec0EngineNode(
     val notificationRelayService = NotificationRelayService(
         onInlineReplyReceived = onInlineNotificationReply,
         onRemoteDismissReceived = onRemoteNotificationDismiss,
+        onActionButtonReceived = onNotificationActionButton,
     )
 
     val presenceService = PresenceService()
@@ -412,6 +416,7 @@ class Ec0EngineNode(
     val transfers: StateFlow<Map<String, TransferProgressSnapshot>> get() = fileTransferService.transfers
     val notifications: StateFlow<List<NotificationPostInfo>> get() = notificationRelayService.notifications
     val peerPresence: StateFlow<Map<String, PresenceBeaconInfo>> get() = presenceService.peerPresence
+    val peerApps: StateFlow<Map<String, List<AndroidAppInfo>>> get() = presenceService.peerApps
     val cameraStatus: StateFlow<CameraStatusInfo> get() = cameraCoordinator.status
     val hotspotStatus: StateFlow<HotspotStatusInfo> get() = hotspotAndTelephonyService.hotspotStatus
     val activeCalls: StateFlow<List<CallStateInfo>> get() = hotspotAndTelephonyService.activeCalls
@@ -604,16 +609,24 @@ class Ec0EngineNode(
     }
 
     /**
-     * Initiates a file or directory transfer to an actively connected [peerDeviceId].
+     * Initiates a file or directory transfer to an actively connected [peerDeviceId]
+     * using adaptive chunk sizing tuned to the link's RTT and SoftAP characteristics.
      */
     fun sendFileOrDirectory(
         peerDeviceId: String,
         fileOrDir: File,
         transferId: String = java.util.UUID.randomUUID().toString(),
+        rttMs: Long = 10L,
+        isSoftApLink: Boolean = false,
     ): FileOfferCommand {
         val session = activeSessionFor(peerDeviceId)
             ?: throw IllegalStateException("Peer $peerDeviceId is not connected")
-        val offer = fileTransferService.createOfferFromDirectoryOrFile(fileOrDir, transferId = transferId)
+        val chunkSize = FileTransferService.recommendChunkSize(rttMs = rttMs, isSoftApLink = isSoftApLink)
+        val offer = fileTransferService.createOfferFromDirectoryOrFile(
+            rootFileOrDir = fileOrDir,
+            transferId = transferId,
+            chunkSize = chunkSize,
+        )
         fileTransferService.sendOffer(offer, sessionFileTransport(session))
         return offer
     }
@@ -624,6 +637,36 @@ class Ec0EngineNode(
     fun sendPresenceBeacon(peerDeviceId: String, beacon: PresenceBeaconInfo) {
         val session = activeSessionFor(peerDeviceId) ?: return
         presenceService.broadcastBeacon(beacon, session, clockMs())
+    }
+
+    /**
+     * Broadcasts the peer's launchable Android apps list for Virtual Display App Streaming.
+     */
+    fun sendAppList(peerDeviceId: String, apps: List<AndroidAppInfo>) {
+        val session = activeSessionFor(peerDeviceId) ?: return
+        presenceService.broadcastAppList(apps, session, clockMs())
+    }
+
+    /**
+     * Sends a cached notification action-button click to [peerDeviceId].
+     */
+    fun sendNotificationAction(
+        peerDeviceId: String,
+        notifId: String,
+        actionIndex: Int,
+        actionLabel: String = "",
+    ): Boolean {
+        val session = activeSessionFor(peerDeviceId) ?: return false
+        notificationRelayService.sendActionButton(
+            action = ec0.core.engine.protocol.NotificationActionCommand(
+                notifId = notifId,
+                actionIndex = actionIndex,
+                actionLabel = actionLabel,
+            ),
+            session = session,
+            timestampMs = clockMs(),
+        )
+        return true
     }
 
     /**
@@ -682,6 +725,12 @@ class Ec0EngineNode(
 
         // Flush any queued offline clipboard/notification items
         runCatching { flushOfflineOutbox(peerId, session) }
+        // Automatically resume any interrupted outgoing file transfers from receiver's .ec0part checkpoint
+        sessionExecutor.execute {
+            runCatching {
+                fileTransferService.reofferInterruptedOutgoingTransfers(sessionFileTransport(session))
+            }
+        }
     }
 
     private fun runSessionReceiveLoop(session: Ec0Session) {

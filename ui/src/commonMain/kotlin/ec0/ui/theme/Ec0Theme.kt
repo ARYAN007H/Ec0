@@ -359,9 +359,10 @@ private val Ec0ShapeScale = Shapes(
 fun Ec0Theme(
     dark: Boolean,
     seed: Ec0Seed = Ec0Seed.AMBER,
+    dynamicColorScheme: ColorScheme? = null,
     content: @Composable () -> Unit,
 ) {
-    val scheme = when (seed) {
+    val scheme = dynamicColorScheme ?: when (seed) {
         Ec0Seed.AMBER -> if (dark) AmberDark else AmberLight
         Ec0Seed.VIOLET -> if (dark) VioletDark else VioletLight
         Ec0Seed.TEAL -> if (dark) TealDark else TealLight

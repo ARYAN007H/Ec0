@@ -31,8 +31,12 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -86,10 +90,13 @@ fun Ec0App(
     bridge: UiBridge,
     pickFile: (onPicked: (Any?) -> Unit) -> Unit,
     compact: Boolean,
+    dynamicColorScheme: ColorScheme? = null,
 ) {
     val settings by bridge.settings.collectAsState()
     val transfers by bridge.transfers.collectAsState()
     val peerLink by bridge.peerLink.collectAsState()
+    val dragOver by bridge.isDragOverWindow.collectAsState()
+    val connectedPeers by bridge.connectedPeers.collectAsState()
     val dark = settings.darkTheme
     val systemDark = isSystemInDarkTheme()
     val trustedPeerCount by bridge.trustedPeerCount.collectAsState()
@@ -101,59 +108,113 @@ fun Ec0App(
     }
     val showOnboarding = trustedPeerCount == 0 && pairingQrAvailable && !onboardingDismissed
 
-    Ec0Theme(dark = dark ?: systemDark, seed = Ec0Seed.fromId(settings.themeSeed)) {
+    Ec0Theme(
+        dark = dark ?: systemDark,
+        seed = Ec0Seed.fromId(settings.themeSeed),
+        dynamicColorScheme = if (settings.dynamicColor) dynamicColorScheme else null,
+    ) {
         var section by remember { mutableStateOf(Section.HOME) }
 
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            if (compact) {
-                Column {
-                    Box(Modifier.fillMaxWidth().weight(1f)) {
-                        if (showOnboarding && section == Section.HOME) {
-                            OnboardingPanel(
-                                bridge,
-                                onExploreUnpaired = { onboardingDismissed = true },
-                                compact = true,
-                            )
-                        } else {
-                            SectionContent(section, bridge, pickFile, compact = true)
+            Box(Modifier.fillMaxSize()) {
+                if (compact) {
+                    Column {
+                        Box(Modifier.fillMaxWidth().weight(1f)) {
+                            if (showOnboarding && section == Section.HOME) {
+                                OnboardingPanel(
+                                    bridge,
+                                    onExploreUnpaired = { onboardingDismissed = true },
+                                    compact = true,
+                                )
+                            } else {
+                                SectionContent(section, bridge, pickFile, compact = true)
+                            }
+                        }
+                        NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                            Section.entries.forEach { s ->
+                                NavigationBarItem(
+                                    selected = section == s,
+                                    onClick = { section = s },
+                                    icon = { SectionIcon(s, activeTransferCount) },
+                                    label = { Text(s.label, maxLines = 1) },
+                                )
+                            }
                         }
                     }
-                    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                        Section.entries.forEach { s ->
-                            NavigationBarItem(
-                                selected = section == s,
-                                onClick = { section = s },
-                                icon = { SectionIcon(s, activeTransferCount) },
-                                label = { Text(s.label, maxLines = 1) },
-                            )
+                } else {
+                    Row {
+                        NavigationRail(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            header = { RailBrand(connected = peerLink?.connected == true) },
+                        ) {
+                            Spacer(Modifier.height(8.dp))
+                            Section.entries.forEach { s ->
+                                NavigationRailItem(
+                                    selected = section == s,
+                                    onClick = { section = s },
+                                    icon = { SectionIcon(s, activeTransferCount) },
+                                    label = { Text(s.label, maxLines = 1) },
+                                )
+                            }
+                        }
+                        Box(Modifier.fillMaxSize().weight(1f)) {
+                            if (showOnboarding && section == Section.HOME) {
+                                OnboardingPanel(
+                                    bridge,
+                                    onExploreUnpaired = { onboardingDismissed = true },
+                                    compact = false,
+                                )
+                            } else {
+                                SectionContent(section, bridge, pickFile, compact = false)
+                            }
                         }
                     }
                 }
-            } else {
-                Row {
-                    NavigationRail(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        header = { RailBrand(connected = peerLink?.connected == true) },
+
+                // Full-window M3 Expressive AirDrop drag-and-drop overlay (desktop)
+                AnimatedVisibility(
+                    visible = dragOver,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    val targetAlias = connectedPeers.firstOrNull { it.connected }?.alias ?: "your paired phone"
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.86f))
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Spacer(Modifier.height(8.dp))
-                        Section.entries.forEach { s ->
-                            NavigationRailItem(
-                                selected = section == s,
-                                onClick = { section = s },
-                                icon = { SectionIcon(s, activeTransferCount) },
-                                label = { Text(s.label, maxLines = 1) },
-                            )
-                        }
-                    }
-                    Box(Modifier.fillMaxSize().weight(1f)) {
-                        if (showOnboarding && section == Section.HOME) {
-                            OnboardingPanel(
-                                bridge,
-                                onExploreUnpaired = { onboardingDismissed = true },
-                                compact = false,
-                            )
-                        } else {
-                            SectionContent(section, bridge, pickFile, compact = false)
+                        Surface(
+                            shape = Ec0Shapes.hero,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 48.dp, vertical = 36.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Icon(
+                                    Icons.Filled.CloudUpload,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(56.dp),
+                                )
+                                Spacer(Modifier.height(14.dp))
+                                Text(
+                                    "Drop files to send to $targetAlias",
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "Encrypted ChaCha20-Poly1305 · SHA-256 verified · resumable",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.82f),
+                                )
+                            }
                         }
                     }
                 }

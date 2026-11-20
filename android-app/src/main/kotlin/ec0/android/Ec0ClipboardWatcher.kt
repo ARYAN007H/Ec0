@@ -23,11 +23,15 @@ package ec0.android
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import ec0.core.engine.EngineEncoding.toHex
 import ec0.core.engine.android.AndroidCompanionRuntime
 import ec0.core.engine.protocol.ClipboardItem
+import ec0.core.engine.protocol.ClipboardMime
 import ec0.core.kdeconnect.Sha256
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
 import kotlinx.coroutines.CoroutineScope
@@ -93,6 +97,51 @@ object ClipboardPushPolicy {
 }
 
 /**
+ * Pure defensive validator for Android image/screenshot clipboard sync:
+ *   - Allowlists ONLY `image/png`, `image/jpeg`, `image/webp`.
+ *   - Accepts ONLY `content://` URIs (blocks `file://` exfiltration & self-authority loops).
+ *   - Enforces a hard 8 MiB streaming read cap so corrupted/oversize URIs never OOM the app.
+ */
+object ClipboardImagePolicy {
+    const val MAX_IMAGE_BYTES: Int = 8 * 1024 * 1024
+
+    val ALLOWED_IMAGE_MIMES: Set<String> = setOf(
+        ClipboardMime.IMAGE_PNG,
+        ClipboardMime.IMAGE_JPEG,
+        "image/webp",
+    )
+
+    fun normalizeSupportedImageMime(mime: String?): String? {
+        val norm = mime?.trim()?.lowercase()?.substringBefore(';')?.trim() ?: return null
+        return when (norm) {
+            "image/png" -> ClipboardMime.IMAGE_PNG
+            "image/jpeg", "image/jpg" -> ClipboardMime.IMAGE_JPEG
+            "image/webp" -> "image/webp"
+            else -> null
+        }
+    }
+
+    fun isAllowedImageUri(uriString: String?, appPackageName: String = "ec0.android"): Boolean =
+        ShareIntentSanitizer.isAllowedShareUri(uriString, appPackageName)
+
+    /** Reads at most [maxBytes] from [input]; returns `null` if empty or exceeds [maxBytes]. */
+    fun readBoundedImageBytes(input: InputStream, maxBytes: Int = MAX_IMAGE_BYTES): ByteArray? {
+        val out = ByteArrayOutputStream(32 * 1024)
+        val buf = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            total += n
+            if (total > maxBytes) return null
+            out.write(buf, 0, n)
+        }
+        val bytes = out.toByteArray()
+        return if (bytes.isNotEmpty()) bytes else null
+    }
+}
+
+/**
  * Policy decision + engine-send tail shared by both push paths:
  *  - the system-clipboard listener ([AndroidClipboardWatcher.onPrimaryClipChanged]),
  *  - the Activity-read path ([AndroidClipboardWatcher.pushText], ColorOS workaround).
@@ -144,6 +193,41 @@ class ClipboardPushSender(
                 .onFailure { log.warning("Clipboard push failed: $it") }
         }
     }
+
+    /**
+     * Pushes a validated image/screenshot byte payload (`image/png`, `image/jpeg`, `image/webp`)
+     * using the exact same sync/focus/sensitive/echo/dedupe policy as text clips.
+     */
+    fun pushImageCandidate(mime: String, bytes: ByteArray, sensitive: Boolean): Boolean {
+        val normalizedMime = ClipboardImagePolicy.normalizeSupportedImageMime(mime) ?: return false
+        if (bytes.isEmpty() || bytes.size > ClipboardImagePolicy.MAX_IMAGE_BYTES) return false
+        val candidateSha = Sha256.digest(bytes).toHex()
+
+        val decision = ClipboardPushPolicy.evaluate(
+            text = "image:${bytes.size}",
+            isSensitive = sensitive,
+            appFocused = isAppFocused(),
+            lastAppliedFromDesktopSha256 = echoGuard.lastAppliedFromDesktopSha256,
+            lastPushedSha256 = lastPushedSha256,
+            candidateSha256 = candidateSha,
+            syncEnabled = isSyncEnabled(),
+        )
+        log.info("Clipboard image push decision=${decision.reason} mime=$normalizedMime bytes=${bytes.size}")
+        if (!decision.push) return false
+
+        lastPushedSha256 = candidateSha
+        val item = ClipboardItem(
+            mime = normalizedMime,
+            bytes = bytes,
+            sha256Hex = candidateSha,
+            isSensitive = false,
+        )
+        pushScope.launch {
+            runCatching { onPush(item) }
+                .onFailure { log.warning("Clipboard image push failed: $it") }
+        }
+        return true
+    }
 }
 
 /**
@@ -174,6 +258,7 @@ class AndroidClipboardWatcher(
      * and the PC→phone apply path reads the same instance.
      */
     private val syncSwitch: ClipboardSyncSwitch = ClipboardSyncSwitch(true),
+    private val autoRelayImages: () -> Boolean = { true },
 ) : ClipboardManager.OnPrimaryClipChangedListener {
 
     // java.util.logging routes to logcat on Android — the skip reason is the only
@@ -243,14 +328,49 @@ class AndroidClipboardWatcher(
         sender.pushCandidate(text, isSensitive)
     }
 
+    /**
+     * Reads and pushes a `content://` image URI (e.g. freshly captured Android screenshot)
+     * off the main thread with strict MIME, URI scheme, and 8 MiB byte caps.
+     */
+    fun pushImageUri(uri: Uri, mimeHint: String? = null, isSensitive: Boolean = false) {
+        if (!autoRelayImages()) return
+        val pkg = runCatching { appContext.packageName }.getOrDefault("ec0.android")
+        if (!ClipboardImagePolicy.isAllowedImageUri(uri.toString(), pkg)) return
+        val resolvedMime = ClipboardImagePolicy.normalizeSupportedImageMime(
+            mimeHint ?: runCatching { appContext.contentResolver.getType(uri) }.getOrNull(),
+        ) ?: return
+        pushScope.launch {
+            val bytes = runCatching {
+                appContext.contentResolver.openInputStream(uri)?.use { stream ->
+                    ClipboardImagePolicy.readBoundedImageBytes(stream)
+                }
+            }.getOrNull() ?: return@launch
+            sender.pushImageCandidate(resolvedMime, bytes, isSensitive)
+        }
+    }
+
     private fun checkAndPush() {
         val clip = runCatching { clipboardManager?.primaryClip }.getOrNull() ?: return
         if (clip.itemCount == 0) return
         val description = clip.description
         val sensitive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
+        val item = clip.getItemAt(0)
+        val uri = item.uri
+        if (uri != null && autoRelayImages()) {
+            val mime = (0 until description.mimeTypeCount)
+                .map { description.getMimeType(it) }
+                .firstNotNullOfOrNull { ClipboardImagePolicy.normalizeSupportedImageMime(it) }
+                ?: runCatching { appContext.contentResolver.getType(uri) }
+                    .getOrNull()
+                    ?.let { ClipboardImagePolicy.normalizeSupportedImageMime(it) }
+            if (mime != null) {
+                pushImageUri(uri, mime, sensitive)
+                return
+            }
+        }
         val text = runCatching {
-            clip.getItemAt(0).coerceToText(appContext)?.toString()
+            item.coerceToText(appContext)?.toString()
         }.getOrNull().orEmpty()
         sender.pushCandidate(text, sensitive)
     }

@@ -249,6 +249,7 @@ object Ec0WsCodec {
         onPing: (ByteArray) -> Unit = {},
         onClose: (ByteArray) -> Unit = {},
         maxMessageBytes: Int = EngineConstants.MAX_AEAD_FRAME_BYTES + 65_536,
+        onPong: (ByteArray) -> Unit = {},
     ): Ec0WsMessage? {
         var initialOpcode = -1
         var buffer: ByteArrayOutputStream? = null
@@ -279,7 +280,7 @@ object Ec0WsCodec {
                     }
                 }
                 Ec0WsOpcode.PING -> onPing(frame.payload)
-                Ec0WsOpcode.PONG -> Unit
+                Ec0WsOpcode.PONG -> onPong(frame.payload)
                 Ec0WsOpcode.CLOSE -> {
                     onClose(frame.payload)
                     return null

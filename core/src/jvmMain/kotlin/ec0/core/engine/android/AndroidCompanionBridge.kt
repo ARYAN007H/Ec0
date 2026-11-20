@@ -38,6 +38,7 @@ import ec0.core.engine.protocol.InputPointerEvent
 import ec0.core.engine.protocol.MediaControlCommand
 import ec0.core.engine.protocol.MediaSessionInfo
 import ec0.core.engine.protocol.FindMyRingCommand
+import ec0.core.engine.protocol.NotificationActionCommand
 import ec0.core.engine.protocol.NotificationPostInfo
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
@@ -53,7 +54,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Callbacks implemented by Android OS services in `:android-app`:
- * - `Ec0NotificationListener` (for [onExecuteInlineReply] and [onDismissSystemNotification])
+ * - `Ec0NotificationListener` (for [onExecuteInlineReply], [onNotificationActionButton], and [onDismissSystemNotification])
  * - `ClipboardManager` wrapper (for [onApplyRemoteClipboard])
  * - `AccessibilityService` / `InputMethodService` (for [onInjectKeyEvent], [onInjectPointerEvent], [onCursorHandoff])
  * - `CamDroid` `StreamingController` / `CameraStreamingService` (for [onCameraControlCommand])
@@ -65,6 +66,7 @@ import kotlinx.coroutines.flow.asStateFlow
 interface AndroidPlatformCallbacks {
     fun onApplyRemoteClipboard(item: ClipboardItem): Boolean = true
     fun onExecuteInlineReply(reply: NotificationReplyCommand): Boolean = true
+    fun onNotificationActionButton(command: NotificationActionCommand): Boolean = false
     fun onDismissSystemNotification(notifId: String): Boolean = true
     fun onInjectKeyEvent(event: InputKeyEvent): Boolean = true
     fun onInjectPointerEvent(event: InputPointerEvent): Boolean = true
@@ -135,6 +137,9 @@ class AndroidCompanionRuntime(
         },
         onInlineNotificationReply = { reply ->
             callbacks.onExecuteInlineReply(reply)
+        },
+        onNotificationActionButton = { cmd ->
+            callbacks.onNotificationActionButton(cmd)
         },
         onRemoteNotificationDismiss = { notifId ->
             callbacks.onDismissSystemNotification(notifId)

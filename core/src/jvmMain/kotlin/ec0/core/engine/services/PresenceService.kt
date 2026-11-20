@@ -9,6 +9,8 @@
 package ec0.core.engine.services
 
 import ec0.core.engine.Ec0Envelope
+import ec0.core.engine.protocol.AndroidAppInfo
+import ec0.core.engine.protocol.AppListInfo
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.PresenceProtocol
 import ec0.core.engine.transport.Ec0Session
@@ -23,6 +25,9 @@ class PresenceService {
     private val lock = ReentrantLock()
     private val _peerPresence = MutableStateFlow<Map<String, PresenceBeaconInfo>>(emptyMap())
     val peerPresence: StateFlow<Map<String, PresenceBeaconInfo>> = _peerPresence.asStateFlow()
+
+    private val _peerApps = MutableStateFlow<Map<String, List<AndroidAppInfo>>>(emptyMap())
+    val peerApps: StateFlow<Map<String, List<AndroidAppInfo>>> = _peerApps.asStateFlow()
 
     fun broadcastBeacon(
         beacon: PresenceBeaconInfo,
@@ -44,18 +49,45 @@ class PresenceService {
         sendInfo(beacon.toJsonObject())
     }
 
+    fun broadcastAppList(
+        apps: List<AndroidAppInfo>,
+        session: Ec0Session,
+        timestampMs: Long = System.currentTimeMillis(),
+    ) {
+        val sanitized = AppListInfo(apps).sanitized()
+        session.sendInfo(
+            infoType = PresenceProtocol.INFO_APP_LIST,
+            infoBody = sanitized.toJsonObject(),
+            category = PresenceProtocol.CATEGORY_PRESENCE,
+            timestampMs = timestampMs,
+        )
+    }
+
     /**
-     * Handles an incoming verified `presence_beacon` [Ec0Envelope] from [peerDeviceId].
+     * Handles an incoming verified `presence_beacon` or `app_list` [Ec0Envelope] from [peerDeviceId].
      */
     fun handleControlEnvelope(peerDeviceId: String, envelope: Ec0Envelope): Boolean {
-        if (envelope.bodyType != PresenceProtocol.INFO_PRESENCE_BEACON) return false
         val body = envelope.innerBodyObject ?: return false
-        val beacon = PresenceBeaconInfo.fromJsonObject(body)
-        lock.withLock {
-            val next = LinkedHashMap(_peerPresence.value)
-            next[peerDeviceId] = beacon
-            _peerPresence.value = next
+        return when (envelope.bodyType) {
+            PresenceProtocol.INFO_PRESENCE_BEACON -> {
+                val beacon = PresenceBeaconInfo.fromJsonObject(body)
+                lock.withLock {
+                    val next = LinkedHashMap(_peerPresence.value)
+                    next[peerDeviceId] = beacon
+                    _peerPresence.value = next
+                }
+                true
+            }
+            PresenceProtocol.INFO_APP_LIST -> {
+                val appList = AppListInfo.fromJsonObject(body).sanitized()
+                lock.withLock {
+                    val next = LinkedHashMap(_peerApps.value)
+                    next[peerDeviceId] = appList.apps
+                    _peerApps.value = next
+                }
+                true
+            }
+            else -> false
         }
-        return true
     }
 }

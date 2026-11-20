@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -55,7 +57,10 @@ import ec0.ui.theme.ec0Colors
 import ec0.ui.widgets.formatByteSize
 
 @Composable
-fun VfsPanel(bridge: UiBridge) {
+fun VfsPanel(
+    bridge: UiBridge,
+    pickFile: ((onPicked: (Any?) -> Unit) -> Unit)? = null,
+) {
     val browseState by bridge.vfsBrowseState.collectAsState()
     var pathInput by remember { mutableStateOf("/") }
 
@@ -95,12 +100,19 @@ fun VfsPanel(bridge: UiBridge) {
                 }
             }
 
-            // Quick root pills
+            // Quick root & photo-first pills
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             ) {
-                listOf("/" to "Roots", "/Downloads" to "Downloads", "/DCIM" to "Camera", "/Documents" to "Documents", "/Pictures" to "Pictures").forEach { (rootPath, label) ->
+                listOf(
+                    "/" to "Roots",
+                    "/DCIM/Camera" to "Recent Photos",
+                    "/Pictures/Screenshots" to "Screenshots",
+                    "/Downloads" to "Downloads",
+                    "/Documents" to "Documents",
+                    "/Pictures" to "Pictures",
+                ).forEach { (rootPath, label) ->
                     val active = browseState?.path == rootPath
                     Surface(
                         onClick = { navigateTo(rootPath) },
@@ -129,6 +141,20 @@ fun VfsPanel(bridge: UiBridge) {
                 Spacer(Modifier.width(10.dp))
                 FilledTonalButton(onClick = { navigateTo(pathInput) }, shape = Ec0Shapes.pill) {
                     Text("Browse")
+                }
+                val activeDir = browseState?.path
+                if (pickFile != null && activeDir != null && activeDir != "/") {
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            pickFile { ref -> ref?.let { bridge.vfsUpload(activeDir, it) } }
+                        },
+                        shape = Ec0Shapes.pill,
+                    ) {
+                        Icon(Icons.Filled.Upload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Upload")
+                    }
                 }
             }
 
@@ -161,6 +187,29 @@ fun VfsPanel(bridge: UiBridge) {
                         Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = ec0Colors().success, modifier = Modifier.size(16.dp))
                         Text(
                             "Saved to $saved",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
+            browseState?.lastUploadedPath?.let { uploaded ->
+                Surface(
+                    shape = Ec0Shapes.chip,
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        Text(
+                            "Uploaded to phone: $uploaded",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
@@ -242,10 +291,19 @@ fun VfsPanel(bridge: UiBridge) {
                                 .clickable(enabled = entry.isDir) { navigateTo(childPath) }
                                 .padding(vertical = 8.dp, horizontal = 4.dp),
                         ) {
+                            val isImage = entry.mimeHint?.startsWith("image/") == true || entry.thumbB64 != null
                             Icon(
-                                if (entry.isDir) Icons.Filled.Folder else Icons.Filled.Description,
+                                when {
+                                    entry.isDir -> Icons.Filled.Folder
+                                    isImage -> Icons.Filled.Image
+                                    else -> Icons.Filled.Description
+                                },
                                 contentDescription = null,
-                                tint = if (entry.isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = when {
+                                    entry.isDir -> MaterialTheme.colorScheme.primary
+                                    isImage -> MaterialTheme.colorScheme.tertiary
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                                 modifier = Modifier.size(20.dp),
                             )
                             Spacer(Modifier.width(12.dp))
