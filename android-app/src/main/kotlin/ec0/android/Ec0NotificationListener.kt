@@ -244,7 +244,7 @@ object NotificationRelayMapper {
 
         val timestamp = if (extracted.postTimeMs > 0L) extracted.postTimeMs else System.currentTimeMillis()
         val boundedIcon = extracted.appIconB64
-            ?.takeIf { it.isNotBlank() && it.length <= NotificationProtocol.MAX_APP_ICON_B64_CHARS }
+            ?.takeIf { it.isNotBlank() && it.length <= NotificationPostInfo.MAX_ICON_B64_CHARS }
 
         return NotificationPostInfo(
             notifId = notifId,
@@ -572,7 +572,7 @@ class Ec0NotificationListener : NotificationListenerService() {
                     val bytes = out.toByteArray()
                     if (bytes.size > MAX_ICON_RAW_BYTES) return null
                     val encoded = Base64.getEncoder().encodeToString(bytes)
-                    if (encoded.length > NotificationProtocol.MAX_APP_ICON_B64_CHARS) return null
+                    if (encoded.length > NotificationPostInfo.MAX_ICON_B64_CHARS) return null
                     cacheAppIcon(packageName, encoded)
                     encoded
                 } else {
@@ -584,7 +584,7 @@ class Ec0NotificationListener : NotificationListenerService() {
                     val bytes = out.toByteArray()
                     if (bytes.size > MAX_ICON_RAW_BYTES) return null
                     val encoded = Base64.getEncoder().encodeToString(bytes)
-                    if (encoded.length > NotificationProtocol.MAX_APP_ICON_B64_CHARS) return null
+                    if (encoded.length > NotificationPostInfo.MAX_ICON_B64_CHARS) return null
                     cacheAppIcon(packageName, encoded)
                     encoded
                 }
