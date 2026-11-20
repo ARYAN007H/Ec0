@@ -177,17 +177,23 @@ class SecurityHardeningRegressionTest {
         assertNull(MprisParser.buildTargetedPlayerctlCommand(play, "spotify --format={{title}}"))
         assertNull(MprisParser.buildTargetedPlayerctlCommand(play, ""))
 
-        // Volume clamped strictly to 0.00..1.00
-        val loud = MprisParser.buildTargetedPlayerctlCommand(
-            MediaControlCommand(action = MediaControlCommand.ACTION_SET_VOLUME, volumePct = 9999),
+        // Model itself rejects out-of-range volumePct; valid boundaries format cleanly
+        assertFailsWith<IllegalArgumentException> {
+            MediaControlCommand(action = MediaControlCommand.ACTION_SET_VOLUME, volumePct = 9999)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MediaControlCommand(action = MediaControlCommand.ACTION_SET_VOLUME, volumePct = -250)
+        }
+        val maxVol = MprisParser.buildTargetedPlayerctlCommand(
+            MediaControlCommand(action = MediaControlCommand.ACTION_SET_VOLUME, volumePct = 100),
             "spotify",
         )
-        assertEquals(listOf("playerctl", "--player=spotify", "volume", "1.00"), loud)
-        val negative = MprisParser.buildTargetedPlayerctlCommand(
-            MediaControlCommand(action = MediaControlCommand.ACTION_SET_VOLUME, volumePct = -250),
+        assertEquals(listOf("playerctl", "--player=spotify", "volume", "1.00"), maxVol)
+        val minVol = MprisParser.buildTargetedPlayerctlCommand(
+            MediaControlCommand(action = MediaControlCommand.ACTION_SET_VOLUME, volumePct = 0),
             "spotify",
         )
-        assertEquals(listOf("playerctl", "--player=spotify", "volume", "0.00"), negative)
+        assertEquals(listOf("playerctl", "--player=spotify", "volume", "0.00"), minVol)
     }
 
     @Test
