@@ -489,16 +489,6 @@ class CameraXFrameSource(
     private val closed = AtomicBoolean(false)
     private val cameraRef = AtomicReference<androidx.camera.core.Camera?>(null)
     private val lastFrameMs = AtomicLong(0L)
-
-    /**
-     * The orientation is PINNED on the first frame and never revisited: a phone
-     * lying flat on a desk wobbles the accelerometer, rotationDegrees flaps
-     * between 0/90/270, and every flap reconfigured the whole encoder
-     * (portrait↔landscape) — the loopback format flip-flopped and no stable
-     * frames ever reached the desktop (observed: green/black in OBS). A webcam
-     * does not rotate mid-stream; users physically orient the phone once.
-     */
-    private var pinnedRotation: Int? = null
     private val minIntervalMs = (1000L / fps.coerceIn(1, 60)).coerceAtLeast(1L)
 
     // Optional hardware MediaCodec H.264 encoder when desktop requested `h264`.
@@ -582,10 +572,7 @@ class CameraXFrameSource(
             if (now - last < minIntervalMs) return
             if (!lastFrameMs.compareAndSet(last, now)) return
 
-            val rotation = pinnedRotation ?: proxy.imageInfo.rotationDegrees.also {
-                pinnedRotation = it
-                android.util.Log.i("ec0.camera", "rotation pinned at $it — stable dims from here on")
-            }
+            val rotation = proxy.imageInfo.rotationDegrees
             val encoded = runCatching {
                 val encoder = h264Encoder
                 if (encoder != null) {
