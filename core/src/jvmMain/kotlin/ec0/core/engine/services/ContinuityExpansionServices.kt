@@ -182,6 +182,11 @@ class HotspotAndTelephonyService(
      */
     fun buildNmcliConnectCommand(ssid: String, passphrase: String): List<String> {
         require(ssid.isNotBlank()) { "Hotspot SSID must not be blank" }
+        require(ssid.length <= 64) { "Hotspot SSID exceeds maximum length" }
+        require(!ssid.startsWith("-")) { "Hotspot SSID must not start with '-'" }
+        require(ssid.none { it.code < 32 || it.code == 127 }) { "Hotspot SSID contains control characters" }
+        require(passphrase.length <= 128) { "Hotspot passphrase exceeds maximum length" }
+        require(passphrase.none { it.code < 32 || it.code == 127 }) { "Hotspot passphrase contains control characters" }
         return if (passphrase.isBlank()) {
             listOf("nmcli", "device", "wifi", "connect", ssid)
         } else {

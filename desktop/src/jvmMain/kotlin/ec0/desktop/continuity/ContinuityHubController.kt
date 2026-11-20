@@ -117,6 +117,7 @@ class ContinuityHubController(
     inputInjectionBridge: LinuxInputInjectionBridge = LinuxInputInjectionBridge(),
     private val desktopNotifRelayEnabledProvider: () -> Boolean = { false },
     private val desktopNotificationPolicyProvider: () -> NotificationRelayPolicy = { NotificationRelayPolicy.DEFAULT },
+    private val peerGrantsFile: File? = File(EncryptedIdentityStore.defaultConfigDir(), "peer_grants.json"),
 ) : Closeable {
 
     private val adaptiveInputSink = AdaptiveLinuxInputSink(fallbackBridge = inputInjectionBridge)
@@ -127,8 +128,14 @@ class ContinuityHubController(
     /** Active `dbus-monitor` subprocess ref so `close()` terminates it cleanly. */
     private val dbusMonitorProcessRef = AtomicReference<Process?>(null)
 
-    private val _peerCapabilityGrants = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    private val _peerCapabilityGrants = MutableStateFlow<Map<String, Set<String>>>(loadPersistedPeerGrants())
     val peerCapabilityGrants: StateFlow<Map<String, Set<String>>> = _peerCapabilityGrants.asStateFlow()
+
+    fun isPeerCapabilityGranted(deviceId: String, wireName: String): Boolean {
+        val grants = _peerCapabilityGrants.value[deviceId.lowercase()]
+        // Default: paired peers start with remote_input enabled unless explicitly revoked.
+        return if (grants == null) wireName == "remote_input" else wireName in grants
+    }
 
     val node: Ec0EngineNode = Ec0EngineNode(
         localIdentity = localIdentity,
@@ -150,6 +157,7 @@ class ContinuityHubController(
         onRemoteMediaControl = { command ->
             handleRemoteMediaControlCommand(command)
         },
+        localInputGrantGate = { peerId -> isPeerCapabilityGranted(peerId, "remote_input") },
     )
 
     val throughputTracker = TransferThroughputTracker()
@@ -165,7 +173,7 @@ class ContinuityHubController(
     private var clipboardWatchJob: Job? = null
     private var notifForwardJob: Job? = null
     private var scrubJob: Job? = null
-    private val forwardedNotifIds = HashSet<String>()
+    private val forwardedNotifIds = LinkedHashSet<String>()
 
     private val _linuxCapabilities = MutableStateFlow(
         environmentProbe.probe(CamDroidConstants.DEFAULT_V4L2_DEVICE),
@@ -446,6 +454,41 @@ class ContinuityHubController(
         val existing = current[id] ?: setOf("remote_input")
         current[id] = if (granted) existing + wireName else existing - wireName
         _peerCapabilityGrants.value = current
+        persistPeerGrants(current)
+    }
+
+    private fun loadPersistedPeerGrants(): Map<String, Set<String>> {
+        val f = peerGrantsFile ?: return emptyMap()
+        if (!f.exists()) return emptyMap()
+        return runCatching {
+            val root = kotlinx.serialization.json.Json.parseToJsonElement(f.readText())
+                as? kotlinx.serialization.json.JsonObject ?: return emptyMap()
+            buildMap {
+                for ((peerId, elem) in root) {
+                    val arr = elem as? kotlinx.serialization.json.JsonArray ?: continue
+                    val caps = arr.mapNotNull { (it as? JsonPrimitive)?.content }.toSet()
+                    put(peerId.lowercase(), caps)
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun persistPeerGrants(grants: Map<String, Set<String>>) {
+        val f = peerGrantsFile ?: return
+        runCatching {
+            f.parentFile?.let { EncryptedIdentityStore.ensureDirectoryPermissions(it) }
+            val json = buildJsonObject {
+                for ((peerId, caps) in grants) {
+                    put(
+                        peerId.lowercase(),
+                        kotlinx.serialization.json.buildJsonArray {
+                            for (c in caps.sorted()) add(JsonPrimitive(c))
+                        },
+                    )
+                }
+            }
+            EncryptedIdentityStore.atomicWriteText(f, json.toString())
+        }
     }
 
     fun probeAndConnectUsbTunnel() {
@@ -613,6 +656,11 @@ class ContinuityHubController(
             }
         }
         val removed = node.unpairPeer(normalized)
+        val remainingGrants = _peerCapabilityGrants.value - normalized
+        if (remainingGrants.size != _peerCapabilityGrants.value.size) {
+            _peerCapabilityGrants.value = remainingGrants
+            persistPeerGrants(remainingGrants)
+        }
         if (removed) {
             _statusBanner.value = "Unpaired device ${normalized.take(12)}…"
         }
@@ -1050,7 +1098,14 @@ class ContinuityHubController(
                 if (!_forwardNotificationsToDesktop.value) return@collect
                 for (notif in list) {
                     val dedupeKey = "${notif.notifId}:${notif.timestampMs}"
-                    if (forwardedNotifIds.add(dedupeKey)) {
+                    val isNew = synchronized(forwardedNotifIds) {
+                        val added = forwardedNotifIds.add(dedupeKey)
+                        while (forwardedNotifIds.size > 512) {
+                            forwardedNotifIds.iterator().let { it.next(); it.remove() }
+                        }
+                        added
+                    }
+                    if (isNew) {
                         notificationBridge.showDesktopNotification(notif)
                     }
                 }

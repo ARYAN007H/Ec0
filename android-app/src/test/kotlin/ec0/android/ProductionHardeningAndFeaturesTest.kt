@@ -59,10 +59,16 @@ class ProductionHardeningAndFeaturesTest {
                 appPackageName = "ec0.android",
             ),
         )
-        // Must block self-authority URIs
+        // Must block self-authority URIs including userinfo@ spoofing
         assertFalse(
             ShareIntentSanitizer.isAllowedShareUri(
                 "content://ec0.android.fileprovider/private/master.key",
+                appPackageName = "ec0.android",
+            ),
+        )
+        assertFalse(
+            ShareIntentSanitizer.isAllowedShareUri(
+                "content://attacker@ec0.android.fileprovider/private/master.key",
                 appPackageName = "ec0.android",
             ),
         )
@@ -72,7 +78,10 @@ class ProductionHardeningAndFeaturesTest {
                 appPackageName = "ec0.android",
             ),
         )
-        // Must block http/javascript/empty URIs
+        // Must block traversal segments, control chars, http/javascript/empty URIs
+        assertFalse(ShareIntentSanitizer.isAllowedShareUri("content://com.example.provider/docs/../../etc/passwd"))
+        assertFalse(ShareIntentSanitizer.isAllowedShareUri("content://com.example.provider/docs/%2e%2e/secret"))
+        assertFalse(ShareIntentSanitizer.isAllowedShareUri("content://com.example.provider/docs\n/file"))
         assertFalse(ShareIntentSanitizer.isAllowedShareUri("https://evil.example/payload"))
         assertFalse(ShareIntentSanitizer.isAllowedShareUri("content:///missing-authority"))
         assertFalse(ShareIntentSanitizer.isAllowedShareUri(null))

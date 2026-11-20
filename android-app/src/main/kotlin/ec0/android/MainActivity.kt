@@ -106,12 +106,19 @@ object ShareIntentSanitizer {
 
     fun isAllowedShareUri(uriString: String?, appPackageName: String = "ec0.android"): Boolean {
         val raw = uriString?.trim() ?: return false
+        if (raw.length > 2048) return false
+        if (raw.any { it.code < 32 || it.code == 127 || it.isWhitespace() }) return false
         if (!raw.startsWith("content://", ignoreCase = true)) return false
         val afterScheme = raw.substring("content://".length)
-        val authority = afterScheme.substringBefore('/').lowercase()
-        if (authority.isBlank()) return false
+        val rawAuthority = afterScheme.substringBefore('/').lowercase()
+        val hostAuthority = rawAuthority.substringAfterLast('@').substringBefore(':')
+        if (hostAuthority.isBlank()) return false
+        val pathPart = afterScheme.substringAfter('/', missingDelimiterValue = "")
+        if (pathPart.split('/').any { it == ".." || it.equals("%2e%2e", ignoreCase = true) }) {
+            return false
+        }
         val ownPkg = appPackageName.trim().lowercase()
-        if (ownPkg.isNotEmpty() && (authority == ownPkg || authority.startsWith("$ownPkg."))) {
+        if (ownPkg.isNotEmpty() && (hostAuthority == ownPkg || hostAuthority.startsWith("$ownPkg."))) {
             return false
         }
         return true

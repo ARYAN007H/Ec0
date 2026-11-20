@@ -45,11 +45,13 @@ class DesktopEcosystemFeaturesTest {
             nowMs = 1_700_000_000_000L,
         )
 
+        val grantsFile = File(tempDir, "peer_grants.json")
         val hub = ContinuityHubController(
             scope = scope,
             localIdentity = EncryptedIdentityStore(tempDir).loadOrCreateIdentity(),
             pinStore = pinStore,
             downloadDir = tempDir,
+            peerGrantsFile = grantsFile,
         )
         try {
             val appState = AppState(scope)
@@ -62,13 +64,16 @@ class DesktopEcosystemFeaturesTest {
             assertEquals("Pixel 9 Pro", peers.single().alias)
             assertEquals(16, peers.single().fingerprintPrefix.length)
             assertTrue("remote_input" in peers.single().grantedCapabilities)
+            assertTrue(hub.isPeerCapabilityGranted(peerIdentity.deviceId, "remote_input"))
 
-            // Toggle per-device capability grant
+            // Toggle per-device capability grant -> persisted to 0600 file and enforced locally
             pm.setCapability(peerIdentity.deviceId, "remote_input", false)
             val updatedPeers = withTimeout(2_000) {
                 pm.peers.first { "remote_input" !in it.single().grantedCapabilities }
             }
             assertFalse("remote_input" in updatedPeers.single().grantedCapabilities)
+            assertFalse(hub.isPeerCapabilityGranted(peerIdentity.deviceId, "remote_input"))
+            assertTrue(grantsFile.exists(), "peer_grants.json should be persisted on toggle")
 
             // 2. ConnectedPeerSummary feeds the Hero Card
             val summaries = withTimeout(2_000) { bridge.connectedPeers.first { it.isNotEmpty() } }
@@ -111,11 +116,12 @@ class DesktopEcosystemFeaturesTest {
             }
             assertTrue(afterClear.none { it.id == "ec0:${offer.transferId}" })
 
-            // 5. Unpair removes peer from pinStore & peerManagement
+            // 5. Unpair removes peer from pinStore, peerManagement, and persisted grants
             pm.unpair(peerIdentity.deviceId)
             val afterUnpair = withTimeout(2_000) { pm.peers.first { it.isEmpty() } }
             assertTrue(afterUnpair.isEmpty())
             assertEquals(0, bridge.trustedPeerCount.first { it == 0 })
+            assertFalse(peerIdentity.deviceId.lowercase() in hub.peerCapabilityGrants.value)
         } finally {
             runCatching { hub.close() }
             scope.cancel()

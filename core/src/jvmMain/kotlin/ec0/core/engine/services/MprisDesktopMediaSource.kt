@@ -122,8 +122,15 @@ object MprisParser {
         volumePct = 100,
     )
 
-    /** playerctl targeting a SPECIFIC player (kills firstOrNull ambiguity). */
+    private val SAFE_PLAYER_ID_REGEX = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    /** Returns true only for safe D-Bus / playerctl player identifiers (no leading '-' or shell/control chars). */
+    fun isValidPlayerId(playerId: String): Boolean =
+        playerId.isNotBlank() && SAFE_PLAYER_ID_REGEX.matches(playerId)
+
+    /** playerctl targeting a SPECIFIC player (kills firstOrNull ambiguity + rejects invalid player IDs). */
     fun buildTargetedPlayerctlCommand(command: MediaControlCommand, playerId: String): List<String>? {
+        if (!isValidPlayerId(playerId)) return null
         val base = listOf("playerctl", "--player=$playerId")
         return when (command.action) {
             MediaControlCommand.ACTION_PLAY -> base + "play"
@@ -132,7 +139,7 @@ object MprisParser {
             MediaControlCommand.ACTION_NEXT -> base + "next"
             MediaControlCommand.ACTION_PREVIOUS -> base + "previous"
             MediaControlCommand.ACTION_SET_VOLUME -> {
-                val vol = command.volumePct ?: 100
+                val vol = (command.volumePct ?: 100).coerceIn(0, 100)
                 base + "volume" + "%.2f".format(java.util.Locale.US, vol / 100.0)
             }
             else -> null
@@ -166,7 +173,7 @@ class MprisDesktopMediaSource(
 
     /** One poll tick: enumerate → read PlaybackStatus/Metadata/Position → publish. */
     fun poll(nowMs: Long = System.currentTimeMillis()): MediaSessionInfo? {
-        val player = activePlayerId ?: firstPlayerOrNull() ?: run {
+        val player = activePlayerId ?: firstPlayerOrNull()?.also { activePlayerId = it } ?: run {
             _session.value = null
             return null
         }

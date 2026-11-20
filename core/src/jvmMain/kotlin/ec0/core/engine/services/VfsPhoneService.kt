@@ -129,8 +129,18 @@ class VfsPhoneService(
             return
         }
 
+        val rootName = canonicalPath.removePrefix("/").substringBefore('/')
+        val canonicalRoot = roots[rootName]?.let { runCatching { it.canonicalFile }.getOrNull() }
         val children = (file.listFiles() ?: emptyArray())
-            .filter { !it.name.startsWith(".") }
+            .filter { child ->
+                if (child.name.startsWith(".")) return@filter false
+                // Exclude any symlink whose canonical target escapes the granted root.
+                if (canonicalRoot != null) {
+                    val childCanon = runCatching { child.canonicalFile }.getOrNull() ?: return@filter false
+                    if (!VfsPathGuard.isInsideRoot(canonicalRoot.path, childCanon.path)) return@filter false
+                }
+                true
+            }
             .sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase() })
             .take(MAX_LIST_ENTRIES)
 
@@ -193,6 +203,14 @@ class VfsPhoneService(
                     val read = input.read(buf)
                     if (read <= 0) break
                     val nextOffset = offset + read
+                    if (nextOffset > maxDownloadBytes) {
+                        sendError(
+                            sendInfo,
+                            rawPath,
+                            "File exceeds ${maxDownloadBytes / (1024 * 1024)} MB VFS transfer limit",
+                        )
+                        return@use
+                    }
                     val isEof = nextOffset >= fileLen
                     val slice = if (read == buf.size) buf else buf.copyOf(read)
                     sendInfo(
@@ -208,8 +226,9 @@ class VfsPhoneService(
                     if (isEof) break
                 }
             }
-        }.onFailure { err ->
-            sendError(sendInfo, rawPath, "Read failed: ${err.message ?: err.javaClass.simpleName}")
+        }.onFailure {
+            // Never leak raw OS filesystem paths from exception messages over the wire.
+            sendError(sendInfo, rawPath, "File read failed")
         }
     }
 
@@ -234,6 +253,9 @@ class VfsPhoneService(
         val canonicalRoot = runCatching { rootDir.canonicalFile }.getOrNull() ?: return null
 
         val relativeParts = parts.drop(1)
+        // Reject hidden/dotfile path segments (e.g. .nomedia, .thumbnails, .secrets)
+        // consistently with handleList() so direct downloads cannot bypass directory hiding.
+        if (relativeParts.any { it.startsWith(".") }) return null
         val candidate = if (relativeParts.isEmpty()) {
             canonicalRoot
         } else {

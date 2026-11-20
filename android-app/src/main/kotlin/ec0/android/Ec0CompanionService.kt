@@ -908,7 +908,7 @@ class Ec0CompanionService : Service() {
                 }
 
                 // Wire incoming desktop → phone relayed notifications into a dedicated local channel.
-                val seenDesktopNotifs = java.util.Collections.synchronizedSet(HashSet<String>())
+                val seenDesktopNotifs = LinkedHashSet<String>()
                 serviceScope.launch(Dispatchers.IO) {
                     runtime.node.notifications.collect { list ->
                         for (notif in list) {
@@ -917,7 +917,14 @@ class Ec0CompanionService : Service() {
                             // Echo-loop guard: never re-post notifications originating from ec0 itself.
                             if (pkgLower == appContext.packageName.lowercase() || appLower == "ec0") continue
                             val dedupeKey = "${notif.notifId}:${notif.timestampMs}"
-                            if (seenDesktopNotifs.add(dedupeKey)) {
+                            val isNew = synchronized(seenDesktopNotifs) {
+                                val added = seenDesktopNotifs.add(dedupeKey)
+                                while (seenDesktopNotifs.size > 512) {
+                                    seenDesktopNotifs.iterator().let { it.next(); it.remove() }
+                                }
+                                added
+                            }
+                            if (isNew) {
                                 postRelayedDesktopNotification(appContext, notif)
                             }
                         }

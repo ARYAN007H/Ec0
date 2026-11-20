@@ -181,6 +181,13 @@ class Ec0EngineNode(
     private val onRemoteCallAction: (CallActionCommand) -> Boolean = { false },
     private val onRemoteMediaControl: (MediaControlCommand) -> MediaSessionInfo? = { null },
     /**
+     * Receiver-side per-peer grant gate for remote input injection (audit S1).
+     * Even if an authenticated peer's self-asserted presence beacon advertises
+     * `input`/`remote_input`, returning false here blocks keyboard/pointer
+     * injection immediately when the local user revokes that peer's permission.
+     */
+    private val localInputGrantGate: (String) -> Boolean = { true },
+    /**
      * RFC 6455 PING heartbeat for BOTH roles' sessions. Never run this at 0:
      * both transports enforce a [sessionIoTimeoutMs] read timeout, and with a
      * silent peer (no clipboard/notification/beacon traffic) every session dies
@@ -225,15 +232,18 @@ class Ec0EngineNode(
 
     val inputShareService = InputShareService(
         sink = inputEventSink,
-        // Walled-garden capability gate (audit H1): input injection is scoped to
-        // peers whose VERIFIED presence beacon advertises an input capability.
-        // The lambda defers the read to dispatch time (presenceService is
-        // constructed below) and allows peers that have not sent a beacon yet.
+        // Walled-garden capability gate (audit H1 + S1):
+        //   1. Local receiver-side per-peer grant MUST allow remote input.
+        //   2. Peer's VERIFIED presence beacon (when received) must advertise input.
         capabilityGate = { peerDeviceId ->
-            val beacon = presenceService.peerPresence.value[peerDeviceId]
-            beacon == null ||
-                EngineCapability.INPUT in beacon.capabilities ||
-                EngineCapability.REMOTE_INPUT in beacon.capabilities
+            if (!localInputGrantGate(peerDeviceId)) {
+                false
+            } else {
+                val beacon = presenceService.peerPresence.value[peerDeviceId]
+                beacon == null ||
+                    EngineCapability.INPUT in beacon.capabilities ||
+                    EngineCapability.REMOTE_INPUT in beacon.capabilities
+            }
         },
     )
 
