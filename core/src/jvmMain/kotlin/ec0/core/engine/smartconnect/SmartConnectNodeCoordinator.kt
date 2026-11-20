@@ -637,7 +637,15 @@ class SmartConnectNodeCoordinator(
         val perPairKeyB64 = ctx.perPairKeyBase64 ?: SmartConnectIdentity.generatePerPairKeyBase64()
         ctx.perPairKeyBase64 = perPairKeyB64
 
-        // Step 4: Send svc 0 cmd 1 EXCHANGE_KEY with BOTH deviceId and realDeviceId = <pcRealId>
+        // Step 4a: Confirm trust & persist paired peer record BEFORE sending perPairKey over the wire.
+        // This guarantees both security (never leak perPairKey to an untrusted peer) and
+        // visibility (peer record is persisted before the peer observes EXCHANGE_KEY).
+        if (!finalizePairedRecord(ctx)) {
+            return
+        }
+        appendHandshakeLog("STEP5_PAIRED_RECORD_PERSISTED peerRealId=${ctx.peerRealDeviceId} peerName=${ctx.peerDeviceName}")
+
+        // Step 4b: Send svc 0 cmd 1 EXCHANGE_KEY with BOTH deviceId and realDeviceId = <pcRealId>
         val exchangeKeyFrame = SmartConnectHandshakeCodec.buildPcExchangeKeyFrame(
             pcNonceIdBase64 = currentNonceIdBase64,
             pcRealIdBase64 = localIdentity.realDeviceIdBase64,
@@ -648,10 +656,6 @@ class SmartConnectNodeCoordinator(
         )
         runCatching { ctx.session.sendText(exchangeKeyFrame) }
         appendHandshakeLog("STEP4_EXCHANGE_KEY_TX msgId=$replyMsgId pcRealId=${localIdentity.realDeviceIdBase64}")
-
-        // Step 5: Persist paired peer record
-        finalizePairedRecord(ctx)
-        appendHandshakeLog("STEP5_PAIRED_RECORD_PERSISTED peerRealId=${ctx.peerRealDeviceId} peerName=${ctx.peerDeviceName}")
 
         // Step 6: Schedule 5s post-pair discovery refresh (rotate nonceId + re-announce mDNS)
         ctx.postPairRefreshFuture?.cancel(false)
@@ -667,9 +671,9 @@ class SmartConnectNodeCoordinator(
         )
     }
 
-    private fun finalizePairedRecord(ctx: SessionHandshakeContext) {
-        val realId = ctx.peerRealDeviceId ?: ctx.peerNonceOrRealId ?: return
-        val perPairKeyB64 = ctx.perPairKeyBase64 ?: return
+    private fun finalizePairedRecord(ctx: SessionHandshakeContext): Boolean {
+        val realId = ctx.peerRealDeviceId ?: ctx.peerNonceOrRealId ?: return true
+        val perPairKeyB64 = ctx.perPairKeyBase64 ?: return false
         val nowMs = System.currentTimeMillis()
         val existing = pairedPeersByRealId[realId]
         val candidateRecord = SmartConnectPairedPeerRecord(
@@ -688,11 +692,12 @@ class SmartConnectNodeCoordinator(
             val trusted = runCatching { cb.invoke(candidateRecord) }.getOrDefault(false)
             if (!trusted) {
                 ctx.session.close()
-                return
+                return false
             }
         }
         persistPairedPeer(candidateRecord)
         refreshConnectedPeerIdsFlow()
+        return true
     }
 
     private fun handleDeviceStatusFrame(ctx: SessionHandshakeContext, envelope: SmartConnectEnvelope) {
