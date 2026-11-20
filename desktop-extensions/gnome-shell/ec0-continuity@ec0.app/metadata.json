@@ -1,0 +1,7 @@
+{
+  "uuid": "ec0-continuity@ec0.app",
+  "name": "ec0 Continuity Quick Settings",
+  "description": "Quick Settings toggle for ec0 Continuity Focus sync, OTP auto-type, and Phone Audio Sink.",
+  "shell-version": ["45", "46", "47"],
+  "version": 1
+}

@@ -1,0 +1,4 @@
+# Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
+# Grant rootless access to /dev/uinput for active local desktop sessions (uaccess)
+# and members of the `uinput` group so Universal Control works without root.
+KERNEL=="uinput", MODE="0660", GROUP="uinput", OPTIONS+="static_node=uinput", TAG+="uaccess"

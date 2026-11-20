@@ -54,7 +54,11 @@ import androidx.compose.ui.unit.dp
 import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Shapes
 import ec0.ui.theme.ec0Colors
+import ec0.ui.widgets.ClipboardShelfCard
+import ec0.ui.widgets.ContinuityStudioAndCaptureCard
+import ec0.ui.widgets.FocusSidecarAndTurboCard
 import ec0.ui.widgets.LinkTelemetrySparkline
+import ec0.ui.widgets.SmsInboxCard
 import ec0.ui.widgets.SectionHeader
 
 /**
@@ -436,6 +440,12 @@ fun SyncPanel(bridge: UiBridge) {
                 }
             }
         }
+
+        // Features #1..#12: Continuity Pro Cards
+        ContinuityStudioAndCaptureCard(bridge)
+        FocusSidecarAndTurboCard(bridge)
+        ClipboardShelfCard(bridge)
+        SmsInboxCard(bridge)
     }
 }
 

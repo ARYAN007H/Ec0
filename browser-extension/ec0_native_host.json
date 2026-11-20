@@ -1,0 +1,9 @@
+{
+  "name": "org.ec0.continuity_host",
+  "description": "ec0 Continuity Native Messaging Host (authenticated loopback IPC bridge)",
+  "path": "/usr/lib/ec0/ec0-native-messaging-host.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+  ]
+}

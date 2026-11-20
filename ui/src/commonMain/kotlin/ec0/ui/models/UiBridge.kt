@@ -290,4 +290,64 @@ interface UiBridge {
 
     fun acceptIncoming(trust: Boolean = false) {}
     fun declineIncoming() {}
+
+    // ---- Ecosystem Pro Features (#1..#15) — safe defaults for all platform hosts ----
+
+    /** Feature #1: Phone-to-PC Audio Sink & Full-Duplex Call Audio active state. */
+    val audioSinkActive: StateFlow<Boolean> get() = MutableStateFlow(false)
+    val callAudioOnPc: StateFlow<Boolean> get() = MutableStateFlow(false)
+    fun togglePhoneAudioSink() {}
+    fun toggleCallAudioHandoff() {}
+
+    /** Feature #2: Insert from Phone (photo / document_scan / sketch). */
+    fun requestPhoneCapture(mode: String) {}
+
+    /** Feature #3: Loopback authenticated WebDAV mount URL (null if unmounted). */
+    val webDavMountUrl: StateFlow<String?> get() = MutableStateFlow(null)
+    fun toggleWebDavPhoneMount() {}
+
+    /** Feature #4: Wireless Second Display ("Sidecar") active state. */
+    val sidecarActive: StateFlow<Boolean> get() = MutableStateFlow(false)
+    fun toggleSidecarDisplay() {}
+
+    /** Feature #5: Persistent SMS inbox + Global 2FA OTP Auto-Type. */
+    val smsThreads: StateFlow<List<SmsThreadUi>> get() = MutableStateFlow(emptyList())
+    val pendingOtpCode: StateFlow<String?> get() = MutableStateFlow(null)
+    fun requestSmsSync() {}
+    fun sendSmsMessage(address: String, body: String) {}
+    fun autoTypeLatestOtp() {}
+
+    /** Feature #6: Bidirectional Focus / DND & PipeWire Meeting Auto-Focus. */
+    val focusMode: StateFlow<String> get() = MutableStateFlow("off")
+    val meetingAutoFocusEnabled: StateFlow<Boolean> get() = MutableStateFlow(true)
+    fun setFocusMode(mode: String) {}
+    fun setMeetingAutoFocusEnabled(enabled: Boolean) {}
+
+    /** Feature #7: Passive Browser Tab & Video Timestamp Handoff. */
+    val activeBrowserTabHandoff: StateFlow<BrowserTabHandoffUi?> get() = MutableStateFlow(null)
+    fun openActiveBrowserTabHandoff() {}
+
+    /** Feature #8: Wi-Fi Direct Turbo upgrade toggle. */
+    val wifiDirectTurboActive: StateFlow<Boolean> get() = MutableStateFlow(false)
+    fun toggleWifiDirectTurbo() {}
+
+    /** Feature #11: Continuity Camera Studio Effects + Adaptive Bitrate. */
+    val cameraEffects: StateFlow<CameraEffectsUi> get() = MutableStateFlow(CameraEffectsUi())
+    fun toggleCameraCenterStage() {}
+    fun toggleCameraPortraitBlur() {}
+    fun toggleCameraDeskView() {}
+
+    /** Feature #12: 20-item Clipboard Shelf + Non-intrusive Undo arrival toast. */
+    val clipboardShelf: StateFlow<List<ClipboardShelfItemUi>> get() = MutableStateFlow(emptyList())
+    val clipboardToast: StateFlow<ClipboardToastUi?> get() = MutableStateFlow(null)
+    fun toggleClipboardPin(entryId: String) {}
+    fun copyClipboardShelfEntry(entryId: String) {}
+    fun undoLastRemoteClipboard() {}
+    fun dismissClipboardToast() {}
+
+    /** Feature #13 & #14: Hardware Keystore badge, System Health Diagnostics & Redacted Support Bundle. */
+    val keystoreBackendLabel: StateFlow<String> get() = MutableStateFlow("Local 0600 Key File")
+    val diagnosticChecks: StateFlow<List<DiagnosticCheckUi>> get() = MutableStateFlow(emptyList())
+    fun runHealthDiagnostics() {}
+    fun exportRedactedSupportBundle() {}
 }

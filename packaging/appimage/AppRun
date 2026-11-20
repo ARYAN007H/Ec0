@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Part of ec0 — SPDX-License-Identifier: GPL-3.0-only
+set -eu
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/ec0" "$@"

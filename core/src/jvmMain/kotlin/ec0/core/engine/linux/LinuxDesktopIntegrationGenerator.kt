@@ -51,6 +51,28 @@ sealed class Ec0CliCommand {
     /** Run Linux system integration readiness diagnostics. */
     data object Doctor : Ec0CliCommand()
 
+    /** Feature #10: Run headless background continuity daemon (no Compose window). */
+    data object RunDaemon : Ec0CliCommand()
+
+    /** Feature #9/#10: Query running ec0 daemon status JSON over authenticated loopback IPC. */
+    data object DaemonStatus : Ec0CliCommand()
+
+    /** Feature #5: Trigger global "Auto-Type 2FA OTP" hotkey action via running daemon IPC. */
+    data object AutoTypeOtp : Ec0CliCommand()
+
+    /** Feature #3: Mount or unmount ~/Phone via authenticated loopback WebDAV. */
+    data class MountVfs(val unmount: Boolean = false) : Ec0CliCommand()
+
+    /** Feature #6: Set Focus / Do Not Disturb mode across paired devices. */
+    data class SetFocus(val mode: String) : Ec0CliCommand()
+
+    /** Feature #7: Publish active browser tab + optional video timestamp via daemon IPC. */
+    data class HandoffTab(
+        val url: String,
+        val title: String = "",
+        val mediaPositionSec: Long = 0L,
+    ) : Ec0CliCommand()
+
     companion object {
         fun parse(args: Array<String>): Ec0CliCommand = parse(args.toList())
 
@@ -224,6 +246,38 @@ sealed class Ec0CliCommand {
                 }
 
                 "--doctor" -> Doctor
+                "--daemon", "-d" -> RunDaemon
+                "--status" -> DaemonStatus
+                "--auto-type-otp" -> AutoTypeOtp
+                "--mount-vfs" -> MountVfs(unmount = args.getOrNull(1) == "--unmount")
+                "--focus" -> {
+                    val mode = args.getOrNull(1)?.trim()?.lowercase()
+                        ?: throw IllegalArgumentException("Usage: ec0 --focus <off|dnd|work|meeting|sleep>")
+                    SetFocus(mode = mode)
+                }
+                "--handoff-tab" -> {
+                    val url = args.getOrNull(1)?.trim()
+                        ?: throw IllegalArgumentException("Usage: ec0 --handoff-tab <https-url> [--title <t>] [--position-sec <n>]")
+                    var title = ""
+                    var posSec = 0L
+                    var i = 2
+                    while (i < args.size) {
+                        when (args[i]) {
+                            "--title" -> {
+                                require(i + 1 < args.size) { "Missing value after --title" }
+                                title = args[i + 1]
+                                i += 2
+                            }
+                            "--position-sec" -> {
+                                require(i + 1 < args.size) { "Missing value after --position-sec" }
+                                posSec = args[i + 1].toLong().coerceAtLeast(0L)
+                                i += 2
+                            }
+                            else -> throw IllegalArgumentException("Unknown --handoff-tab option: ${args[i]}")
+                        }
+                    }
+                    HandoffTab(url = url, title = title, mediaPositionSec = posSec)
+                }
                 else -> throw IllegalArgumentException("Unrecognized CLI flag: $first")
             }
         }
@@ -287,6 +341,27 @@ object LinuxDesktopIntegrationGenerator {
         else
             exec "$binaryExecPath" --send "${'$'}@"
         fi
+        """.trimIndent() + "\n"
+
+    fun buildSystemdUserUnit(binaryExecPath: String = "/usr/bin/ec0"): String =
+        """
+        [Unit]
+        Description=ec0 Continuity Background Daemon
+        After=network-online.target graphical-session.target
+        Wants=network-online.target
+
+        [Service]
+        Type=simple
+        ExecStart=$binaryExecPath --daemon
+        Restart=on-failure
+        RestartSec=3s
+        NoNewPrivileges=true
+        PrivateTmp=true
+        ProtectSystem=strict
+        ReadWritePaths=%h/.config/ec0 %h/Downloads %t/ec0
+
+        [Install]
+        WantedBy=default.target
         """.trimIndent() + "\n"
 
     /**

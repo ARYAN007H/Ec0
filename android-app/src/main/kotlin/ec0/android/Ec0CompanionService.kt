@@ -790,13 +790,16 @@ class Ec0CompanionService : Service() {
         @Volatile
         private var pendingRequestRef: Pair<PrepareUploadRequestDtoV2, CompletableDeferred<ReceiverAcceptance>>? = null
 
+        /** Feature #14: Sliding-window watchdog protecting Android foreground service from restart storms. */
+        val crashLoopWatchdog = ec0.core.engine.services.ServiceCrashLoopWatchdog()
+
         private val _incomingRequest = MutableStateFlow<IncomingRequest?>(null)
         val incomingRequest: StateFlow<IncomingRequest?> = _incomingRequest.asStateFlow()
 
         private val _latestSettings = MutableStateFlow(
             SettingsState(
-                alias = Build.MODEL.ifBlank { "Android" },
-                deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                alias = Build.MODEL.orEmpty().ifBlank { "Android" },
+                deviceModel = "${Build.MANUFACTURER.orEmpty()} ${Build.MODEL.orEmpty()}".trim().ifBlank { "Android" },
                 deviceType = DeviceType.MOBILE,
                 protocol = ProtocolType.HTTP,
             ),
@@ -859,6 +862,7 @@ class Ec0CompanionService : Service() {
 
                 val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
                 activeServiceScope = serviceScope
+                crashLoopWatchdog.recordHealthyStart()
 
                 val downloadDir = File(
                     appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: appContext.filesDir,

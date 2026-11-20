@@ -62,6 +62,7 @@ fun VfsPanel(
     pickFile: ((onPicked: (Any?) -> Unit) -> Unit)? = null,
 ) {
     val browseState by bridge.vfsBrowseState.collectAsState()
+    val webDavMountUrl by bridge.webDavMountUrl.collectAsState()
     var pathInput by remember { mutableStateOf("/") }
 
     val navigateTo: (String) -> Unit = { next ->
@@ -88,6 +89,15 @@ fun VfsPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (bridge.hasDesktopIntegration) {
+                    FilledTonalButton(
+                        onClick = bridge::toggleWebDavPhoneMount,
+                        shape = Ec0Shapes.pill,
+                    ) {
+                        Text(if (webDavMountUrl != null) "Unmount ~/Phone" else "Mount ~/Phone")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
                 browseState?.entries?.let { entries ->
                     Surface(shape = Ec0Shapes.pill, color = MaterialTheme.colorScheme.secondaryContainer) {
                         Text(
@@ -97,6 +107,21 @@ fun VfsPanel(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                         )
                     }
+                }
+            }
+
+            webDavMountUrl?.let { mountUrl ->
+                Surface(
+                    shape = Ec0Shapes.chip,
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "Loopback WebDAV mounted (auth-protected): $mountUrl",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
                 }
             }
 

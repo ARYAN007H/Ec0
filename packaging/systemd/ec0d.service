@@ -1,0 +1,17 @@
+[Unit]
+Description=ec0 Continuity Background Daemon
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec0 --daemon
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/.config/ec0 %h/Downloads %t/ec0
+
+[Install]
+WantedBy=default.target

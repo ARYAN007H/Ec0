@@ -18,10 +18,15 @@ import ec0.desktop.continuity.ContinuityHubController
 import ec0.desktop.state.AppState
 import ec0.ui.models.ActiveCallUi
 import ec0.ui.models.AndroidAppUi
+import ec0.ui.models.BrowserTabHandoffUi
 import ec0.ui.models.CameraControlsState
+import ec0.ui.models.CameraEffectsUi
 import ec0.ui.models.Capabilities
 import ec0.ui.models.CapabilityTile
+import ec0.ui.models.ClipboardShelfItemUi
+import ec0.ui.models.ClipboardToastUi
 import ec0.ui.models.ConnectedPeerSummary
+import ec0.ui.models.DiagnosticCheckUi
 import ec0.ui.models.LinkTelemetryUi
 import ec0.ui.models.MediaSessionUi
 import ec0.ui.models.NotificationItem
@@ -32,6 +37,7 @@ import ec0.ui.models.PeerManagementBridge
 import ec0.ui.models.SettingsState
 import ec0.ui.models.SetupCheckItem
 import ec0.ui.models.SmartConnectPairingQr
+import ec0.ui.models.SmsThreadUi
 import ec0.ui.models.TransferDirection
 import ec0.ui.models.TransferItem
 import ec0.ui.models.TransferState
@@ -943,5 +949,214 @@ class DesktopBridge(
             it.alias.equals(device.alias, ignoreCase = true) && h.node.activeSessionFor(it.deviceId) != null
         }
         return byAlias?.deviceId
+    }
+
+    // ---- Ecosystem Pro Features (#1..#15) Desktop Bridge Implementation ----
+
+    override val audioSinkActive: StateFlow<Boolean> =
+        hub?.audioRouteStatus?.map { it.active && it.mode == "media_sink" }
+            ?.stateIn(bridgeScope, SharingStarted.Eagerly, false) ?: MutableStateFlow(false)
+
+    override val callAudioOnPc: StateFlow<Boolean> =
+        hub?.audioRouteStatus?.map { it.active && it.mode == "call_duplex" }
+            ?.stateIn(bridgeScope, SharingStarted.Eagerly, false) ?: MutableStateFlow(false)
+
+    override fun togglePhoneAudioSink() {
+        hub?.togglePhoneAudioSink()
+    }
+
+    override fun toggleCallAudioHandoff() {
+        hub?.toggleCallAudioHandoff()
+    }
+
+    override fun requestPhoneCapture(mode: String) {
+        hub?.requestPhoneCapture(mode)
+    }
+
+    override val webDavMountUrl: StateFlow<String?> =
+        hub?.webDavMountUrl ?: MutableStateFlow(null)
+
+    override fun toggleWebDavPhoneMount() {
+        val h = hub ?: return
+        if (h.webDavMountUrl.value != null) {
+            h.stopWebDavPhoneMount()
+        } else {
+            val ds = object : ec0.core.engine.services.VfsMountDataSource {
+                override fun listDirectory(relativePath: String): List<ec0.core.engine.protocol.VfsEntryDto>? {
+                    val norm = if (relativePath.isBlank()) "/" else "/$relativePath"
+                    vfsBrowse(norm)
+                    val st = vfsDesktopService.browseState.value ?: return emptyList()
+                    return st.entries
+                }
+
+                override fun readFileBytes(relativePath: String): ByteArray? {
+                    val norm = if (relativePath.startsWith("/")) relativePath else "/$relativePath"
+                    vfsDownload(norm)
+                    val savedPath = vfsDesktopService.lastDownloadedPath.value ?: return null
+                    val f = File(savedPath)
+                    return if (f.isFile && f.length() <= 8L * 1024L * 1024L) runCatching { f.readBytes() }.getOrNull() else null
+                }
+            }
+            h.startWebDavPhoneMount(ds)
+        }
+    }
+
+    override val sidecarActive: StateFlow<Boolean> =
+        hub?.sidecarActive ?: MutableStateFlow(false)
+
+    override fun toggleSidecarDisplay() {
+        hub?.toggleSidecarDisplay()
+    }
+
+    override val smsThreads: StateFlow<List<SmsThreadUi>> =
+        hub?.smsThreads?.map { list ->
+            list.map { t ->
+                SmsThreadUi(
+                    threadId = t.threadId,
+                    address = t.address,
+                    displayName = t.contactName.ifBlank { t.address },
+                    lastBody = t.latestBody,
+                    lastTimestampMs = t.latestTimestampMs,
+                    messageCount = t.messages.size,
+                )
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    override val pendingOtpCode: StateFlow<String?> =
+        hub?.pendingOtpCode ?: MutableStateFlow(null)
+
+    override fun requestSmsSync() {
+        hub?.requestSmsSync()
+    }
+
+    override fun sendSmsMessage(address: String, body: String) {
+        hub?.sendSmsMessage(address, body)
+    }
+
+    override fun autoTypeLatestOtp() {
+        hub?.autoTypeLatestOtp()
+    }
+
+    override val focusMode: StateFlow<String> =
+        hub?.focusState?.map { it.mode }?.stateIn(bridgeScope, SharingStarted.Eagerly, "off")
+            ?: MutableStateFlow("off")
+
+    override val meetingAutoFocusEnabled: StateFlow<Boolean> =
+        hub?.meetingAutoFocusEnabled ?: MutableStateFlow(true)
+
+    override fun setFocusMode(mode: String) {
+        hub?.setFocusMode(mode)
+    }
+
+    override fun setMeetingAutoFocusEnabled(enabled: Boolean) {
+        hub?.setMeetingAutoFocusEnabled(enabled)
+    }
+
+    override val activeBrowserTabHandoff: StateFlow<BrowserTabHandoffUi?> =
+        hub?.activeRemoteBrowserTab?.map { tab ->
+            tab?.let {
+                BrowserTabHandoffUi(
+                    url = it.url,
+                    title = it.title,
+                    resumeUrl = ec0.core.engine.services.BrowserTabHandoffService.buildResumeUrl(it),
+                    mediaPositionSec = it.mediaPositionSec.toLong(),
+                )
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, null) ?: MutableStateFlow(null)
+
+    override fun openActiveBrowserTabHandoff() {
+        hub?.openActiveRemoteBrowserTab()
+    }
+
+    override val wifiDirectTurboActive: StateFlow<Boolean> =
+        hub?.wifiDirectTurboActive ?: MutableStateFlow(false)
+
+    override fun toggleWifiDirectTurbo() {
+        hub?.toggleWifiDirectTurbo()
+    }
+
+    override val cameraEffects: StateFlow<CameraEffectsUi> =
+        hub?.cameraStudioEffects?.map { fx ->
+            CameraEffectsUi(
+                centerStage = fx.centerStage,
+                portraitBlur = fx.portraitBlur,
+                deskView = fx.deskView,
+                hwDecode = fx.hwDecodePreference,
+                targetBitrateKbps = fx.targetBitrateKbps,
+            )
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, CameraEffectsUi()) ?: MutableStateFlow(CameraEffectsUi())
+
+    override fun toggleCameraCenterStage() {
+        hub?.updateCameraStudioEffects { it.copy(centerStage = !it.centerStage) }
+    }
+
+    override fun toggleCameraPortraitBlur() {
+        hub?.updateCameraStudioEffects { it.copy(portraitBlur = !it.portraitBlur) }
+    }
+
+    override fun toggleCameraDeskView() {
+        hub?.updateCameraStudioEffects { it.copy(deskView = !it.deskView) }
+    }
+
+    override val clipboardShelf: StateFlow<List<ClipboardShelfItemUi>> =
+        hub?.clipboardShelfEntries?.map { entries ->
+            entries.map { e ->
+                ClipboardShelfItemUi(
+                    id = e.id,
+                    preview = e.previewText,
+                    mime = e.mime,
+                    sourceDevice = e.sourceAlias,
+                    pinned = e.pinned,
+                    sensitive = e.isSensitive,
+                    timestampMs = e.createdAtMs,
+                )
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    override val clipboardToast: StateFlow<ClipboardToastUi?> =
+        hub?.clipboardToast?.map { ev ->
+            ev?.let { ClipboardToastUi(id = it.id, message = it.message, canUndo = it.canUndo) }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, null) ?: MutableStateFlow(null)
+
+    override fun toggleClipboardPin(entryId: String) {
+        hub?.toggleClipboardShelfPin(entryId)
+    }
+
+    override fun copyClipboardShelfEntry(entryId: String) {
+        hub?.copyClipboardShelfEntry(entryId)
+    }
+
+    override fun undoLastRemoteClipboard() {
+        hub?.undoLastRemoteClipboard()
+    }
+
+    override fun dismissClipboardToast() {
+        hub?.dismissClipboardToast()
+    }
+
+    override val keystoreBackendLabel: StateFlow<String> =
+        hub?.keySealerBackend?.map { it.displayName }
+            ?.stateIn(bridgeScope, SharingStarted.Eagerly, "Local 0600 Key File")
+            ?: MutableStateFlow("Local 0600 Key File")
+
+    override val diagnosticChecks: StateFlow<List<DiagnosticCheckUi>> =
+        hub?.diagnosticChecks?.map { list ->
+            list.map { c ->
+                DiagnosticCheckUi(
+                    id = c.id,
+                    title = c.title,
+                    severity = c.severity.name,
+                    summary = c.summary,
+                    fixHint = c.fixHint,
+                )
+            }
+        }?.stateIn(bridgeScope, SharingStarted.Eagerly, emptyList()) ?: MutableStateFlow(emptyList())
+
+    override fun runHealthDiagnostics() {
+        hub?.runHealthDiagnostics()
+    }
+
+    override fun exportRedactedSupportBundle() {
+        hub?.exportRedactedSupportBundle()
     }
 }

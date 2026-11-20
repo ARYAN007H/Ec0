@@ -62,6 +62,7 @@ import ec0.ui.models.UiBridge
 import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Shapes
 import ec0.ui.theme.ec0Colors
+import ec0.ui.widgets.HealthDiagnosticsCard
 import ec0.ui.widgets.SectionHeader
 
 @Composable
@@ -514,6 +515,9 @@ fun SettingsPanel(bridge: UiBridge) {
                 }
             }
         }
+
+        // Features #13 & #14: Key Sealing & Health Diagnostics Center
+        HealthDiagnosticsCard(bridge)
 
         SettingsCard("About") {
             Text("ec0 — unified cross-device ecosystem", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)

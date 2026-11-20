@@ -46,13 +46,20 @@ import ec0.core.engine.protocol.NotificationProtocol
 import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
+import ec0.core.engine.services.AudioHandoffService
+import ec0.core.engine.services.BrowserTabHandoffService
 import ec0.core.engine.services.CamDroidControlTransport
+import ec0.core.engine.services.CameraStudioEffectsController
 import ec0.core.engine.services.ClipboardPushOutcome
 import ec0.core.engine.services.ClipboardService
+import ec0.core.engine.services.ClipboardShelfManager
 import ec0.core.engine.services.ContinuityCameraCoordinator
+import ec0.core.engine.services.ContinuityCaptureService
 import ec0.core.engine.services.ContinuityVirtualMicBridge
+import ec0.core.engine.services.DiagnosticRingBuffer
 import ec0.core.engine.services.ExternalProcessLauncher
 import ec0.core.engine.services.FileTransferService
+import ec0.core.engine.services.FocusSyncService
 import ec0.core.engine.services.HandoffAndProximityService
 import ec0.core.engine.services.HotspotAndTelephonyService
 import ec0.core.engine.services.InputEventSink
@@ -61,9 +68,12 @@ import ec0.core.engine.services.MediaSessionBridgeService
 import ec0.core.engine.services.NotificationRelayService
 import ec0.core.engine.services.PresenceService
 import ec0.core.engine.services.ScrcpyMirrorCoordinator
+import ec0.core.engine.services.SidecarDisplayService
+import ec0.core.engine.services.SmsInboxService
 import ec0.core.engine.services.SystemProcessLauncher
 import ec0.core.engine.services.TcpCamDroidControlTransport
 import ec0.core.engine.services.TransferProgressSnapshot
+import ec0.core.engine.services.TransportFailoverCoordinator
 import ec0.core.engine.services.UniversalControlService
 import ec0.core.engine.services.UsbAdbTunnelCoordinator
 import ec0.core.engine.services.UsbTunnelStatus
@@ -293,6 +303,46 @@ class Ec0EngineNode(
 
     val handoffAndProximityService = HandoffAndProximityService(
         launcher = processLauncher,
+    )
+
+    val audioHandoffService = AudioHandoffService(
+        launcher = processLauncher,
+    )
+
+    val continuityCaptureService = ContinuityCaptureService(
+        clockMs = clockMs,
+    )
+
+    val sidecarDisplayService = SidecarDisplayService(
+        launcher = processLauncher,
+        clockMs = clockMs,
+    )
+
+    val smsInboxService = SmsInboxService(
+        clockMs = clockMs,
+    )
+
+    val focusSyncService = FocusSyncService(
+        clockMs = clockMs,
+    )
+
+    val browserTabHandoffService = BrowserTabHandoffService(
+        clockMs = clockMs,
+    )
+
+    val transportFailoverCoordinator = TransportFailoverCoordinator(
+        launcher = processLauncher,
+        clockMs = clockMs,
+    )
+
+    val clipboardShelfManager = ClipboardShelfManager(
+        clockMs = clockMs,
+    )
+
+    val cameraStudioEffectsController = CameraStudioEffectsController()
+
+    val diagnosticRingBuffer = DiagnosticRingBuffer(
+        clockMs = clockMs,
     )
 
     // Lazy: constructing SmartConnectNodeCoordinator generates an RSA-2048 identity and
@@ -815,6 +865,14 @@ class Ec0EngineNode(
         if (hotspotAndTelephonyService.handleControlEnvelope(envelope)) return
         if (mediaSessionBridgeService.handleControlEnvelope(envelope)) return
         if (handoffAndProximityService.handleControlEnvelope(envelope)) return
+        if (audioHandoffService.handleControlEnvelope(envelope)) return
+        if (continuityCaptureService.handleControlEnvelope(envelope)) return
+        if (sidecarDisplayService.handleControlEnvelope(peerDeviceId, envelope)) return
+        if (smsInboxService.handleControlEnvelope(peerDeviceId, envelope, session)) return
+        if (focusSyncService.handleControlEnvelope(envelope)) return
+        if (browserTabHandoffService.handleControlEnvelope(envelope)) return
+        if (transportFailoverCoordinator.handleControlEnvelope(envelope)) return
+        if (cameraStudioEffectsController.handleControlEnvelope(envelope)) return
     }
 
     /**
@@ -889,6 +947,8 @@ class Ec0EngineNode(
         runCatching { mdnsDiscovery.close() }
         runCatching { scrcpyCoordinator.close() }
         runCatching { cameraCoordinator.close() }
+        runCatching { audioHandoffService.close() }
+        runCatching { sidecarDisplayService.close() }
         runCatching { smartConnectCoordinator.close() }
         sessionExecutor.shutdownNow()
     }

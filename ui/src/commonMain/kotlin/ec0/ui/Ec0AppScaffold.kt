@@ -34,10 +34,12 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -71,6 +73,8 @@ import ec0.ui.theme.Ec0Seed
 import ec0.ui.theme.Ec0Shapes
 import ec0.ui.theme.Ec0Theme
 import ec0.ui.theme.ec0Colors
+import ec0.ui.widgets.ClipboardArrivalToast
+import ec0.ui.widgets.CommandPaletteOverlay
 
 enum class Section(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Filled.Home),
@@ -101,7 +105,9 @@ fun Ec0App(
     val systemDark = isSystemInDarkTheme()
     val trustedPeerCount by bridge.trustedPeerCount.collectAsState()
     val pairingQrAvailable = bridge.pairingQr.collectAsState().value != null
+    val clipboardToast by bridge.clipboardToast.collectAsState()
     var onboardingDismissed by remember { mutableStateOf(false) }
+    var paletteOpen by remember { mutableStateOf(false) }
 
     val activeTransferCount = transfers.count {
         it.state == TransferState.RUNNING || it.state == TransferState.PENDING
@@ -145,7 +151,18 @@ fun Ec0App(
                     Row {
                         NavigationRail(
                             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            header = { RailBrand(connected = peerLink?.connected == true) },
+                            header = {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    RailBrand(connected = peerLink?.connected == true)
+                                    FloatingActionButton(
+                                        onClick = { paletteOpen = true },
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        modifier = Modifier.size(40.dp),
+                                    ) {
+                                        Icon(Icons.Filled.Search, contentDescription = "Command Palette (Ctrl+K)", modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                            },
                         ) {
                             Spacer(Modifier.height(8.dp))
                             Section.entries.forEach { s ->
@@ -217,6 +234,26 @@ fun Ec0App(
                             }
                         }
                     }
+                }
+
+                // Feature #12: Non-intrusive Clipboard Arrival Toast with 1-click Undo
+                clipboardToast?.let { toast ->
+                    ClipboardArrivalToast(
+                        toast = toast,
+                        onUndo = bridge::undoLastRemoteClipboard,
+                        onDismiss = bridge::dismissClipboardToast,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(20.dp),
+                    )
+                }
+
+                // Feature #9: Spotlight-style Quick Command Palette
+                if (paletteOpen) {
+                    CommandPaletteOverlay(
+                        bridge = bridge,
+                        onDismiss = { paletteOpen = false },
+                    )
                 }
             }
         }

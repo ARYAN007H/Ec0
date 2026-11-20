@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ec0 Tab Handoff</title>
+  <style>
+    body { font-family: system-ui, sans-serif; width: 240px; padding: 14px; margin: 0; background: #141418; color: #f4f4f6; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    p { font-size: 12px; color: #b4b4c0; margin: 0 0 12px; }
+    button { width: 100%; padding: 8px 12px; border: 0; border-radius: 8px; background: #f59e0b; color: #111; font-weight: 600; cursor: pointer; }
+    #status { margin-top: 8px; font-size: 11px; color: #93c5fd; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <h1>ec0 Tab Handoff</h1>
+  <p>Send the active HTTPS tab to your paired Android device.</p>
+  <button id="sendBtn">Send Active Tab</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

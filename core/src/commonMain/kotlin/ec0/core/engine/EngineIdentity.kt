@@ -27,7 +27,12 @@ enum class EngineCapability(val wireName: String) {
     REMOTE_INPUT("remote_input"),
     MEDIA_CONTROL("media"),
     FIND_MY("find_my"),
-    VFS_READ("vfs");
+    VFS_READ("vfs"),
+    AUDIO_HANDOFF("audio"),
+    CAPTURE("capture"),
+    SIDECAR("sidecar"),
+    SMS("sms"),
+    FOCUS("focus");
 
     companion object {
         val NOTIF: EngineCapability = NOTIFICATION
@@ -47,6 +52,11 @@ enum class EngineCapability(val wireName: String) {
             "media", "media_control", "mediacontrol" -> MEDIA_CONTROL
             "find_my", "findmy", "findmyphone" -> FIND_MY
             "vfs", "vfs_read", "vfsread" -> VFS_READ
+            "audio", "audio_handoff", "call_audio" -> AUDIO_HANDOFF
+            "capture", "insert_from_phone", "doc_scan" -> CAPTURE
+            "sidecar", "second_display", "virtual_display" -> SIDECAR
+            "sms", "mms", "messages" -> SMS
+            "focus", "dnd" -> FOCUS
             else -> entries.firstOrNull { it.wireName == token }
         }
 

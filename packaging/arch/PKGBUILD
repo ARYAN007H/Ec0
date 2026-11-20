@@ -1,0 +1,29 @@
+# Maintainer: ec0 contributors
+pkgname=ec0-desktop
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Unified cross-device Linux + Android Continuity ecosystem (encrypted ChaCha20-Poly1305)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ec0-app/ec0"
+license=('GPL-3.0-only')
+depends=('java-runtime>=17' 'libsecret' 'pipewire-pulse')
+optdepends=(
+  'scrcpy: Phone screen mirroring & app streaming'
+  'android-tools: USB-C ADB zero-Wi-Fi tunnel'
+  'v4l2loopback-dkms: Continuity Camera virtual webcam'
+  'ffmpeg: Continuity Camera studio effects & Sidecar display'
+  'playerctl: MPRIS media handoff & call auto-ducking'
+)
+makedepends=('jdk17-openjdk' 'gradle')
+
+build() {
+  gradle :desktop:createDistributable --no-daemon
+}
+
+package() {
+  install -dm755 "$pkgdir/usr/lib/ec0"
+  install -dm755 "$pkgdir/usr/bin"
+  install -Dm644 packaging/udev/99-ec0-uinput.rules "$pkgdir/usr/lib/udev/rules.d/99-ec0-uinput.rules"
+  install -Dm644 packaging/systemd/ec0d.service "$pkgdir/usr/lib/systemd/user/ec0d.service"
+  install -Dm755 browser-extension/ec0-native-messaging-host.py "$pkgdir/usr/lib/ec0/ec0-native-messaging-host.py"
+}

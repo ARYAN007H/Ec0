@@ -191,6 +191,60 @@ data class VfsBrowseState(
     val lastUploadedPath: String? = null,
 )
 
+/** Feature #12: One item in the 20-slot cross-device encrypted clipboard shelf. */
+data class ClipboardShelfItemUi(
+    val id: String,
+    val preview: String,
+    val mime: String,
+    val sourceDevice: String,
+    val pinned: Boolean,
+    val sensitive: Boolean,
+    val timestampMs: Long,
+)
+
+/** Feature #12: Non-intrusive clipboard arrival toast with 1-click Undo. */
+data class ClipboardToastUi(
+    val id: String,
+    val message: String,
+    val canUndo: Boolean,
+)
+
+/** Feature #5: Persistent SMS/MMS inbox thread summary. */
+data class SmsThreadUi(
+    val threadId: String,
+    val address: String,
+    val displayName: String,
+    val lastBody: String,
+    val lastTimestampMs: Long,
+    val messageCount: Int,
+)
+
+/** Feature #7: Passive browser tab & video timestamp handoff banner. */
+data class BrowserTabHandoffUi(
+    val url: String,
+    val title: String,
+    val resumeUrl: String,
+    val mediaPositionSec: Long = 0L,
+)
+
+/** Feature #11: Continuity Camera Studio Effects + Adaptive Bitrate state. */
+data class CameraEffectsUi(
+    val centerStage: Boolean = false,
+    val portraitBlur: Boolean = false,
+    val deskView: Boolean = false,
+    val hwDecode: String = "auto",
+    val targetBitrateKbps: Int = 6000,
+)
+
+/** Feature #14: One system health diagnostic probe result. */
+data class DiagnosticCheckUi(
+    val id: String,
+    val title: String,
+    val severity: String,
+    val summary: String,
+    val fixHint: String = "",
+)
+
 /** Seam between the UI and the discovery transports. */
 interface DeviceSource {
     /** One discovery sweep over the configured transports. */

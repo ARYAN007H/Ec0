@@ -48,10 +48,16 @@ data class PersistedEndpoint(
 class EncryptedIdentityStore(
     private val configDir: File = defaultConfigDir(),
     private val secretOverride: ByteArray? = null,
+    private val masterKeyProvider: MasterKeyProvider? = null,
 ) {
     private val lock = ReentrantLock()
     private val identityFile = File(configDir, "identity.enc.json")
     private val masterSecretFile = File(configDir, "master.key")
+    private val effectiveKeyProvider: MasterKeyProvider =
+        masterKeyProvider ?: FileMasterKeyProvider(configDir)
+
+    val activeKeySealerBackend: KeySealerBackend
+        get() = if (secretOverride != null) KeySealerBackend.FILE_0600 else effectiveKeyProvider.activeBackend
 
     /**
      * Loads the persisted [Ed25519KeyPair] from [identityFile], or generates and
@@ -141,6 +147,11 @@ class EncryptedIdentityStore(
             require(secretOverride.isNotEmpty()) { "secretOverride must not be empty" }
             return secretOverride.copyOf()
         }
+        if (masterKeyProvider != null) {
+            val key = masterKeyProvider.loadOrCreateMasterKey()
+            require(key.size == 32) { "MasterKeyProvider must return a 32-byte key" }
+            return key
+        }
         ensureDirectoryPermissions(configDir)
         if (masterSecretFile.isFile) {
             val hex = masterSecretFile.readText().trim()
@@ -174,8 +185,16 @@ class EncryptedIdentityStore(
          * Resolves an explicit `<appFilesDir>/ec0` directory for Android `context.filesDir`
          * so Android callers never rely on `user.home/.config`.
          */
-        fun forAppFilesDir(appFilesDir: File, secretOverride: ByteArray? = null): EncryptedIdentityStore =
-            EncryptedIdentityStore(configDir = File(appFilesDir, "ec0"), secretOverride = secretOverride)
+        fun forAppFilesDir(
+            appFilesDir: File,
+            secretOverride: ByteArray? = null,
+            masterKeyProvider: MasterKeyProvider? = null,
+        ): EncryptedIdentityStore =
+            EncryptedIdentityStore(
+                configDir = File(appFilesDir, "ec0"),
+                secretOverride = secretOverride,
+                masterKeyProvider = masterKeyProvider,
+            )
 
         /**
          * Forces `rwx------` (0700) on [dir]. Public so host applications (the

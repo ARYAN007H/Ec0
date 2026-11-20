@@ -1,0 +1,11 @@
+{
+  "KPlugin": {
+    "Id": "org.ec0.continuity",
+    "Name": "ec0 Continuity",
+    "Description": "Plasma 6 widget for ec0 Continuity status, Focus sync, and 2FA OTP auto-type",
+    "Icon": "smartphone",
+    "Version": "1.0.0",
+    "License": "GPL-3.0"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

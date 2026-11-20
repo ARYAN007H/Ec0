@@ -26,6 +26,11 @@ class DesktopBeaconCapabilitiesTest {
                 EngineCapability.CLIPBOARD,
                 EngineCapability.NOTIFICATION,
                 EngineCapability.INPUT,
+                EngineCapability.AUDIO_HANDOFF,
+                EngineCapability.CAPTURE,
+                EngineCapability.SIDECAR,
+                EngineCapability.SMS,
+                EngineCapability.FOCUS,
             ),
             caps,
         )

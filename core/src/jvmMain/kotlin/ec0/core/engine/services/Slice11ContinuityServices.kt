@@ -185,8 +185,25 @@ class UsbAdbTunnelCoordinator(
 class ContinuityVirtualMicBridge(
     private val launcher: ExternalProcessLauncher = SystemProcessLauncher,
     private val pactlBinary: String = "pactl",
-    val pipeFilePath: String = "/tmp/ec0-camdroid-mic.pcm",
+    val pipeFilePath: String = defaultSecurePipePath(),
 ) {
+    companion object {
+        /**
+         * Resolves a user-private `0700` runtime path (`$XDG_RUNTIME_DIR/ec0/camdroid-mic.pcm`
+         * or `~/.config/ec0/run/camdroid-mic.pcm`) instead of world-writable `/tmp`
+         * to prevent local symlink-clobber / eavesdropping attacks (Feature #11 hygiene).
+         */
+        fun defaultSecurePipePath(): String {
+            val xdgRuntime = System.getenv("XDG_RUNTIME_DIR")?.trim().orEmpty()
+            val runDir = if (xdgRuntime.isNotEmpty() && File(xdgRuntime).isDirectory) {
+                File(xdgRuntime, "ec0")
+            } else {
+                File(EncryptedIdentityStore.defaultConfigDir(), "run")
+            }
+            EncryptedIdentityStore.ensureDirectoryPermissions(runDir)
+            return File(runDir, "camdroid-mic.pcm").absolutePath
+        }
+    }
     private val _virtualMicActive = MutableStateFlow(false)
     val virtualMicActive: StateFlow<Boolean> = _virtualMicActive.asStateFlow()
 
@@ -396,6 +413,7 @@ class HandoffAndProximityService(
 class LocalDaemonIpcServer(
     private val descriptorFile: File = File(EncryptedIdentityStore.defaultConfigDir(), "daemon_ipc.json"),
     private val onSendFilesRequested: (List<File>) -> Unit,
+    private val onCommandRequested: ((cmd: String, payload: JsonObject) -> JsonObject)? = null,
 ) : Closeable {
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
@@ -439,12 +457,10 @@ class LocalDaemonIpcServer(
     private fun handleClient(client: Socket) {
         client.use { sock ->
             sock.soTimeout = 2_000
-            val line = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)).readLine()
-                ?: return
+            val line = readBoundedLine(sock.getInputStream(), MAX_IPC_LINE_BYTES) ?: return
             val obj = runCatching { Json.parseToJsonElement(line) as? JsonObject }.getOrNull() ?: return
             val token = (obj["token"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return
-            // Constant-time compare (audit L1): the token gates arbitrary file
-            // hand-off to the paired peers, so keep the check tamper-proof.
+            // Constant-time compare (audit L1): gates arbitrary local commands & file handoff.
             val tokenOk = token.length == authTokenHex.length &&
                 ec0.core.engine.EngineEncoding.constantTimeEquals(
                     token.encodeToByteArray(),
@@ -454,16 +470,53 @@ class LocalDaemonIpcServer(
                 writeResponse(sock, ok = false, message = "unauthorized")
                 return
             }
-            val pathsArr = obj["files"] as? JsonArray ?: JsonArray(emptyList())
-            val files = pathsArr.mapNotNull { el ->
-                val raw = (el as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return@mapNotNull null
-                File(raw).takeIf { it.exists() }
+            val cmd = (obj["cmd"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.lowercase()
+                ?: "send_files"
+            if (cmd == "send_files") {
+                val pathsArr = obj["files"] as? JsonArray ?: JsonArray(emptyList())
+                val files = pathsArr.take(MAX_IPC_FILES).mapNotNull { el ->
+                    val raw = (el as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return@mapNotNull null
+                    if (raw.contains('\u0000')) return@mapNotNull null
+                    File(raw).takeIf { it.exists() }
+                }
+                if (files.isNotEmpty()) {
+                    onSendFilesRequested(files)
+                }
+                writeResponse(sock, ok = true, message = "queued:${files.size}")
+                return
             }
-            if (files.isNotEmpty()) {
-                onSendFilesRequested(files)
+            val handler = onCommandRequested
+            if (handler == null) {
+                writeResponse(sock, ok = false, message = "unsupported_cmd:$cmd")
+                return
             }
-            writeResponse(sock, ok = true, message = "queued:${files.size}")
+            val data = runCatching { handler(cmd, obj) }.getOrElse { err ->
+                writeResponse(sock, ok = false, message = "error:${err.javaClass.simpleName}")
+                return
+            }
+            val resp = buildJsonObject {
+                put("cmd", cmd)
+                put("data", data)
+                put("ok", true)
+            }
+            runCatching {
+                val writer = OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8)
+                writer.write(resp.toString() + "\n")
+                writer.flush()
+            }
         }
+    }
+
+    private fun readBoundedLine(input: java.io.InputStream, maxBytes: Int): String? {
+        val out = java.io.ByteArrayOutputStream()
+        while (out.size() < maxBytes) {
+            val b = input.read()
+            if (b < 0) break
+            if (b == '\n'.code) break
+            if (b != '\r'.code) out.write(b)
+        }
+        if (out.size() == 0) return null
+        return out.toString(StandardCharsets.UTF_8)
     }
 
     private fun writeResponse(sock: Socket, ok: Boolean, message: String) {
@@ -484,9 +537,53 @@ class LocalDaemonIpcServer(
         runCatching { descriptorFile.delete() }
         executor.shutdownNow()
     }
+
+    companion object {
+        const val MAX_IPC_LINE_BYTES: Int = 64 * 1024
+        const val MAX_IPC_FILES: Int = 128
+    }
 }
 
 object LocalDaemonIpcClient {
+    /**
+     * Sends any authenticated JSON command to an already-running local `ec0` daemon
+     * (used by CLI flags, GNOME/KDE applets, browser Native Messaging host, and thin UI).
+     */
+    fun sendCommandToRunningDaemon(
+        cmd: String,
+        extraFields: Map<String, kotlinx.serialization.json.JsonElement> = emptyMap(),
+        descriptorFile: File = File(EncryptedIdentityStore.defaultConfigDir(), "daemon_ipc.json"),
+        timeoutMs: Int = 1_500,
+    ): JsonObject? {
+        if (!descriptorFile.isFile) return null
+        return try {
+            val obj = Json.parseToJsonElement(descriptorFile.readText()) as? JsonObject ?: return null
+            val port = (obj["port"] as? JsonPrimitive)?.intOrNull ?: return null
+            val token = (obj["token"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+
+            Socket().use { sock ->
+                sock.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+                sock.soTimeout = timeoutMs
+                val req = buildJsonObject {
+                    put("cmd", cmd)
+                    put("token", token)
+                    for ((k, v) in extraFields) {
+                        if (k != "cmd" && k != "token") put(k, v)
+                    }
+                }
+                val writer = OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8)
+                writer.write(req.toString() + "\n")
+                writer.flush()
+
+                val respLine = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)).readLine()
+                    ?: return null
+                Json.parseToJsonElement(respLine) as? JsonObject
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Attempts to hand off [filePaths] to an already-running local `ec0` daemon
      * via [descriptorFile]. Returns `true` if the running daemon accepted the batch.
@@ -496,36 +593,17 @@ object LocalDaemonIpcClient {
         descriptorFile: File = File(EncryptedIdentityStore.defaultConfigDir(), "daemon_ipc.json"),
         timeoutMs: Int = 1_500,
     ): Boolean {
-        if (!descriptorFile.isFile) return false
-        return try {
-            val obj = Json.parseToJsonElement(descriptorFile.readText()) as? JsonObject ?: return false
-            val port = (obj["port"] as? JsonPrimitive)?.intOrNull ?: return false
-            val token = (obj["token"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return false
-
-            Socket().use { sock ->
-                sock.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
-                sock.soTimeout = timeoutMs
-                val req = buildJsonObject {
-                    put("cmd", "send_files")
-                    put(
-                        "files",
-                        buildJsonArray {
-                            for (p in filePaths) add(JsonPrimitive(p))
-                        },
-                    )
-                    put("token", token)
-                }
-                val writer = OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8)
-                writer.write(CanonicalJson.encode(req) + "\n")
-                writer.flush()
-
-                val respLine = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)).readLine()
-                    ?: return false
-                respLine.contains("\"ok\":true")
-            }
-        } catch (_: Exception) {
-            false
-        }
+        val resp = sendCommandToRunningDaemon(
+            cmd = "send_files",
+            extraFields = mapOf(
+                "files" to buildJsonArray {
+                    for (p in filePaths) add(JsonPrimitive(p))
+                },
+            ),
+            descriptorFile = descriptorFile,
+            timeoutMs = timeoutMs,
+        ) ?: return false
+        return (resp["ok"] as? JsonPrimitive)?.content == "true"
     }
 }
 

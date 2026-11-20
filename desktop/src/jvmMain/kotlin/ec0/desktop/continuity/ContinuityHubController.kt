@@ -65,29 +65,58 @@ import ec0.core.engine.protocol.NotificationReplyCommand
 import ec0.core.engine.protocol.PresenceBeaconInfo
 import ec0.core.engine.protocol.ScreenEdge
 import ec0.core.engine.protocol.ScrcpyMirrorStartCommand
+import ec0.core.engine.EngineEncoding.decodeBase64Url
+import ec0.core.engine.crypto.KeySealerBackend
+import ec0.core.engine.crypto.LinuxSecretServiceMasterKeyProvider
+import ec0.core.engine.protocol.AudioRouteStatusInfo
+import ec0.core.engine.protocol.AudioRoutingProtocol
+import ec0.core.engine.protocol.BrowserTabHandoffInfo
+import ec0.core.engine.protocol.CameraEffectsCommand
+import ec0.core.engine.protocol.CaptureResultInfo
+import ec0.core.engine.protocol.ClipboardShelfEntry
+import ec0.core.engine.protocol.ContinuityCaptureProtocol
+import ec0.core.engine.protocol.FocusStateInfo
+import ec0.core.engine.protocol.FocusSyncProtocol
+import ec0.core.engine.protocol.OtpCodeExtractor
+import ec0.core.engine.protocol.SidecarStartCommand
 import ec0.core.engine.protocol.VfsPathGuard
+import ec0.core.engine.services.BrowserTabHandoffService
+import ec0.core.engine.services.CallMediaDuckingCoordinator
+import ec0.core.engine.services.ClipboardToastEvent
 import ec0.core.engine.services.ContinuityCameraCoordinator
 import ec0.core.engine.services.DesktopNotificationMonitor
+import ec0.core.engine.services.DiagnosticCheckResult
 import ec0.core.engine.services.LocalDaemonIpcServer
 import ec0.core.engine.services.MprisDesktopMediaSource
 import ec0.core.engine.services.NotificationRelayPolicy
+import ec0.core.engine.services.OtpAutoTypeController
+import ec0.core.engine.services.SmsThreadUiModel
+import ec0.core.engine.services.SupportBundleExporter
+import ec0.core.engine.services.SystemHealthDiagnosticsRunner
 import ec0.core.engine.services.SystemProcessLauncher
 import ec0.core.engine.services.TransferProgressSnapshot
 import ec0.core.engine.services.TransferSpeedSample
 import ec0.core.engine.services.TransferThroughputTracker
+import ec0.core.engine.services.TransportTier
 import ec0.core.engine.services.UsbTunnelStatus
+import ec0.core.engine.services.VfsLoopbackWebDavServer
+import ec0.core.engine.services.VfsMountDataSource
 import ec0.core.engine.services.resolveMirrorSerial
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
@@ -106,6 +135,11 @@ fun desktopBeaconCapabilities(mediaControlSupported: Boolean): Set<EngineCapabil
     add(EngineCapability.CLIPBOARD)
     add(EngineCapability.NOTIFICATION)
     add(EngineCapability.INPUT)
+    add(EngineCapability.AUDIO_HANDOFF)
+    add(EngineCapability.CAPTURE)
+    add(EngineCapability.SIDECAR)
+    add(EngineCapability.SMS)
+    add(EngineCapability.FOCUS)
     if (mediaControlSupported) {
         add(EngineCapability.MEDIA_CONTROL)
     }
@@ -113,7 +147,9 @@ fun desktopBeaconCapabilities(mediaControlSupported: Boolean): Set<EngineCapabil
 
 class ContinuityHubController(
     private val scope: CoroutineScope,
-    val localIdentity: Ed25519KeyPair = EncryptedIdentityStore().loadOrCreateIdentity(),
+    val localIdentity: Ed25519KeyPair = EncryptedIdentityStore(
+        masterKeyProvider = LinuxSecretServiceMasterKeyProvider(),
+    ).loadOrCreateIdentity(),
     val pinStore: PinStore = PersistentPinStore(allowAutoTofuOnUnknownPeer = false),
     val desktopAlias: String = ec0.ui.models.SettingsState().alias,
     val downloadDir: File = File(System.getProperty("user.home", "."), "Downloads"),
@@ -152,7 +188,14 @@ class ContinuityHubController(
         pinStore = pinStore,
         inputEventSink = adaptiveInputSink,
         onRemoteClipboardApplied = { item ->
+            val previousLocal = runCatching { clipboardBridge.pollLocalClipboardForChange() }.getOrNull()
             clipboardBridge.applyRemoteClipboardToSystem(item)
+            node.clipboardShelfManager.recordItem(
+                item = item,
+                sourceAlias = "Paired Phone",
+                isRemote = true,
+                previousLocalClip = previousLocal,
+            )
             val sensTag = if (item.isSensitive) " · sensitive (30s auto-scrub)" else ""
             _lastSyncedClipSummary.value =
                 "Incoming ${item.mime} · ${item.bytes.size} B$sensTag"
@@ -165,6 +208,56 @@ class ContinuityHubController(
         },
         localInputGrantGate = { peerId -> isPeerCapabilityGranted(peerId, "remote_input") },
     )
+
+    val callMediaDuckingCoordinator = CallMediaDuckingCoordinator(
+        isMediaPlayingProvider = {
+            val session = mprisMediaSource.mediaSession.value
+            if (session?.state == ec0.core.engine.protocol.MediaPlaybackState.PLAYING) {
+                session.playerName.ifBlank { "default" }
+            } else {
+                null
+            }
+        },
+        pausePlayer = { _ ->
+            handleRemoteMediaControlCommand(MediaControlCommand(action = "pause")) != null
+        },
+        resumePlayer = { _ ->
+            handleRemoteMediaControlCommand(MediaControlCommand(action = "play")) != null
+        },
+    )
+
+    val otpAutoTypeController = OtpAutoTypeController(
+        typeDigits = { digits ->
+            val typedViaInput = runCatching {
+                adaptiveInputSink.onKeyEvent(
+                    InputKeyEvent(action = InputProtocol.KEY_ACTION_COMMIT_TEXT, text = digits),
+                )
+                true
+            }.getOrDefault(false)
+            // Always also stage briefly in clipboard so Wayland apps that restrict injection can paste.
+            val otpItem = ClipboardItem.text(digits, isSensitive = true)
+            clipboardBridge.applyRemoteClipboardToSystem(otpItem)
+            scheduleSensitiveClipboardScrub(otpItem.sha256Hex, ttlMs = 15_000L)
+            typedViaInput
+        },
+    )
+
+    private val _keySealerBackend = MutableStateFlow(KeySealerBackend.FILE_0600)
+    val keySealerBackend: StateFlow<KeySealerBackend> = _keySealerBackend.asStateFlow()
+
+    private val _meetingAutoFocusEnabled = MutableStateFlow(true)
+    val meetingAutoFocusEnabled: StateFlow<Boolean> = _meetingAutoFocusEnabled.asStateFlow()
+
+    private val _webDavMountUrl = MutableStateFlow<String?>(null)
+    val webDavMountUrl: StateFlow<String?> = _webDavMountUrl.asStateFlow()
+
+    private val _diagnosticChecks = MutableStateFlow<List<DiagnosticCheckResult>>(emptyList())
+    val diagnosticChecks: StateFlow<List<DiagnosticCheckResult>> = _diagnosticChecks.asStateFlow()
+
+    private var webDavMountServer: VfsLoopbackWebDavServer? = null
+    private var callDuckingJob: Job? = null
+    private var meetingFocusJob: Job? = null
+    private var captureWatcherJob: Job? = null
 
     val throughputTracker = TransferThroughputTracker()
     val autostartManager = LinuxAutostartManager()
@@ -269,12 +362,28 @@ class ContinuityHubController(
     val avDriftMs: StateFlow<Long> get() = node.virtualMicBridge.avDriftMs
     val remoteHandoffActivity: StateFlow<HandoffActivityInfo?> get() = node.remoteHandoffActivity
     val findMyRinging: StateFlow<Boolean> get() = node.handoffAndProximityService.findMyRinging
+    val audioRouteStatus: StateFlow<AudioRouteStatusInfo> get() = node.audioHandoffService.status
+    val lastPhoneCapture: StateFlow<CaptureResultInfo?> get() = node.continuityCaptureService.lastDeliveredCapture
+    val sidecarActive: StateFlow<Boolean> =
+        node.sidecarDisplayService.state.map { it.active }.stateIn(scope, SharingStarted.Eagerly, false)
+    val smsThreads: StateFlow<List<SmsThreadUiModel>> get() = node.smsInboxService.threads
+    val focusState: StateFlow<FocusStateInfo> get() = node.focusSyncService.focusState
+    val activeRemoteBrowserTab: StateFlow<BrowserTabHandoffInfo?> get() = node.browserTabHandoffService.activeRemoteTab
+    val transportTier: StateFlow<TransportTier> get() = node.transportFailoverCoordinator.activeTier
+    val wifiDirectTurboActive: StateFlow<Boolean> get() = node.transportFailoverCoordinator.turboActive
+    val clipboardShelfEntries: StateFlow<List<ClipboardShelfEntry>> get() = node.clipboardShelfManager.entries
+    val clipboardToast: StateFlow<ClipboardToastEvent?> get() = node.clipboardShelfManager.toastEvent
+    val cameraStudioEffects: StateFlow<CameraEffectsCommand> get() = node.cameraStudioEffectsController.effects
+    val pendingOtpCode: StateFlow<String?> =
+        otpAutoTypeController.pendingOtp.map { it?.first }.stateIn(scope, SharingStarted.Eagerly, null)
 
     fun start(startMdns: Boolean = true) {
         node.startServer(startMdns = startMdns)
+        node.diagnosticRingBuffer.record("INFO", "hub", "Continuity hub started on port ${node.boundServerPort}")
         runCatching {
             val ipc = LocalDaemonIpcServer(
                 onSendFilesRequested = { files -> sendFilesToConnectedPeers(files) },
+                onCommandRequested = { cmd, payload -> handleDaemonIpcCommand(cmd, payload) },
             )
             ipc.start()
             daemonIpcServer = ipc
@@ -288,6 +397,8 @@ class ContinuityHubController(
         startReconnectSupervisor()
         startPresenceBeaconLoop()
         startMprisBroadcastLoop()
+        startCallDuckingAndCaptureLoops()
+        startMeetingAutoFocusLoop()
     }
 
     fun refreshLinuxCapabilities() {
@@ -872,6 +983,11 @@ class ContinuityHubController(
     }
 
     private fun broadcastClipboardItem(item: ClipboardItem) {
+        node.clipboardShelfManager.recordItem(
+            item = item,
+            sourceAlias = desktopAlias,
+            isRemote = false,
+        )
         val targets = targetPeerDeviceIds()
         for (peerId in targets) {
             node.sendOrQueueClipboard(peerId, item)
@@ -1254,9 +1370,370 @@ class ContinuityHubController(
                     }
                     if (isNew) {
                         notificationBridge.showDesktopNotification(notif)
+                        val otp = OtpCodeExtractor.extractOtpCode(notif.title, notif.body)
+                        if (otp != null) {
+                            otpAutoTypeController.recordOtp(otp, notif.appName)
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // ---- Features #1..#15 Continuity Pro Actions & Background Monitors ----
+
+    private fun startCallDuckingAndCaptureLoops() {
+        callDuckingJob?.cancel()
+        callDuckingJob = scope.launch(Dispatchers.IO) {
+            var previouslyDucked: String? = null
+            node.activeCalls.collect { calls ->
+                for (call in calls) {
+                    val nowDucked = callMediaDuckingCoordinator.onCallStateUpdate(call)
+                    if (previouslyDucked == null && nowDucked != null) {
+                        _statusBanner.value = "Auto-paused desktop media ($nowDucked) for incoming call (${call.callerName})"
+                    } else if (previouslyDucked != null && nowDucked == null) {
+                        _statusBanner.value = "Call ended — resumed desktop media"
+                    }
+                    previouslyDucked = nowDucked
+                }
+            }
+        }
+        captureWatcherJob?.cancel()
+        captureWatcherJob = scope.launch(Dispatchers.IO) {
+            node.continuityCaptureService.lastDeliveredCapture.collect { capture ->
+                val rawBytes = capture?.inlineBase64Url?.let { runCatching { it.decodeBase64Url() }.getOrNull() }
+                if (capture != null && rawBytes != null) {
+                    val ext = when (capture.mime) {
+                        "application/pdf" -> "pdf"
+                        "image/png" -> "png"
+                        else -> "jpg"
+                    }
+                    val outDir = File(downloadDir, "ec0-captures").apply { mkdirs() }
+                    val outFile = File(outDir, "capture-${capture.requestId.take(8)}.$ext")
+                    runCatching { outFile.writeBytes(rawBytes) }
+                    _statusBanner.value = "Saved phone ${capture.mode} to ${outFile.name}"
+                }
+            }
+        }
+    }
+
+    private fun startMeetingAutoFocusLoop() {
+        meetingFocusJob?.cancel()
+        meetingFocusJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(5_000L)
+                if (_meetingAutoFocusEnabled.value) {
+                    runCatching { node.focusSyncService.pollMeetingAutoFocus(activeSessionOrNull()) }
+                }
+                val latestRtt = _linkRttSamplesMs.value.lastOrNull()
+                if (latestRtt != null && node.cameraStatus.value.state == CameraStreamState.STREAMING) {
+                    node.cameraStudioEffectsController.recordLinkRtt(latestRtt)
+                }
+                node.clipboardShelfManager.pruneExpired()
+            }
+        }
+    }
+
+    fun togglePhoneAudioSink() {
+        scope.launch(Dispatchers.IO) {
+            val active = node.audioHandoffService.status.value.active
+            val session = activeSessionOrNull()
+            if (active) {
+                node.audioHandoffService.stopDesktopAudioRoute(session)
+                _statusBanner.value = "Stopped Phone-to-PC Audio Sink"
+            } else {
+                val st = node.audioHandoffService.startDesktopAudioRoute(
+                    mode = "media_sink",
+                    session = session,
+                )
+                _statusBanner.value = if (st.active) {
+                    "Phone Audio Sink active (PipeWire ${st.sampleRateHz} Hz)"
+                } else {
+                    "Audio Sink requires PipeWire/PulseAudio (pactl)"
+                }
+            }
+        }
+    }
+
+    fun toggleCallAudioHandoff() {
+        scope.launch(Dispatchers.IO) {
+            val st = node.audioHandoffService.status.value
+            val session = activeSessionOrNull()
+            if (st.active && st.mode == "call_duplex") {
+                node.audioHandoffService.stopDesktopAudioRoute(session)
+                _statusBanner.value = "Returned call audio to phone"
+            } else {
+                val res = node.audioHandoffService.startDesktopAudioRoute(
+                    mode = "call_duplex",
+                    session = session,
+                )
+                _statusBanner.value = if (res.active) {
+                    "Full-duplex call audio routed to PC headset"
+                } else {
+                    "Call audio routing requires PipeWire/PulseAudio"
+                }
+            }
+        }
+    }
+
+    fun requestPhoneCapture(mode: String, autoPaste: Boolean = false) {
+        scope.launch(Dispatchers.IO) {
+            val session = activeSessionOrNull()
+            val req = node.continuityCaptureService.requestCaptureFromPhone(
+                mode = mode,
+                autoPaste = autoPaste,
+                session = session,
+            )
+            _statusBanner.value = if (session != null) {
+                "Requested $mode from paired phone (${req.requestId.take(6)})"
+            } else {
+                "Connect a paired phone to insert $mode"
+            }
+        }
+    }
+
+    fun toggleSidecarDisplay(width: Int = 1920, height: Int = 1080, fps: Int = 60) {
+        scope.launch(Dispatchers.IO) {
+            val session = activeSessionOrNull()
+            if (node.sidecarDisplayService.state.value.active) {
+                node.sidecarDisplayService.stopSidecar(session)
+                _statusBanner.value = "Stopped Sidecar wireless second display"
+            } else {
+                val state = node.sidecarDisplayService.startSidecar(
+                    cmd = SidecarStartCommand(width = width, height = height, fps = fps),
+                    session = session,
+                )
+                _statusBanner.value = if (state.active) {
+                    "Sidecar second display active (${width}x${height}@${fps}fps)"
+                } else {
+                    "Sidecar requires ffmpeg + connected Android tablet/phone"
+                }
+            }
+        }
+    }
+
+    fun requestSmsSync() {
+        scope.launch(Dispatchers.IO) {
+            node.smsInboxService.requestSync(activeSessionOrNull())
+        }
+    }
+
+    fun sendSmsMessage(address: String, body: String): Boolean {
+        val ok = runCatching {
+            node.smsInboxService.sendSms(
+                recipientAddress = address,
+                body = body,
+                session = activeSessionOrNull(),
+            )
+            true
+        }.getOrDefault(false)
+        _statusBanner.value = if (ok) "Sent SMS to $address" else "Could not send SMS (check number/connection)"
+        return ok
+    }
+
+    fun autoTypeLatestOtp(): Boolean {
+        val ok = otpAutoTypeController.consumeAndAutoType()
+        _statusBanner.value = if (ok) {
+            "Auto-typed 2FA OTP code (ephemeral)"
+        } else {
+            "No fresh 2FA OTP code waiting (expires after 60s)"
+        }
+        return ok
+    }
+
+    fun setFocusMode(mode: String) {
+        scope.launch(Dispatchers.IO) {
+            val st = node.focusSyncService.setLocalFocusMode(
+                mode = mode,
+                source = "manual",
+                session = activeSessionOrNull(),
+            )
+            _statusBanner.value = "Focus mode synced: ${st.mode.uppercase()}"
+        }
+    }
+
+    fun setMeetingAutoFocusEnabled(enabled: Boolean) {
+        _meetingAutoFocusEnabled.value = enabled
+        _statusBanner.value = if (enabled) {
+            "Meeting Auto-Focus enabled (monitors active PipeWire mic streams)"
+        } else {
+            "Meeting Auto-Focus disabled"
+        }
+    }
+
+    fun publishLocalBrowserTab(url: String, title: String = "", mediaPositionSec: Long = 0L) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val info = BrowserTabHandoffInfo(
+                    tabId = "tab-${System.currentTimeMillis()}",
+                    url = url,
+                    title = title,
+                    mediaPositionSec = mediaPositionSec.toInt().coerceAtLeast(0),
+                    timestampMs = System.currentTimeMillis(),
+                )
+                node.browserTabHandoffService.publishLocalActiveTab(
+                    info = info,
+                    session = activeSessionOrNull(),
+                )
+                _statusBanner.value = "Handed off browser tab to paired device"
+            }
+        }
+    }
+
+    fun openActiveRemoteBrowserTab() {
+        val tab = node.browserTabHandoffService.activeRemoteTab.value ?: return
+        val resumeUrl = BrowserTabHandoffService.buildResumeUrl(tab)
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                SystemProcessLauncher.runBlockingCommand(listOf("xdg-open", resumeUrl), timeoutMs = 4_000L)
+            }
+            _statusBanner.value = "Resumed tab: ${tab.title.ifBlank { resumeUrl }}"
+        }
+    }
+
+    fun toggleWifiDirectTurbo() {
+        scope.launch(Dispatchers.IO) {
+            val session = activeSessionOrNull()
+            node.transportFailoverCoordinator.requestWifiDirectTurbo(session)
+            _statusBanner.value = if (session != null) {
+                "Requested Wi-Fi Direct 5 GHz Turbo channel upgrade"
+            } else {
+                "Connect a paired device to enable Wi-Fi Direct Turbo"
+            }
+        }
+    }
+
+    fun updateCameraStudioEffects(transform: (CameraEffectsCommand) -> CameraEffectsCommand) {
+        scope.launch(Dispatchers.IO) {
+            val updated = node.cameraStudioEffectsController.updateEffects(transform)
+            activeSessionOrNull()?.let { s ->
+                runCatching { node.cameraStudioEffectsController.sendEffects(updated, s) }
+            }
+            _statusBanner.value = "Updated Continuity Camera Studio Effects"
+        }
+    }
+
+    fun toggleClipboardShelfPin(entryId: String) {
+        node.clipboardShelfManager.togglePin(entryId)
+    }
+
+    fun copyClipboardShelfEntry(entryId: String) {
+        val entry = node.clipboardShelfManager.entries.value.firstOrNull { it.id == entryId } ?: return
+        pushTextClipboard(entry.fullText ?: entry.previewText, isSensitive = entry.isSensitive)
+    }
+
+    fun undoLastRemoteClipboard() {
+        val restored = node.clipboardShelfManager.consumeUndoSnapshot() ?: return
+        scope.launch(Dispatchers.IO) {
+            clipboardBridge.applyRemoteClipboardToSystem(restored)
+            _statusBanner.value = "Restored previous desktop clipboard"
+        }
+    }
+
+    fun dismissClipboardToast() {
+        node.clipboardShelfManager.dismissToast()
+    }
+
+    fun startWebDavPhoneMount(dataSource: VfsMountDataSource) {
+        scope.launch(Dispatchers.IO) {
+            runCatching { webDavMountServer?.close() }
+            val srv = VfsLoopbackWebDavServer(dataSource = dataSource)
+            srv.start()
+            webDavMountServer = srv
+            _webDavMountUrl.value = srv.mountUrl
+            _statusBanner.value = "Mounted Phone VFS WebDAV on loopback ${srv.mountUrl}"
+        }
+    }
+
+    fun stopWebDavPhoneMount() {
+        runCatching { webDavMountServer?.close() }
+        webDavMountServer = null
+        _webDavMountUrl.value = null
+        _statusBanner.value = "Unmounted Phone VFS loopback WebDAV"
+    }
+
+    fun runHealthDiagnostics() {
+        scope.launch(Dispatchers.IO) {
+            val runner = SystemHealthDiagnosticsRunner(
+                keystoreBackendProvider = { _keySealerBackend.value },
+            )
+            val results = runner.runAllChecks()
+            _diagnosticChecks.value = results
+            val warns = results.count { it.severity != ec0.core.engine.services.DiagnosticSeverity.OK }
+            _statusBanner.value = if (warns == 0) {
+                "All ${results.size} system health checks passed"
+            } else {
+                "Health diagnostics: ${results.size - warns}/${results.size} ready ($warns action items)"
+            }
+        }
+    }
+
+    fun exportRedactedSupportBundle(): File? {
+        return runCatching {
+            val checks = _diagnosticChecks.value.ifEmpty {
+                SystemHealthDiagnosticsRunner(keystoreBackendProvider = { _keySealerBackend.value }).runAllChecks()
+            }
+            val file = SupportBundleExporter.exportRedactedBundle(
+                configDir = EncryptedIdentityStore.defaultConfigDir(),
+                appVersion = "1.0.0",
+                checks = checks,
+                logs = node.diagnosticRingBuffer.snapshot(),
+            )
+            _statusBanner.value = "Exported PII-redacted support bundle: ${file.name}"
+            file
+        }.getOrNull()
+    }
+
+    private fun handleDaemonIpcCommand(cmd: String, payload: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
+        return when (cmd) {
+            "status" -> buildJsonObject {
+                put("ok", true)
+                put("alias", desktopAlias)
+                put("port", node.boundServerPort)
+                put("paired_count", node.pinnedPeers.value.size)
+                put("connected_count", node.connectionStates.value.values.count { it == EngineConnectionState.CONNECTED })
+                put("focus_mode", node.focusSyncService.focusState.value.mode)
+                put("audio_sink_active", node.audioHandoffService.status.value.active)
+                put("sidecar_active", node.sidecarDisplayService.state.value.active)
+                put("webdav_url", _webDavMountUrl.value ?: "")
+            }
+            "auto_type_otp" -> {
+                val ok = autoTypeLatestOtp()
+                buildJsonObject { put("ok", ok); put("message", _statusBanner.value) }
+            }
+            "set_focus" -> {
+                val mode = (payload["mode"] as? JsonPrimitive)?.content ?: FocusSyncProtocol.MODE_DND
+                setFocusMode(mode)
+                buildJsonObject { put("ok", true); put("mode", mode) }
+            }
+            "handoff_tab" -> {
+                val url = (payload["url"] as? JsonPrimitive)?.content ?: ""
+                val title = (payload["title"] as? JsonPrimitive)?.content ?: ""
+                val pos = (payload["media_position_sec"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+                publishLocalBrowserTab(url, title, pos)
+                buildJsonObject { put("ok", true); put("url", url) }
+            }
+            "ring_phone" -> {
+                triggerFindMyPhone(true)
+                buildJsonObject { put("ok", true) }
+            }
+            "capture_photo" -> {
+                requestPhoneCapture(ContinuityCaptureProtocol.MODE_PHOTO)
+                buildJsonObject { put("ok", true) }
+            }
+            "capture_scan" -> {
+                requestPhoneCapture(ContinuityCaptureProtocol.MODE_DOCUMENT_SCAN)
+                buildJsonObject { put("ok", true) }
+            }
+            "diagnose" -> {
+                runHealthDiagnostics()
+                buildJsonObject { put("ok", true) }
+            }
+            "unmount_vfs" -> {
+                stopWebDavPhoneMount()
+                buildJsonObject { put("ok", true) }
+            }
+            else -> buildJsonObject { put("ok", false); put("error", "unknown_command") }
         }
     }
 
@@ -1278,7 +1755,11 @@ class ContinuityHubController(
         clipboardWatchJob?.cancel()
         notifForwardJob?.cancel()
         desktopNotifMonitorJob?.cancel()
+        callDuckingJob?.cancel()
+        meetingFocusJob?.cancel()
+        captureWatcherJob?.cancel()
         scrubJob?.cancel()
+        runCatching { webDavMountServer?.close() }
         runCatching { desktopNotificationMonitor?.stop() }
         runCatching { dbusMonitorProcessRef.getAndSet(null)?.destroyForcibly() }
         runCatching { screenEdgeWatcher.close() }

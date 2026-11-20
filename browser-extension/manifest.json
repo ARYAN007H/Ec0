@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "ec0 Continuity Tab Handoff",
+  "version": "1.0.0",
+  "description": "Passively hand off active browser tabs and video timestamps between Linux and Android via local ec0 daemon.",
+  "permissions": ["tabs", "nativeMessaging"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ec0 Tab Handoff"
+  }
+}
